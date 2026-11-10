@@ -3,7 +3,7 @@
 把各处来的事件接到一起，按规则筛选，再触发动作。
 
 ```
-QQ / Discord / Telegram / 企业微信 / RSS / 网页变动 / 接口变动 / 定时 / WebHook ──▶ 规则（条件）──▶ 动作流水线
+QQ / Discord / Telegram / 企业微信 / RSS / 网页变动 / 接口变动 / 定时 / Webhook ──▶ 规则（条件）──▶ 动作流水线
                                                                            ├─ 交给 Agent（Claude Code / Codex / DeepSeek）
                                                                            ├─ 原路回复、跨平台转发
                                                                            └─ 发 HTTP 请求、跑脚本
@@ -48,8 +48,8 @@ make app
 
 ## 第一条规则
 
-1. 「接入」→ 添加 **WebHook**，复制它的地址。
-2. 「规则」→ 新建：来源选这个 WebHook，条件 `payload.text` 包含 `deploy`，动作选「HTTP 请求」。
+1. 「接入」→ 添加 **Webhook**，复制它的地址。
+2. 「规则」→ 新建：来源选这个 Webhook，条件 `payload.text` 包含 `deploy`，动作选「HTTP 请求」。
 3. 发一个请求试试：
 
    ```bash
@@ -132,7 +132,7 @@ POST https://api.example.com/orders/query  data.items  # 请求体填在「请�
 
 - 时间按这台机器的时区算，也可以在「时区」里指定，如 `Asia/Shanghai`。
 - 到点时电脑在睡眠或 Cat 没在运行，这一次默认跳过。打开「错过的补发一次」后会在恢复时补发，同一个定时不管错过几次都只补一次，事件里 `missed` 为 `true`。
-- 「立即触发」是这个插件提供的动作：放进另一条规则里（比如由 WebHook 或聊天里的一句口令触发），不等到点就发出定时事件，用来试规则或手动补跑。
+- 「立即触发」是这个插件提供的动作：放进另一条规则里（比如由 Webhook 或聊天里的一句口令触发），不等到点就发出定时事件，用来试规则或手动补跑。
 - Agent 默认按 `conversation.id` 续接对话，所以同一个定时每次触发都接着上一次聊。想每次从头开始，勾上 Agent 步骤的「丢弃之前的对话，重新开始」。
 
 ## 规则怎么写
@@ -151,7 +151,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 
 | 插件 | 说明 |
 |---|---|
-| WebHook（内置） | 任意 HTTP 请求变成事件，支持密钥和 HMAC 签名 |
+| Webhook（内置） | 任意 HTTP 请求变成事件，支持密钥和 HMAC 签名 |
 | HTTP 请求、运行脚本（内置） | 动作 |
 | Telegram | Bot，长轮询 |
 | Discord | Bot，Gateway |
@@ -168,7 +168,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 
 - **聊天消息会原样成为给 Agent 的指令。** 所以 Agent 插件默认只读、只接受白名单里的发送者。放宽之前请想清楚谁能给你的机器人发消息。
 - **插件没有沙箱**，以你的用户身份运行。只安装你信任的插件。从市场安装时会校验 SHA-256。
-- 默认只监听本机。要对外提供服务必须设置 `--token`；WebHook 请配置密钥。
+- 默认只监听本机。要对外提供服务必须设置 `--token`；Webhook 请配置密钥。
 - 密钥类配置存放在系统钥匙串（桌面版）或 `~/.cat/secrets.json`（无界面版，仅靠文件权限保护，未加密）。
 
 ## 开发

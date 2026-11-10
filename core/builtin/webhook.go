@@ -16,7 +16,7 @@ import (
 func webhookEntry() Entry {
 	return Entry{
 		Manifest: plugin.Manifest{
-			ID: "webhook", Name: "WebHook / HTTP 回调", Version: "1.0.0", Builtin: true, Ingress: true, Icon: "webhook",
+			ID: "webhook", Name: "Webhook", Version: "1.0.0", Builtin: true, Ingress: true, Icon: "webhook",
 			Description:  "为每个实例生成一个接收地址，任何 HTTP 请求都会变成一个事件。",
 			Capabilities: []string{plugin.CapSource},
 			Events:       []plugin.EventSpec{{Type: "webhook.received", Title: "收到请求"}},

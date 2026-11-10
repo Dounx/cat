@@ -67,7 +67,7 @@ async function replay() {
         <template v-if="hub.events.length"><p>没有符合筛选条件的事件。</p></template>
         <template v-else>
           <p class="text-ink">还没有事件</p>
-          <p class="text-xs">到「接入」里添加一个渠道或监控，例如 WebHook，然后向它发一个请求。</p>
+          <p class="text-xs">到「接入」里添加一个渠道或监控，例如 Webhook，然后向它发一个请求。</p>
         </template>
       </div>
       <div v-else class="list">
