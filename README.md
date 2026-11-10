@@ -172,3 +172,7 @@ python3 scripts/build-release.py v0.2.0      # 输出到 dist/release
 - [插件协议](docs/plugin-protocol.md)
 
 目录：`core/` 引擎，`app/` 组装，`cmd/catd` 无界面外壳，`desktop/` 桌面外壳（独立 Go 模块），`frontend/` 界面，`sdk/` 插件 SDK，`plugins/` 官方插件，`templates/` 插件模板。
+
+## 许可证
+
+[MIT](LICENSE)
