@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -28,21 +29,27 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 		mode = "external"
 		if runtime.GOOS == "windows" {
 			mode = "managed"
+		} else if _, err := exec.LookPath("docker"); err == nil {
+			mode = "docker"
 		}
 	}
 	out, err := s.Ask(ctx, cat.Step{
 		Kind: cat.StepForm, Title: "怎样连接 QQ",
-		Description: "managed：由 Cat 下载、配置并启动 NapCat，你只需要扫码登录（目前支持 Windows，需要已安装 QQ）。\nexternal：连接你已经在运行的 OneBot 11 服务（NapCat、LLOneBot 等）。",
+		Description: "managed：由 Cat 下载、配置并启动 NapCat，你只需要扫码登录（目前支持 Windows，需要已安装 QQ）。\ndocker：由 Cat 在 Docker 容器里启动 NapCat，你只需要扫码登录（Windows、macOS、Linux 均可，需要已安装 Docker）。\nexternal：连接你已经在运行的 OneBot 11 服务（NapCat、LLOneBot 等）。",
 		Values:      map[string]any{"mode": mode},
 		Schema: map[string]any{"type": "object", "properties": map[string]any{
-			"mode": map[string]any{"type": "string", "title": "方式", "enum": []string{"managed", "external"}},
+			"mode": map[string]any{"type": "string", "title": "方式", "enum": []string{"managed", "docker", "external"}},
 		}},
 	})
 	if err != nil {
 		return nil, err
 	}
-	if str(out, "mode") == "managed" {
-		managed, err := setupManaged(ctx, s, cfg)
+	if mode = str(out, "mode"); mode == "managed" || mode == "docker" {
+		auto := setupManaged
+		if mode == "docker" {
+			auto = setupDocker
+		}
+		managed, err := auto(ctx, s, cfg)
 		if err == nil {
 			return managed, nil
 		}
@@ -130,11 +137,52 @@ func setupManaged(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[st
 	if err != nil {
 		return nil, err
 	}
-	wsPort, err := freePort()
-	if err != nil {
+	return login(ctx, s, cfg, "managed", func(wsPort int, token string) (*napcat, error) {
+		webuiPort, err := freePort()
+		if err != nil {
+			return nil, err
+		}
+		if err := writeNapCatConfig(dir, "127.0.0.1", wsPort, token, webuiPort, randomToken()); err != nil {
+			return nil, err
+		}
+		return startNapCat(dir, "")
+	})
+}
+
+func setupDocker(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[string]any, error) {
+	if err := dockerReady(); err != nil {
 		return nil, err
 	}
-	webuiPort, err := freePort()
+	if !dockerImagePresent(dockerImage) {
+		ok, err := s.Ask(ctx, cat.Step{
+			Kind: cat.StepConfirm, Title: "需要拉取 NapCat 镜像", URL: "https://github.com/NapNeko/NapCat-Docker",
+			Description: "将从 Docker Hub 拉取镜像 " + dockerImage + "（约 600 MB，内含 Linux 版 QQ）。\n\nNapCat 是第三方开源项目（github.com/NapNeko/NapCatQQ），不是腾讯官方软件。使用它登录 QQ 存在账号被限制的风险，建议使用小号。",
+		})
+		if err != nil {
+			return nil, err
+		}
+		if c, _ := ok["confirmed"].(bool); !c {
+			return nil, cat.ErrCancelled
+		}
+		s.Progress("正在拉取镜像…", -1)
+		if err := dockerPull(ctx, dockerImage, func(l string) { s.Progress("正在拉取镜像："+l, -1) }); err != nil {
+			return nil, err
+		}
+	}
+	return login(ctx, s, cfg, "docker", func(wsPort int, token string) (*napcat, error) {
+		// Inside the container NapCat listens on fixed ports; wsPort is
+		// where Docker publishes the OneBot one on this machine.
+		if err := writeNapCatConfig(dockerDataDir(s.DataDir), "0.0.0.0", containerWSPort, token, containerWebUIPort, randomToken()); err != nil {
+			return nil, err
+		}
+		return startDockerNapCat(s.DataDir, wsPort, "")
+	})
+}
+
+// login starts a freshly configured NapCat, walks the user through the QR
+// code login, and returns the instance config for that mode.
+func login(ctx context.Context, s *cat.Setup, cfg map[string]any, mode string, start func(wsPort int, token string) (*napcat, error)) (map[string]any, error) {
+	wsPort, err := freePort()
 	if err != nil {
 		return nil, err
 	}
@@ -142,11 +190,8 @@ func setupManaged(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[st
 	if token == "" || strings.HasPrefix(token, "•") {
 		token = randomToken()
 	}
-	if err := writeNapCatConfig(dir, wsPort, token, webuiPort, randomToken()); err != nil {
-		return nil, err
-	}
 	s.Progress("正在启动 NapCat…", -1)
-	n, err := startNapCat(dir, "")
+	n, err := start(wsPort, token)
 	if err != nil {
 		return nil, err
 	}
@@ -163,5 +208,5 @@ func setupManaged(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[st
 	}
 	s.Show(cat.Step{Kind: cat.StepInfo, Title: "已登录 " + info.Nickname + "（" + info.UserID.String() + "）",
 		Description: "之后启动会自动用这个账号快速登录。登录状态失效时，重新运行接入向导扫码即可。"})
-	return map[string]any{"mode": "managed", "ws_port": wsPort, "token": token, "uin": info.UserID.String()}, nil
+	return map[string]any{"mode": mode, "ws_port": wsPort, "token": token, "uin": info.UserID.String()}, nil
 }

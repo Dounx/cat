@@ -165,7 +165,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 | HTTP 请求、运行脚本（内置） | 动作 |
 | Telegram | Bot，长轮询 |
 | Discord | Bot，Gateway |
-| QQ（OneBot） | OneBot 11。Windows 上可自动下载配置 NapCat；其他系统连接你自己运行的 OneBot 服务 |
+| QQ（OneBot） | OneBot 11。Windows 上可自动下载配置 NapCat；装有 Docker 时可在容器里自动运行 NapCat；也可以连接你自己运行的 OneBot 服务 |
 | 企业微信 | 自建应用的消息回调 |
 | RSS | 订阅 RSS / Atom 源，有新条目时发出 `feed.item` 事件 |
 | RSSHub | 订阅 RSSHub 实例上的路由，有新条目时发出 `feed.item` 事件，支持自建实例和访问密钥 |

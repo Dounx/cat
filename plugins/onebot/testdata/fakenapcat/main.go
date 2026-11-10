@@ -19,6 +19,9 @@ import (
 
 func main() {
 	dir := filepath.Dir(os.Args[0])
+	if d := os.Getenv("FAKE_NAPCAT_DIR"); d != "" { // run "in a container": config is mounted from elsewhere
+		dir = d
+	}
 	var cfg struct {
 		Network struct {
 			Servers []struct {
@@ -93,7 +96,12 @@ func main() {
 			_ = wsjson.Write(ctx, c, map[string]any{"status": "ok", "retcode": 0, "data": data, "echo": req.Echo})
 		}
 	})
-	if err := http.ListenAndServe(fmt.Sprintf("%s:%d", srv.Host, srv.Port), mux); err != nil {
+	addr := fmt.Sprintf("%s:%d", srv.Host, srv.Port)
+	if a := os.Getenv("FAKE_NAPCAT_LISTEN"); a != "" { // the port the "container" publishes
+		logf("listen " + addr)
+		addr = a
+	}
+	if err := http.ListenAndServe(addr, mux); err != nil {
 		fmt.Println("[error]", err)
 		os.Exit(1)
 	}

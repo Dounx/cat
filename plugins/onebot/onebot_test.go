@@ -269,3 +269,118 @@ func TestUnsupportedPlatformFallsBackToExternal(t *testing.T) {
 	})
 	ph.CancelSetup(view.ID)
 }
+
+// TestDockerNapCatEndToEnd runs the Docker flow under the real plugin host:
+// consent before pulling the image, configure, run the container, QR code,
+// login detection, then the instance starting with quick login. The docker
+// CLI is replaced by testdata/fakedocker, which runs testdata/fakenapcat.
+func TestDockerNapCatEndToEnd(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake docker is a shell script")
+	}
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "bin")
+	_ = os.MkdirAll(bin, 0o755)
+	build(t, filepath.Join(bin, "fakenapcat"), "./testdata/fakenapcat")
+	script, _ := os.ReadFile("testdata/fakedocker/docker")
+	_ = os.WriteFile(filepath.Join(bin, "docker"), script, 0o755)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH")) // plugins inherit it
+	dockerLog := func() string { b, _ := os.ReadFile(filepath.Join(bin, "docker.log")); return string(b) }
+
+	root := filepath.Join(tmp, "plugins")
+	pdir := filepath.Join(root, "onebot")
+	_ = os.MkdirAll(pdir, 0o755)
+	build(t, filepath.Join(pdir, "cat-plugin-onebot"), ".")
+	raw, _ := os.ReadFile("plugin.json")
+	_ = os.WriteFile(filepath.Join(pdir, "plugin.json"), raw, 0o644)
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := engine.New(st, filepath.Join(tmp, "data"), nil)
+	ph := pluginhost.New(e, root)
+	if errs := ph.Scan(); len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if err := e.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.Stop(); st.Close() })
+
+	view, err := ph.StartSetup("onebot", "", "容器里的 QQ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := func() pluginhost.SetupView {
+		v, _ := ph.Setup(view.ID)
+		if v.State == pluginhost.SetupError {
+			t.Fatalf("setup failed: %s", v.Error)
+		}
+		return v
+	}
+	waitFor(t, "mode form", func() bool { s := state(); return s.State == pluginhost.SetupWaiting && s.Step["kind"] == "form" })
+	// With docker on PATH, the Docker way is the one suggested.
+	if v, _ := state().Step["values"].(map[string]any); v["mode"] != "docker" {
+		t.Fatalf("suggested mode: %+v", state().Step)
+	}
+	_ = ph.AnswerSetup(view.ID, map[string]any{"mode": "docker"})
+
+	// Nothing is pulled until the user agrees, and the step names the image.
+	waitFor(t, "pull consent", func() bool { s := state(); return s.State == pluginhost.SetupWaiting && s.Step["kind"] == "confirm" })
+	if desc, _ := state().Step["description"].(string); !strings.Contains(desc, "mlikiowa/napcat-docker:") || strings.Contains(dockerLog(), "pull") {
+		t.Fatalf("consent step should name the image before any pull: desc=%q log:\n%s", desc, dockerLog())
+	}
+	_ = ph.AnswerSetup(view.ID, map[string]any{"confirmed": true})
+
+	waitFor(t, "QR code", func() bool { s := state(); return s.Step["kind"] == "qrcode" || s.State == pluginhost.SetupDone })
+	if s := state(); s.State != pluginhost.SetupDone && s.Step["text"] != "https://txz.qq.com/p?k=FAKEQR&f=1" {
+		t.Fatalf("qr step: %+v", s.Step)
+	}
+	waitFor(t, "setup done", func() bool { return state().State == pluginhost.SetupDone })
+
+	inst, ok := e.Instance(view.InstanceID)
+	if !ok || inst.Config["mode"] != "docker" || inst.Config["uin"] != "10001" || inst.Config["token"] != engine.SecretMask {
+		t.Fatalf("instance: %+v", inst)
+	}
+	waitFor(t, "instance running", func() bool {
+		v, _ := e.Instance(view.InstanceID)
+		if v.Status == engine.StatusError {
+			t.Fatalf("instance failed: %s", v.Error)
+		}
+		return v.Status == engine.StatusRunning
+	})
+	dataDir := filepath.Join(tmp, "data", "instances", view.InstanceID, "napcat-docker")
+	fakeLog, _ := os.ReadFile(filepath.Join(dataDir, "fake.log"))
+	// Inside the container NapCat listens on every interface at its usual port...
+	if !strings.Contains(string(fakeLog), "quick-login 10001") || !strings.Contains(string(fakeLog), "listen 0.0.0.0:3001") {
+		t.Fatalf("container should start with quick login on 0.0.0.0:3001; log:\n%s", fakeLog)
+	}
+	// ...but only the OneBot port is published, and only on loopback; the
+	// image was pulled once, and login state is kept outside the container.
+	log := dockerLog()
+	for _, line := range strings.Split(log, "\n") {
+		if strings.HasPrefix(line, "run ") && (strings.Count(line, " -p ") != 1 || !strings.Contains(line, " -p 127.0.0.1:") ||
+			!strings.Contains(line, filepath.Join(dataDir, "qq")+":/app/.config/QQ")) {
+			t.Fatalf("docker run: %s", line)
+		}
+	}
+	if strings.Count(log, "pull ") != 1 || strings.Count(log, "\nrun ") != 2 {
+		t.Fatalf("expected one pull and two runs:\n%s", log)
+	}
+
+	waitFor(t, "message event", func() bool {
+		l, _ := e.Store.ListEvents(store.EventFilter{Type: "message.created"})
+		return len(l) >= 1
+	})
+
+	// Stopping the instance removes the container.
+	if err := e.DeleteInstance(view.InstanceID); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "container to be removed", func() bool {
+		pids, _ := filepath.Glob(filepath.Join(bin, "*.pid"))
+		out, _ := exec.Command("pgrep", "-f", filepath.Join(bin, "fakenapcat")).Output()
+		return len(pids) == 0 && len(bytes.TrimSpace(out)) == 0
+	})
+}

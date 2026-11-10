@@ -20,9 +20,10 @@ import (
 
 // napcat is a NapCat process managed by this plugin.
 type napcat struct {
-	cmd   *exec.Cmd
-	lines chan string // console output, line by line
-	done  chan struct{}
+	cmd       *exec.Cmd
+	container string      // Docker container name, when it runs in one
+	lines     chan string // console output, line by line
+	done      chan struct{}
 }
 
 var qrURL = regexp.MustCompile(`https://txz\.qq\.com/\S+`)
@@ -85,8 +86,9 @@ func freePort() (int, error) {
 
 // writeNapCatConfig writes the default OneBot config NapCat applies to any
 // account that logs in (config/onebot11.json), exposing one forward WebSocket
-// server on loopback, and confines the WebUI to loopback too.
-func writeNapCatConfig(dir string, wsPort int, token string, webuiPort int, webuiToken string) error {
+// server on host:wsPort, and confines the WebUI to loopback. host is loopback
+// except inside a container, where the port is published on loopback instead.
+func writeNapCatConfig(dir, host string, wsPort int, token string, webuiPort int, webuiToken string) error {
 	cfgDir := filepath.Join(dir, "config")
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		return err
@@ -95,7 +97,7 @@ func writeNapCatConfig(dir string, wsPort int, token string, webuiPort int, webu
 		"network": map[string]any{
 			"httpServers": []any{}, "httpClients": []any{}, "websocketClients": []any{},
 			"websocketServers": []any{map[string]any{
-				"name": "cat", "enable": true, "host": "127.0.0.1", "port": wsPort, "token": token,
+				"name": "cat", "enable": true, "host": host, "port": wsPort, "token": token,
 				"messagePostFormat": "array", "reportSelfMessage": false, "enableForcePushEvent": true,
 				"debug": false, "heartInterval": 30000,
 			}},
@@ -176,6 +178,11 @@ func startNapCat(dir, uin string) (*napcat, error) {
 		return nil, err
 	}
 	cmd.Dir = dir
+	return startProcess(cmd)
+}
+
+// startProcess starts cmd and collects its console output.
+func startProcess(cmd *exec.Cmd) (*napcat, error) {
 	pr, pw := io.Pipe()
 	cmd.Stdout, cmd.Stderr = pw, pw
 	isolate(cmd)
@@ -205,6 +212,10 @@ func startNapCat(dir, uin string) (*napcat, error) {
 func (n *napcat) stop() {
 	if n == nil {
 		return
+	}
+	if n.container != "" {
+		// Killing the docker client would leave the container running.
+		_ = exec.Command("docker", "rm", "-f", n.container).Run()
 	}
 	killTree(n.cmd)
 	<-n.done

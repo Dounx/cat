@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,17 +42,15 @@ func New() cat.Plugin {
 	return cat.Plugin{
 		Start: func(ctx context.Context, h *cat.Host) error {
 			url := str(h.Config, "ws_url")
-			if str(h.Config, "mode") == "managed" {
+			if mode := str(h.Config, "mode"); mode == "managed" || mode == "docker" {
 				url = managedURL(h.Config)
-				dep, err := h.Dependency(ctx, "napcat")
-				if err != nil {
-					return err
+				var err error
+				if mode == "docker" {
+					nc, err = startDocker(ctx, h)
+				} else {
+					nc, err = startManaged(ctx, h)
 				}
-				dir, err := installNapCat(dep, h.DataDir)
 				if err != nil {
-					return err
-				}
-				if nc, err = startNapCat(dir, str(h.Config, "uin")); err != nil {
 					return err
 				}
 				lctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
@@ -143,6 +142,35 @@ func New() cat.Plugin {
 		},
 		Setup: setup,
 	}
+}
+
+func startManaged(ctx context.Context, h *cat.Host) (*napcat, error) {
+	dep, err := h.Dependency(ctx, "napcat")
+	if err != nil {
+		return nil, err
+	}
+	dir, err := installNapCat(dep, h.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	return startNapCat(dir, str(h.Config, "uin"))
+}
+
+func startDocker(ctx context.Context, h *cat.Host) (*napcat, error) {
+	if err := dockerReady(); err != nil {
+		return nil, err
+	}
+	if !dockerImagePresent(dockerImage) { // e.g. the pinned version moved on
+		h.Log("info", "正在拉取镜像 %s", dockerImage)
+		if err := dockerPull(ctx, dockerImage, nil); err != nil {
+			return nil, err
+		}
+	}
+	port, err := strconv.Atoi(str(h.Config, "ws_port"))
+	if err != nil {
+		return nil, errors.New("缺少端口配置，请重新运行接入向导")
+	}
+	return startDockerNapCat(h.DataDir, port, str(h.Config, "uin"))
 }
 
 func cancelled(err error) bool {

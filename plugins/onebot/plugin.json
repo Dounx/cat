@@ -3,7 +3,7 @@
   "name": "QQ（OneBot）",
   "version": "0.1.0",
   "protocol": 1,
-  "description": "通过 OneBot 11 协议收发 QQ 消息。可以自动下载并配置 NapCat（Windows），也可以连接你已经运行的 OneBot 服务。",
+  "description": "通过 OneBot 11 协议收发 QQ 消息。可以自动下载并配置 NapCat（Windows），或在 Docker 容器里运行它，也可以连接你已经运行的 OneBot 服务。",
   "command": ["./cat-plugin-onebot"],
   "capabilities": ["source", "action"],
   "setup": true,
@@ -11,10 +11,10 @@
     "type": "object",
     "x-order": ["mode", "ws_url", "token", "uin"],
     "properties": {
-      "mode": { "type": "string", "title": "方式", "enum": ["managed", "external"], "default": "external", "description": "managed：由 Cat 启动和管理 NapCat（通过接入向导配置）。external：连接已有的 OneBot 正向 WebSocket 服务。" },
+      "mode": { "type": "string", "title": "方式", "enum": ["managed", "docker", "external"], "default": "external", "description": "managed：由 Cat 启动和管理 NapCat（通过接入向导配置）。docker：由 Cat 在 Docker 容器里启动和管理 NapCat（通过接入向导配置）。external：连接已有的 OneBot 正向 WebSocket 服务。" },
       "ws_url": { "type": "string", "title": "WebSocket 地址", "default": "ws://127.0.0.1:3001", "description": "OneBot 正向 WebSocket 服务的地址。" },
       "token": { "type": "string", "title": "访问令牌", "format": "password" },
-      "uin": { "type": "string", "title": "QQ 号（managed 方式用于快速登录）" }
+      "uin": { "type": "string", "title": "QQ 号（managed、docker 方式用于快速登录）" }
     }
   },
   "events": [
