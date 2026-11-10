@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { Check, Copy, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { Check, ChevronRight, Copy, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useHub } from '../hub'
 import { del, get, post, put } from '../api'
 import type { Instance, Plugin } from '../types'
@@ -24,21 +24,27 @@ const categories: { id: Category; title: string; hint: string; empty: string }[]
     id: 'channel',
     title: '渠道',
     hint: '消息从哪里来，回复和通知发到哪里去',
-    empty: '还没有接入任何渠道，从下面选一个开始。',
+    empty: '还没有接入任何渠道',
   },
   {
     id: 'monitor',
     title: '监控',
-    hint: '盯着外面的变化或时间，有动静、到点时发出事件；通知由规则交给渠道发出',
-    empty: '还没有添加监控，从下面选一个开始。',
+    hint: '盯着外面的变化或时间，有动静、到点时发出事件',
+    empty: '还没有添加监控',
   },
   {
     id: 'processor',
     title: '处理器',
     hint: '收到事件后由谁来处理并给出结果',
-    empty: '还没有添加处理器，从下面选一个开始。',
+    empty: '还没有添加处理器',
   },
 ]
+// The page shows what is set up; what could be added waits behind each
+// section's 添加 button, and the market behind its own tab.
+const tab = ref<'instances' | 'market'>('instances')
+const picking = ref<Category | null>(null)
+const pickingGroup = computed(() => groups.value.find((g) => g.id === picking.value))
+
 function categoryOf(i: Instance): Category {
   return hub.pluginOf(i.plugin)?.category ?? 'channel'
 }
@@ -126,6 +132,7 @@ function closeWizard() {
 }
 
 function add(p: Plugin) {
+  picking.value = null
   if (p.setup) wizard.value = { plugin: p }
   else editing.value = { plugin: p, name: p.name, enabled: true, config: {} }
 }
@@ -165,19 +172,38 @@ async function remove(i: Instance) {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="接入" hint="渠道负责收发，监控负责发现变化，处理器负责处理" />
-    <div class="gutter flex-1 space-y-9 overflow-y-auto pb-8">
+    <PageHeader title="接入" hint="渠道负责收发，监控负责发现变化，处理器负责处理">
+      <div class="seg">
+        <button :class="{ on: tab === 'instances' }" @click="tab = 'instances'">已接入</button>
+        <button :class="{ on: tab === 'market' }" @click="tab = 'market'">插件市场</button>
+      </div>
+    </PageHeader>
+
+    <div v-if="tab === 'instances'" class="gutter flex-1 space-y-8 overflow-y-auto pb-8">
       <section v-for="g in groups" :key="g.id">
-        <h2 class="text-sm font-semibold">{{ g.title }}</h2>
-        <p class="mb-3 text-xs text-mute">{{ g.hint }}</p>
-        <p v-if="!g.configured.length" class="card px-6 py-7 text-center text-sm text-mute">
-          {{ g.addable.length ? g.empty : '还没有这一类插件，可以在下面的插件市场安装。' }}
-        </p>
+        <div class="mb-2.5 flex items-end justify-between gap-4">
+          <div class="min-w-0">
+            <h2 class="text-sm font-semibold">{{ g.title }}</h2>
+            <p class="truncate text-xs text-mute">{{ g.hint }}</p>
+          </div>
+          <button class="btn shrink-0" @click="picking = g.id"><Plus :size="14" />添加</button>
+        </div>
+
+        <button
+          v-if="!g.configured.length && !g.builtins.length"
+          class="card card-link w-full border-dashed px-6 py-5 text-center text-sm text-mute"
+          @click="picking = g.id"
+        >
+          {{ g.empty }}，<span class="text-accent">添加一个</span>
+        </button>
         <TransitionGroup v-else tag="div" name="item" class="list">
           <div v-for="i in g.configured" :key="i.id" class="row flex items-center gap-3 px-4 py-3">
             <div class="min-w-0 flex-1 transition-opacity duration-200" :class="{ 'opacity-55': !i.enabled }">
               <div class="flex items-center gap-2 text-sm font-medium">
-                {{ i.name }}<span class="chip">{{ hub.pluginOf(i.plugin)?.name || i.plugin }}</span>
+                <span class="truncate">{{ i.name }}</span>
+                <span v-if="(hub.pluginOf(i.plugin)?.name || i.plugin) !== i.name" class="chip shrink-0">{{
+                  hub.pluginOf(i.plugin)?.name || i.plugin
+                }}</span>
               </div>
               <div class="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-mute">
                 <span class="dot" :class="statusDot[i.status]" />
@@ -206,56 +232,28 @@ async function remove(i: Instance) {
             </div>
             <input type="checkbox" :checked="i.enabled" :title="i.enabled ? '停用' : '启用'" @change="toggle(i)" />
           </div>
-        </TransitionGroup>
-
-        <template v-if="g.addable.length">
-          <h3 class="section-title mt-5 mb-2">添加</h3>
-          <div class="grid grid-cols-[repeat(auto-fill,minmax(15rem,1fr))] gap-3">
-            <button
-              v-for="p in g.addable"
-              :key="p.id"
-              class="group card card-link flex flex-col items-start p-4 text-left"
-              @click="add(p)"
-            >
-              <div class="mb-1 flex w-full items-center justify-between text-sm font-medium">
-                {{ p.name
-                }}<Plus
-                  :size="16"
-                  class="text-faint transition duration-200 ease-glide group-hover:rotate-90 group-hover:text-accent"
-                />
+          <!-- Built-ins are always there: nothing to edit, switch off or remove. -->
+          <div v-for="i in g.builtins" :key="i.id" class="row flex items-center gap-3 px-4 py-3">
+            <div class="min-w-0 flex-1">
+              <div class="text-sm font-medium">{{ i.name }}</div>
+              <div class="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-mute">
+                <span class="dot" :class="statusDot[i.status]" />
+                <span class="truncate">{{ hub.pluginOf(i.plugin)?.description }}</span>
               </div>
-              <p class="mb-2 line-clamp-2 text-xs text-mute">{{ p.description }}</p>
-              <div class="mt-auto flex gap-1">
-                <span v-if="p.capabilities.includes('source')" class="chip">事件来源</span>
-                <span v-if="p.capabilities.includes('action')" class="chip">动作</span>
-                <span v-if="!p.builtin" class="chip">插件 {{ p.version }}</span>
-              </div>
-            </button>
-          </div>
-        </template>
-
-        <template v-if="g.builtins.length">
-          <h3 class="section-title mt-5 mb-2">内置，无需配置</h3>
-          <div class="flex flex-wrap gap-2">
-            <div
-              v-for="i in g.builtins"
-              :key="i.id"
-              class="card flex items-center gap-2 !rounded-full px-3 py-1.5 text-sm"
-            >
-              <span class="dot" :class="statusDot[i.status]" />{{ i.name }}
-              <span class="text-xs text-mute">{{ hub.pluginOf(i.plugin)?.description }}</span>
             </div>
+            <span class="shrink-0 text-xs text-mute">内置</span>
           </div>
-        </template>
+        </TransitionGroup>
       </section>
+    </div>
 
-      <section>
-        <h2 class="mb-1 text-sm font-semibold">插件市场</h2>
-        <p class="mb-3 text-xs text-mute">插件以你的用户身份运行，没有沙箱。安装前会校验文件的 SHA-256。</p>
-        <p v-if="market.error" class="card p-4 text-sm text-mute">{{ market.error }}</p>
-        <template v-for="g in groups" :key="g.id">
-          <h3 v-if="g.market.length" class="section-title mt-5 mb-2">{{ g.title }}</h3>
-          <div v-if="g.market.length" class="list">
+    <div v-else class="gutter flex-1 overflow-y-auto pb-8">
+      <p class="text-xs text-mute">插件以你的用户身份运行，没有沙箱。安装前会校验文件的 SHA-256。</p>
+      <p v-if="market.error" class="card mt-3 px-6 py-7 text-center text-sm text-mute">{{ market.error }}</p>
+      <template v-for="g in groups" :key="g.id">
+        <template v-if="g.market.length">
+          <h3 class="section-title mt-5 mb-2">{{ g.title }}</h3>
+          <div class="list">
             <div v-for="p in g.market" :key="p.id" class="row flex min-h-14 items-center gap-4 px-4 py-2.5">
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2 text-sm font-medium">
@@ -283,8 +281,35 @@ async function remove(i: Instance) {
             </div>
           </div>
         </template>
-      </section>
+      </template>
     </div>
+
+    <Transition name="drawer">
+      <Drawer v-if="pickingGroup" :title="'添加' + pickingGroup.title" @close="picking = null">
+        <p class="mb-4 text-sm text-mute">{{ pickingGroup.hint }}</p>
+        <div v-if="pickingGroup.addable.length" class="list">
+          <button
+            v-for="p in pickingGroup.addable"
+            :key="p.id"
+            class="row link flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left"
+            @click="add(p)"
+          >
+            <div class="min-w-0 flex-1">
+              <div class="text-sm font-medium">{{ p.name }}</div>
+              <p class="mt-0.5 text-xs text-mute">{{ p.description }}</p>
+            </div>
+            <ChevronRight :size="16" class="shrink-0 text-faint" />
+          </button>
+        </div>
+        <p v-else class="text-sm text-mute">还没有这一类插件。</p>
+        <button
+          class="mt-4 cursor-pointer text-xs text-mute hover:text-accent"
+          @click="((picking = null), (tab = 'market'))"
+        >
+          没有想要的？去插件市场看看
+        </button>
+      </Drawer>
+    </Transition>
 
     <Transition name="drawer">
       <Drawer v-if="editing" :title="(editing.id ? '编辑 ' : '添加 ') + editing.plugin.name" @close="editing = null">
