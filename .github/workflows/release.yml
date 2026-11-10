@@ -1,0 +1,109 @@
+name: Release
+
+# Pushing a tag like v0.2.0 tests, builds and publishes a GitHub release with:
+#   - catd plus the official plugins, one archive per platform
+#   - Cat.app for macOS
+#   - the plugin market: one zip per plugin and platform, and index.json
+#
+# Running it by hand (workflow_dispatch) builds everything and keeps it as
+# workflow artifacts, without publishing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build the web UI
+        run: make frontend
+
+      # The index points at this release's own assets, so a published index
+      # keeps working after later releases.
+      - name: Build the plugin market
+        run: python3 scripts/build-market.py "${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+
+      - name: Package catd
+        run: python3 scripts/build-release.py "${{ github.ref_name }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          if-no-files-found: error
+          path: |
+            dist/release/*
+            dist/market/*.zip
+            dist/market/index.json
+
+  macos-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: |
+            go.sum
+            desktop/go.sum
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build Cat.app
+        run: |
+          # Tags are v1.2.3; a manual run on a branch keeps the default.
+          case "$GITHUB_REF_NAME" in v[0-9]*) export CAT_VERSION="${GITHUB_REF_NAME#v}" ;; esac
+          make app
+
+      # ditto keeps the bundle's signature and symlinks intact.
+      - name: Zip Cat.app
+        run: ditto -c -k --keepParent bin/Cat.app "Cat-${{ github.ref_name }}-macos-$(go env GOARCH).zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-app
+          if-no-files-found: error
+          path: Cat-*.zip
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ci, packages, macos-app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          find assets -type f | sort
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag \
+            $(find assets -type f)

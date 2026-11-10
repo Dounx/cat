@@ -146,6 +146,28 @@ go run ./cmd/catd --plugins ./plugins    # 后端
 cd frontend && pnpm dev                  # 界面热更新（代理到 7788）
 ```
 
+### 发布
+
+推送和 PR 会跑 CI（`.github/workflows/ci.yml`）。推一个 `v` 开头的标签就会发布：
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+发布流程（`.github/workflows/release.yml`）先跑一遍 CI，再把这些放进 GitHub Release：
+
+- `cat-<版本>-<系统>-<架构>.tar.gz`（Windows 是 `.zip`）：`catd` 和全部官方插件，解压即可运行；`SHA256SUMS` 是它们的校验和。
+- `Cat-<版本>-macos-arm64.zip`：桌面应用。没有 Apple 开发者签名，首次打开需要在「系统设置 → 隐私与安全性」里放行。
+- 插件市场：每个插件每个平台一个 zip，加上 `index.json`。把 `--market` 指向 `https://github.com/<用户>/<仓库>/releases/latest/download/index.json` 就能一直用最新一版的市场。
+
+在 Actions 页面手动运行 Release 只构建、不发布，产物留在这次运行的附件里，可以用来试跑。本地也能打同样的包：
+
+```bash
+make frontend
+python3 scripts/build-market.py <基础地址>   # 输出到 dist/market
+python3 scripts/build-release.py v0.2.0      # 输出到 dist/release
+```
+
 - [写一个插件](docs/plugin-development.md)
 - [插件协议](docs/plugin-protocol.md)
 

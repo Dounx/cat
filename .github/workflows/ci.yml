@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Lets the release workflow run the same checks before it publishes.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+      - uses: oven-sh/setup-bun@v2
+
+      # vue-tsc type-checks the UI as part of the build.
+      - name: Build the web UI
+        run: make frontend
+
+      - name: Install TypeScript dependencies
+        run: |
+          cd sdk/node && pnpm install --frozen-lockfile
+          cd ../../plugins/discord && bun install
+
+      # Builds every plugin and catd, so a plugin that no longer compiles
+      # fails here rather than at release time.
+      - name: Build plugins and catd
+        run: make plugins catd
+
+      - name: Go tests
+        run: |
+          go vet ./...
+          go test ./...
+          cd sdk/go && go vet ./... && go test ./...
+
+      - name: Type-check the Node SDK and the Discord plugin
+        run: |
+          cd sdk/node && npx tsc -p .
+          cd ../../plugins/discord && npx tsc -p .
+
+  # The desktop shell needs CGO and the platform's webview, so it is checked
+  # on the platform it ships for.
+  desktop:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: desktop/go.sum
+      - name: Vet and build the desktop shell
+        run: |
+          cd desktop
+          go vet ./...
+          go build -o /dev/null .

@@ -4,6 +4,8 @@
 set -e
 cd "$(dirname "$0")/.."
 APP=bin/Cat.app
+# The release workflow passes the tag's version.
+VERSION=${CAT_VERSION:-0.1.0}
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS/plugins" "$APP/Contents/Resources"
 cp bin/cat-desktop "$APP/Contents/MacOS/Cat"
@@ -34,8 +36,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>Cat</string>
   <key>CFBundleIconFile</key><string>Cat</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
