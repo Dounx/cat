@@ -1,0 +1,57 @@
+{
+  "id": "discord",
+  "name": "Discord",
+  "version": "0.1.0",
+  "protocol": 1,
+  "description": "通过 Bot 接收和发送 Discord 消息。使用 Gateway 长连接，不需要公网地址。",
+  "command": ["./cat-plugin-discord"],
+  "capabilities": ["source", "action"],
+  "setup": true,
+  "config_schema": {
+    "type": "object",
+    "required": ["token"],
+    "x-order": ["token", "api_base"],
+    "properties": {
+      "token": { "type": "string", "title": "Bot Token", "format": "password", "description": "Discord 开发者后台 → 你的应用 → Bot → Reset Token。" },
+      "api_base": { "type": "string", "title": "API 地址（可选）", "default": "https://discord.com/api/v10", "description": "使用代理时修改。" }
+    }
+  },
+  "events": [
+    { "type": "message.created", "title": "收到消息" },
+    { "type": "message.edited", "title": "消息被编辑" }
+  ],
+  "actions": [
+    {
+      "name": "reply",
+      "title": "回复（原频道）",
+      "description": "在触发事件所在的频道或私信里回复。输出：message_id。",
+      "params": {
+        "type": "object",
+        "required": ["text"],
+        "x-order": ["text", "quote"],
+        "properties": {
+          "text": { "type": "string", "title": "内容", "format": "textarea" },
+          "quote": { "type": "boolean", "title": "引用原消息", "default": true }
+        }
+      }
+    },
+    {
+      "name": "send",
+      "title": "发送到指定频道",
+      "params": {
+        "type": "object",
+        "required": ["channel_id", "text"],
+        "x-order": ["channel_id", "text"],
+        "properties": {
+          "channel_id": { "type": "string", "title": "频道 ID" },
+          "text": { "type": "string", "title": "内容", "format": "textarea" }
+        }
+      }
+    },
+    {
+      "name": "typing",
+      "title": "显示「正在输入」",
+      "description": "在触发事件所在的频道显示输入状态，适合放在耗时较长的 Agent 步骤之前。"
+    }
+  ]
+}

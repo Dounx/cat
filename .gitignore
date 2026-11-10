@@ -3,3 +3,5 @@
 .DS_Store
 *.db
 *.db-*
+/plugins/*/cat-plugin-*
+node_modules

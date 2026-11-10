@@ -82,6 +82,9 @@ type Host interface {
 	StateSet(key, value string) error
 	// DataDir is a private, persistent directory for this instance.
 	DataDir() string
+	InstanceID() string
+	// SetStatus reports a status change after Start has returned.
+	SetStatus(status, message string)
 }
 
 // Instance is one configured, running copy of a plugin.

@@ -1,0 +1,12 @@
+{
+  "name": "cat-plugin-discord",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/index.ts --compile --outfile cat-plugin-discord",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": { "@cat-hub/plugin-sdk": "file:../../sdk/node" },
+  "devDependencies": { "@types/node": "^26.0.0", "typescript": "^5.9.0" }
+}

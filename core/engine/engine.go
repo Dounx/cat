@@ -366,8 +366,17 @@ func (h *host) StateSet(key, value string) error {
 	return h.e.Store.KVSet("instance:"+h.rec.ID, key, value)
 }
 
+func (h *host) InstanceID() string { return h.rec.ID }
+
+func (h *host) SetStatus(status, message string) { h.e.ReportStatus(h.rec.ID, status, message) }
+
 func (h *host) DataDir() string {
-	dir := filepath.Join(h.e.dataDir, "instances", h.rec.ID)
+	return h.e.InstanceDir(h.rec.ID)
+}
+
+// InstanceDir is the private, persistent directory of an instance.
+func (e *Engine) InstanceDir(instanceID string) string {
+	dir := filepath.Join(e.dataDir, "instances", instanceID)
 	_ = os.MkdirAll(dir, 0o700)
 	return dir
 }

@@ -7,6 +7,7 @@ import type { Instance, Plugin } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import Drawer from '../components/Drawer.vue'
 import SchemaForm from '../components/SchemaForm.vue'
+import SetupWizard from '../components/SetupWizard.vue'
 
 const hub = useHub()
 const editing = ref<null | { plugin: Plugin; id?: string; name: string; enabled: boolean; config: Record<string, any> }>(null)
@@ -24,8 +25,16 @@ async function copy(text: string) {
   hub.notify('已复制')
 }
 
+const wizard = ref<null | { plugin: Plugin; instanceId?: string }>(null)
+
 function add(p: Plugin) {
-  editing.value = { plugin: p, name: p.name, enabled: true, config: {} }
+  if (p.setup) wizard.value = { plugin: p }
+  else editing.value = { plugin: p, name: p.name, enabled: true, config: {} }
+}
+function rerunSetup() {
+  const e = editing.value!
+  editing.value = null
+  wizard.value = { plugin: e.plugin, instanceId: e.id }
 }
 function edit(i: Instance) {
   const p = hub.pluginOf(i.plugin)
@@ -108,9 +117,12 @@ async function remove(i: Instance) {
         <SchemaForm v-model="editing.config" :schema="editing.plugin.config_schema" />
       </div>
       <template #footer>
+        <button v-if="editing.id && editing.plugin.setup" class="btn mr-auto" @click="rerunSetup">重新运行接入向导</button>
         <button class="btn" @click="editing = null">取消</button>
         <button class="btn btn-primary" @click="save">保存</button>
       </template>
     </Drawer>
+
+    <SetupWizard v-if="wizard" :plugin="wizard.plugin" :instance-id="wizard.instanceId" @close="wizard = null; hub.reloadInstances()" />
   </div>
 </template>

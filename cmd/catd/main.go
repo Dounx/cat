@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/dounx/cat/app"
@@ -20,7 +21,9 @@ func main() {
 	flag.StringVar(&opts.Addr, "addr", envOr("CAT_ADDR", "127.0.0.1:7788"), "listen address")
 	flag.StringVar(&opts.DataDir, "data", os.Getenv("CAT_DATA"), "data directory (default ~/.cat)")
 	flag.StringVar(&opts.Token, "token", os.Getenv("CAT_TOKEN"), "API token; required when listening on a non-loopback address")
+	plugins := flag.String("plugins", os.Getenv("CAT_PLUGINS"), "extra plugin directories, separated by "+string(os.PathListSeparator))
 	flag.Parse()
+	opts.PluginDirs = filepath.SplitList(*plugins)
 
 	a, err := app.New(opts)
 	if err != nil {

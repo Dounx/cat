@@ -16,6 +16,7 @@ import (
 	"github.com/dounx/cat/core/api"
 	"github.com/dounx/cat/core/builtin"
 	"github.com/dounx/cat/core/engine"
+	"github.com/dounx/cat/core/pluginhost"
 	"github.com/dounx/cat/core/store"
 	"github.com/dounx/cat/frontend"
 )
@@ -24,13 +25,18 @@ type Options struct {
 	Addr    string // listen address; ":0" style picks a free port
 	DataDir string // default ~/.cat
 	Token   string
+	// PluginDirs are extra directories searched for plugins, ahead of
+	// <data>/plugins and the plugins directory beside the executable.
+	PluginDirs []string
 }
 
 type App struct {
 	Engine  *engine.Engine
 	Store   *store.Store
 	Server  *api.Server
+	Plugins *pluginhost.Host
 	DataDir string
+	opts    Options
 
 	listener net.Listener
 	http     *http.Server
@@ -69,7 +75,7 @@ func New(opts Options) (*App, error) {
 	}
 	ui, _ := fs.Sub(frontend.Dist, "dist")
 	srv := &api.Server{Engine: eng, Token: opts.Token, UI: ui}
-	a := &App{Engine: eng, Store: st, Server: srv, DataDir: opts.DataDir, listener: ln}
+	a := &App{Engine: eng, Store: st, Server: srv, DataDir: opts.DataDir, listener: ln, opts: opts}
 	if err := a.extend(); err != nil {
 		ln.Close()
 		st.Close()
