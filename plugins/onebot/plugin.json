@@ -1,0 +1,69 @@
+{
+  "id": "onebot",
+  "name": "QQ（OneBot）",
+  "version": "0.1.0",
+  "protocol": 1,
+  "description": "通过 OneBot 11 协议收发 QQ 消息。可以自动下载并配置 NapCat（Windows），也可以连接你已经运行的 OneBot 服务。",
+  "command": ["./cat-plugin-onebot"],
+  "capabilities": ["source", "action"],
+  "setup": true,
+  "config_schema": {
+    "type": "object",
+    "x-order": ["mode", "ws_url", "token", "uin"],
+    "properties": {
+      "mode": { "type": "string", "title": "方式", "enum": ["managed", "external"], "default": "external", "description": "managed：由 Cat 启动和管理 NapCat（通过接入向导配置）。external：连接已有的 OneBot 正向 WebSocket 服务。" },
+      "ws_url": { "type": "string", "title": "WebSocket 地址", "default": "ws://127.0.0.1:3001", "description": "OneBot 正向 WebSocket 服务的地址。" },
+      "token": { "type": "string", "title": "访问令牌", "format": "password" },
+      "uin": { "type": "string", "title": "QQ 号（managed 方式用于快速登录）" }
+    }
+  },
+  "events": [
+    { "type": "message.created", "title": "收到消息" },
+    { "type": "notice", "title": "通知（入群、撤回等）" }
+  ],
+  "actions": [
+    {
+      "name": "reply",
+      "title": "回复（原会话）",
+      "description": "在触发事件所在的群或私聊里回复。输出：message_id。",
+      "params": {
+        "type": "object",
+        "required": ["text"],
+        "x-order": ["text", "quote"],
+        "properties": {
+          "text": { "type": "string", "title": "内容", "format": "textarea" },
+          "quote": { "type": "boolean", "title": "引用原消息", "default": true }
+        }
+      }
+    },
+    {
+      "name": "send",
+      "title": "发送到指定会话",
+      "params": {
+        "type": "object",
+        "required": ["conversation_id", "text"],
+        "x-order": ["conversation_id", "text"],
+        "properties": {
+          "conversation_id": { "type": "string", "title": "会话", "description": "group:群号 或 private:QQ号。" },
+          "text": { "type": "string", "title": "内容", "format": "textarea" }
+        }
+      }
+    },
+    { "name": "typing", "title": "显示「正在输入」", "description": "QQ 不支持，此动作什么也不做，仅为与其他平台的规则保持一致。" }
+  ],
+  "dependencies": [
+    {
+      "name": "napcat",
+      "title": "NapCat",
+      "version": "4.18.42",
+      "notice": "NapCat 是第三方开源项目（github.com/NapNeko/NapCatQQ），不是腾讯官方软件。使用它登录 QQ 存在账号被限制的风险，建议使用小号。",
+      "platforms": {
+        "windows/amd64": {
+          "url": "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.42/NapCat.Shell.zip",
+          "sha256": "02e5ff0f79916c1e04c81c1b4590056406fb4293f1f1300c955e71fd08b2829d",
+          "format": "zip"
+        }
+      }
+    }
+  ]
+}
