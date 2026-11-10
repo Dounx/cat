@@ -1,7 +1,10 @@
-// Command cat-plugin-rss watches RSS / Atom feeds and RSSHub routes and emits
-// an event for every new item.
+// Command cat-plugin-rss watches RSS / Atom feeds and emits an event for
+// every new item.
 package main
 
-import cat "github.com/dounx/cat/sdk/go"
+import (
+	"github.com/dounx/cat/plugins/internal/feedwatch"
+	cat "github.com/dounx/cat/sdk/go"
+)
 
-func main() { cat.Run(New()) }
+func main() { cat.Run(feedwatch.New(feedwatch.RSS)) }

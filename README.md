@@ -60,18 +60,27 @@ make app
 
 接入了聊天平台和 Agent 之后，「规则」页会出现「消息 → Agent → 回复」按钮，一键生成最常用的规则。
 
-## 订阅 RSSHub / RSS
+## 订阅 RSS / RSSHub
 
-「接入」→「监控」→ 添加 **RSSHub / RSS**，在「订阅源」里每行填一个：
+RSS 和 RSSHub 是两个插件，都在「接入」→「监控」里。
+
+**RSS**：在「订阅源」里每行填一个 RSS / Atom 源的完整地址：
 
 ```
-/github/issue/DIYgod/RSSHub          # RSSHub 路由，拼在「RSSHub 实例地址」后面
-https://go.dev/blog/feed.atom        # 普通 RSS / Atom 源，填完整地址
+https://go.dev/blog/feed.atom
 ```
 
-每个新条目是一个 `feed.item` 事件：`payload.text` 是「标题 + 摘要 + 链接」，可以直接转发；另有 `title`、`link`、`content`（纯文本全文）、`content_html`、`author`、`categories`、`images`、`published`。`conversation.id` 是订阅源本身，`conversation.name` 是它的标题，可以用来区分不同的源。
+**RSSHub**：在「路由」里每行填一个路由，它们会拼在「实例地址」后面；自建实例设置了 `ACCESS_KEY` 时填「访问密钥」：
 
-新加入的订阅源只记录现有条目，之后出现的才会触发规则。公共实例 `rsshub.app` 经常被限流，建议填自建实例的地址。
+```
+/github/issue/DIYgod/RSSHub
+```
+
+公共实例 `rsshub.app` 经常被限流，建议填自建实例的地址。要订阅多个实例，就添加多个 RSSHub。
+
+两者发出的事件相同：每个新条目是一个 `feed.item` 事件，`payload.text` 是「标题 + 摘要 + 链接」，可以直接转发；另有 `title`、`link`、`content`（纯文本全文）、`content_html`、`author`、`categories`、`images`、`published`。`conversation.id` 是订阅源地址或路由，`conversation.name` 是它的标题，可以用来区分不同的源。
+
+新加入的订阅源和路由只记录现有条目，之后出现的才会触发规则。
 
 ## 监控网页变动
 
@@ -158,7 +167,8 @@ payload.mentioned == true and actor.id in ["123", "456"]
 | Discord | Bot，Gateway |
 | QQ（OneBot） | OneBot 11。Windows 上可自动下载配置 NapCat；其他系统连接你自己运行的 OneBot 服务 |
 | 企业微信 | 自建应用的消息回调 |
-| RSSHub / RSS | 订阅 RSSHub 路由和普通 RSS / Atom 源，有新条目时发出 `feed.item` 事件 |
+| RSS | 订阅 RSS / Atom 源，有新条目时发出 `feed.item` 事件 |
+| RSSHub | 订阅 RSSHub 实例上的路由，有新条目时发出 `feed.item` 事件，支持自建实例和访问密钥 |
 | 网页变动 | 定时检查网页，文字内容有变化时发出 `page.changed` 事件，可用 CSS 选择器只盯一块 |
 | 接口变动 | 定时请求 HTTP 接口，返回的数据有变化时发出 `api.changed` 事件并列出变了的字段，可用字段路径只盯一处 |
 | 定时触发 | 到了设定的时间发出 `schedule.fired` 事件：每天几点、每隔多久，或 cron 表达式 |

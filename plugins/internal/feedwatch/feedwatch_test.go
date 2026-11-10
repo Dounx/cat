@@ -1,4 +1,4 @@
-package main
+package feedwatch
 
 import (
 	"fmt"
@@ -72,7 +72,7 @@ func feedItem(n int) string {
 func TestNewItemsOnly(t *testing.T) {
 	site := newSite(t)
 	site.set("/feed.xml", rss(feedItem(2), feedItem(1)))
-	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"feeds": "# my feeds\n" + site.URL + "/feed.xml\n"}})
+	h := cattest.New(t, New(RSS), cattest.Options{Config: map[string]any{"feeds": "# my feeds\n" + site.URL + "/feed.xml\n"}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestSeenSurvivesRestart(t *testing.T) {
 	site := newSite(t)
 	site.set("/feed.xml", rss(feedItem(1)))
 	cfg := map[string]any{"feeds": site.URL + "/feed.xml"}
-	h := cattest.New(t, New(), cattest.Options{Config: cfg})
+	h := cattest.New(t, New(RSS), cattest.Options{Config: cfg})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestSeenSurvivesRestart(t *testing.T) {
 		t.Fatal("no state saved")
 	}
 	site.set("/feed.xml", rss(feedItem(2), feedItem(1)))
-	h2 := cattest.New(t, New(), cattest.Options{Config: cfg, State: map[string]string{key: saved}})
+	h2 := cattest.New(t, New(RSS), cattest.Options{Config: cfg, State: map[string]string{key: saved}})
 	if err := h2.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestSeenSurvivesRestart(t *testing.T) {
 func TestEmitExisting(t *testing.T) {
 	site := newSite(t)
 	site.set("/feed.xml", rss(feedItem(2), feedItem(1)))
-	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"feeds": site.URL + "/feed.xml", "emit_existing": true}})
+	h := cattest.New(t, New(RSS), cattest.Options{Config: map[string]any{"feeds": site.URL + "/feed.xml", "emit_existing": true}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -170,15 +170,15 @@ func TestRSSHubRoute(t *testing.T) {
 	site := newSite(t)
 	site.key = "s3cret"
 	site.set("/github/issue/DIYgod/RSSHub", rss(feedItem(1)))
-	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{
-		"feeds":       "rsshub://github/issue/DIYgod/RSSHub?limit=5\n/missing/route",
-		"rsshub_base": site.URL + "/", "access_key": "s3cret", "emit_existing": true,
+	h := cattest.New(t, New(RSSHub), cattest.Options{Config: map[string]any{
+		"routes":   "rsshub://github/issue/DIYgod/RSSHub?limit=5\n/missing/route",
+		"base_url": site.URL + "/", "access_key": "s3cret", "emit_existing": true,
 	}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
 	}
 	ev := h.NextEvent()
-	if ev.Conversation.ID != "/github/issue/DIYgod/RSSHub?limit=5" || ev.Payload["rsshub"] != true {
+	if ev.Conversation.ID != "/github/issue/DIYgod/RSSHub?limit=5" || ev.Payload["feed"] != "/github/issue/DIYgod/RSSHub?limit=5" {
 		t.Fatalf("event: %+v", ev)
 	}
 	site.mu.Lock()
@@ -192,22 +192,29 @@ func TestRSSHubRoute(t *testing.T) {
 	if err != nil || out["failed"] != float64(1) || !strings.Contains(fmt.Sprint(out["errors"]), "/missing/route：HTTP 404") {
 		t.Fatalf("out=%v err=%v", out, err)
 	}
-	if _, err := h.Invoke("check", map[string]any{"feed": "/missing/route"}, nil); err == nil || strings.Contains(err.Error(), "s3cret") {
+	if _, err := h.Invoke("check", map[string]any{"route": "/missing/route"}, nil); err == nil || strings.Contains(err.Error(), "s3cret") {
 		t.Fatalf("err=%v", err)
 	}
-	if _, err := h.Invoke("check", map[string]any{"feed": "/nope"}, nil); err == nil {
+	if _, err := h.Invoke("check", map[string]any{"route": "/nope"}, nil); err == nil {
 		t.Fatal("expected an error for an unknown feed")
 	}
 }
 
 func TestBadConfig(t *testing.T) {
-	for _, feeds := range []string{"", "# nothing\n", "example.com/feed"} {
-		h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"feeds": feeds}})
+	// Each plugin takes its own kind of subscription and points at the other.
+	for _, feeds := range []string{"", "# nothing\n", "example.com/feed", "/github/issue/DIYgod/RSSHub", "rsshub://a/b"} {
+		h := cattest.New(t, New(RSS), cattest.Options{Config: map[string]any{"feeds": feeds}})
 		if err := h.Start(); err == nil {
 			t.Fatalf("feeds %q: expected an error", feeds)
 		}
 	}
-	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"feeds": "/a", "rsshub_base": "rsshub.app"}})
+	for _, routes := range []string{"", "github/issue", "https://example.com/feed.xml"} {
+		h := cattest.New(t, New(RSSHub), cattest.Options{Config: map[string]any{"routes": routes}})
+		if err := h.Start(); err == nil {
+			t.Fatalf("routes %q: expected an error", routes)
+		}
+	}
+	h := cattest.New(t, New(RSSHub), cattest.Options{Config: map[string]any{"routes": "/a", "base_url": "rsshub.app"}})
 	if err := h.Start(); err == nil {
 		t.Fatal("expected an error for a base without scheme")
 	}
@@ -276,15 +283,15 @@ func TestRSSHubErrorPage(t *testing.T) {
 		fmt.Fprint(w, page)
 	}))
 	defer hub.Close()
-	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"feeds": "/upstream\n/auth", "rsshub_base": hub.URL}})
+	h := cattest.New(t, New(RSSHub), cattest.Options{Config: map[string]any{"routes": "/upstream\n/auth", "base_url": hub.URL}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
 	}
-	_, err := h.Invoke("check", map[string]any{"feed": "/upstream"}, nil)
+	_, err := h.Invoke("check", map[string]any{"route": "/upstream"}, nil)
 	if err == nil || !strings.Contains(err.Error(), `HTTP 503（RSSHub：FetchError: [GET] "https://example.com/best": 419）`) {
 		t.Fatalf("err=%v", err)
 	}
-	_, err = h.Invoke("check", map[string]any{"feed": "/auth"}, nil)
+	_, err = h.Invoke("check", map[string]any{"route": "/auth"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "检查访问密钥") {
 		t.Fatalf("err=%v", err)
 	}

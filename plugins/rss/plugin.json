@@ -1,40 +1,28 @@
 {
   "id": "rss",
-  "name": "RSSHub / RSS",
-  "version": "0.1.0",
+  "name": "RSS",
+  "version": "0.2.0",
   "protocol": 1,
-  "description": "订阅 RSSHub 路由和普通 RSS / Atom 源，有新条目时发出事件。定时轮询，不需要公网地址。",
+  "description": "订阅 RSS / Atom 源，有新条目时发出事件。定时轮询，不需要公网地址。",
   "command": ["./cat-plugin-rss"],
   "category": "monitor",
   "capabilities": ["source", "action"],
   "config_schema": {
     "type": "object",
     "required": ["feeds"],
-    "x-order": ["feeds", "interval", "rsshub_base", "access_key", "emit_existing"],
+    "x-order": ["feeds", "interval", "emit_existing"],
     "properties": {
       "feeds": {
         "type": "string",
         "title": "订阅源",
         "format": "textarea",
-        "description": "每行一个。RSSHub 路由以 / 开头（如 /github/issue/DIYgod/RSSHub，也可写成 rsshub://github/issue/DIYgod/RSSHub）；普通 RSS / Atom 源填完整地址（https://…）。# 开头的行是注释。"
+        "description": "每行一个 RSS / Atom 源的完整地址（https://…）。# 开头的行是注释。"
       },
       "interval": {
         "type": "integer",
         "title": "检查间隔（分钟）",
         "default": 10,
-        "description": "最小 1 分钟。公共 RSSHub 实例有缓存和限流，间隔太短没有意义。"
-      },
-      "rsshub_base": {
-        "type": "string",
-        "title": "RSSHub 实例地址",
-        "default": "https://rsshub.app",
-        "description": "RSSHub 路由会拼在这个地址后面。公共实例经常被限流，建议填自建实例。"
-      },
-      "access_key": {
-        "type": "string",
-        "title": "RSSHub 访问密钥（可选）",
-        "format": "password",
-        "description": "自建实例设置了 ACCESS_KEY 时填写，只会附加在 RSSHub 路由的请求上。"
+        "description": "最小 1 分钟。"
       },
       "emit_existing": {
         "type": "boolean",

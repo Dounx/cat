@@ -1,0 +1,63 @@
+{
+  "id": "rsshub",
+  "name": "RSSHub",
+  "version": "0.1.0",
+  "protocol": 1,
+  "description": "订阅 RSSHub 实例上的路由，有新条目时发出事件。定时轮询，不需要公网地址。",
+  "command": ["./cat-plugin-rsshub"],
+  "category": "monitor",
+  "capabilities": ["source", "action"],
+  "config_schema": {
+    "type": "object",
+    "required": ["routes"],
+    "x-order": ["routes", "base_url", "access_key", "interval", "emit_existing"],
+    "properties": {
+      "routes": {
+        "type": "string",
+        "title": "路由",
+        "format": "textarea",
+        "description": "每行一个，以 / 开头（如 /github/issue/DIYgod/RSSHub，也可写成 rsshub://github/issue/DIYgod/RSSHub）。# 开头的行是注释。"
+      },
+      "base_url": {
+        "type": "string",
+        "title": "实例地址",
+        "default": "https://rsshub.app",
+        "description": "路由会拼在这个地址后面。公共实例经常被限流，建议填自建实例。"
+      },
+      "access_key": {
+        "type": "string",
+        "title": "访问密钥（可选）",
+        "format": "password",
+        "description": "自建实例设置了 ACCESS_KEY 时填写。"
+      },
+      "interval": {
+        "type": "integer",
+        "title": "检查间隔（分钟）",
+        "default": 10,
+        "description": "最小 1 分钟。公共 RSSHub 实例有缓存和限流，间隔太短没有意义。"
+      },
+      "emit_existing": {
+        "type": "boolean",
+        "title": "首次订阅时把已有条目也当作新条目",
+        "description": "默认关闭：新加入的路由只记录现有条目，之后出现的才发事件。"
+      }
+    }
+  },
+  "events": [
+    { "type": "feed.item", "title": "新条目" }
+  ],
+  "actions": [
+    {
+      "name": "check",
+      "title": "立即检查",
+      "description": "不等下一次轮询，马上检查路由；新条目照常发出事件。输出：checked、new、failed。",
+      "params": {
+        "type": "object",
+        "x-order": ["route"],
+        "properties": {
+          "route": { "type": "string", "title": "路由（可选）", "description": "和配置里的写法一致；留空检查全部。" }
+        }
+      }
+    }
+  ]
+}

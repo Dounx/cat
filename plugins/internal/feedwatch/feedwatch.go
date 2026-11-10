@@ -1,4 +1,8 @@
-package main
+// Package feedwatch is the engine behind the RSS and RSSHub plugins: it polls
+// feeds, remembers which items it has seen and emits an event for each new
+// one. The two plugins differ only in what a subscription is — a feed URL, or
+// a route on an RSSHub instance.
+package feedwatch
 
 import (
 	"context"
@@ -55,61 +59,107 @@ type watcher struct {
 	client       *http.Client
 }
 
-// parseSubs turns the "feeds" setting into subscriptions.
-func parseSubs(feeds, hub, key string) ([]*sub, error) {
-	hub = strings.TrimRight(strings.TrimSpace(hub), "/")
-	if hub == "" {
-		hub = defaultHub
+func isURL(s string) bool {
+	s = strings.ToLower(s)
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}
+
+// route normalises an RSSHub route: "rsshub://a/b" and "/a/b" are the same.
+// It reports false for anything that isn't one.
+func route(s string) (string, bool) {
+	if strings.HasPrefix(strings.ToLower(s), "rsshub://") {
+		return "/" + strings.TrimLeft(s[len("rsshub://"):], "/"), true
 	}
-	if u, err := url.Parse(hub); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, errors.New("RSSHub 实例地址无效，应以 http:// 或 https:// 开头")
-	}
+	return s, strings.HasPrefix(s, "/")
+}
+
+// lines splits a multi-line setting, dropping blanks, comments and repeats.
+func lines(text string, each func(line string) (*sub, error)) ([]*sub, error) {
 	var out []*sub
 	seen := map[string]bool{}
-	for _, line := range strings.Split(feeds, "\n") {
+	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		s := &sub{Spec: line}
-		switch lower := strings.ToLower(line); {
-		case strings.HasPrefix(lower, "rsshub://"):
-			s.Spec, s.Hub = "/"+strings.TrimLeft(line[len("rsshub://"):], "/"), true
-		case strings.HasPrefix(line, "/"):
-			s.Hub = true
-		case strings.HasPrefix(lower, "http://"), strings.HasPrefix(lower, "https://"):
-		default:
-			return nil, fmt.Errorf("看不懂的订阅源「%s」：RSSHub 路由以 / 开头，普通源填完整的 http(s) 地址", line)
+		s, err := each(line)
+		if err != nil {
+			return nil, err
 		}
-		s.URL = s.Spec
-		if s.Hub {
-			s.URL = hub + s.Spec
+		if u, err := url.Parse(s.URL); err != nil || u.Host == "" {
+			return nil, fmt.Errorf("地址无效：%s", line)
 		}
-		u, err := url.Parse(s.URL)
-		if err != nil || u.Host == "" {
-			return nil, fmt.Errorf("订阅源地址无效：%s", line)
+		if !seen[s.Spec] {
+			seen[s.Spec] = true
+			out = append(out, s)
 		}
-		if s.Hub && key != "" {
+	}
+	return out, nil
+}
+
+// parseFeeds turns the RSS plugin's "feeds" setting into subscriptions.
+func parseFeeds(feeds string) ([]*sub, error) {
+	out, err := lines(feeds, func(line string) (*sub, error) {
+		if _, ok := route(line); ok {
+			return nil, fmt.Errorf("「%s」是 RSSHub 路由，请用 RSSHub 插件订阅", line)
+		}
+		if !isURL(line) {
+			return nil, fmt.Errorf("看不懂的订阅源「%s」：请填完整的 http(s) 地址", line)
+		}
+		return &sub{Spec: line, URL: line}, nil
+	})
+	if err == nil && len(out) == 0 {
+		err = errors.New("还没有填订阅源")
+	}
+	return out, err
+}
+
+// parseRoutes turns the RSSHub plugin's "routes" setting into subscriptions
+// on the instance at hub.
+func parseRoutes(routes, hub, key string) ([]*sub, error) {
+	hub = strings.TrimRight(strings.TrimSpace(hub), "/")
+	if hub == "" {
+		hub = defaultHub
+	}
+	if u, err := url.Parse(hub); err != nil || !isURL(hub) || u.Host == "" {
+		return nil, errors.New("RSSHub 实例地址无效，应以 http:// 或 https:// 开头")
+	}
+	out, err := lines(routes, func(line string) (*sub, error) {
+		spec, ok := route(line)
+		switch {
+		case isURL(line):
+			return nil, fmt.Errorf("「%s」是完整地址，不是路由：普通 RSS / Atom 源请用 RSS 插件订阅", line)
+		case !ok:
+			return nil, fmt.Errorf("看不懂的路由「%s」：路由以 / 开头，如 /github/issue/DIYgod/RSSHub", line)
+		}
+		s := &sub{Spec: spec, URL: hub + spec, Hub: true}
+		if u, err := url.Parse(s.URL); err == nil && key != "" {
 			q := u.Query()
 			q.Set("key", key)
 			u.RawQuery = q.Encode()
 			s.URL = u.String()
 		}
-		if seen[s.Spec] {
-			continue
-		}
-		seen[s.Spec] = true
-		out = append(out, s)
+		return s, nil
+	})
+	if err == nil && len(out) == 0 {
+		err = errors.New("还没有填路由")
 	}
-	if len(out) == 0 {
-		return nil, errors.New("还没有填订阅源")
-	}
-	return out, nil
+	return out, err
 }
 
-func newWatcher(cfg map[string]any) (*watcher, error) {
+func newWatcher(kind Kind, cfg map[string]any) (*watcher, error) {
 	str := func(k string) string { s, _ := cfg[k].(string); return strings.TrimSpace(s) }
-	subs, err := parseSubs(str("feeds"), str("rsshub_base"), str("access_key"))
+	var (
+		subs   []*sub
+		secret string
+		err    error
+	)
+	if kind == RSSHub {
+		secret = str("access_key")
+		subs, err = parseRoutes(str("routes"), str("base_url"), secret)
+	} else {
+		subs, err = parseFeeds(str("feeds"))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +177,7 @@ func newWatcher(cfg map[string]any) (*watcher, error) {
 	}
 	return &watcher{
 		subs: subs, interval: time.Duration(minutes * float64(time.Minute)),
-		secret: str("access_key"), emitExisting: cfg["emit_existing"] == true,
+		secret: secret, emitExisting: cfg["emit_existing"] == true,
 		client: &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
@@ -340,7 +390,6 @@ func (w *watcher) event(s *sub, f *feed, it item) cat.Event {
 		"feed":         s.Spec,
 		"feed_title":   f.Title,
 		"feed_link":    f.Link,
-		"rsshub":       s.Hub,
 	}
 	if it.Author != "" {
 		payload["author"] = it.Author
@@ -435,7 +484,7 @@ func (w *watcher) poll(ctx context.Context, h *cat.Host) {
 		// feed is reported in the log and shouldn't hide the healthy ones.
 		next := ""
 		if len(res.Errors) == len(w.subs) {
-			next = "订阅源全部获取失败，将继续重试：" + res.Errors[0]
+			next = "全部获取失败，将继续重试：" + res.Errors[0]
 		}
 		if next != status {
 			if next != "" {
@@ -453,16 +502,29 @@ func (w *watcher) poll(ctx context.Context, h *cat.Host) {
 	}
 }
 
-// New builds the plugin.
-func New() cat.Plugin {
+// Kind is what a plugin's subscriptions are.
+type Kind int
+
+const (
+	RSS    Kind = iota // feed URLs, in the "feeds" setting
+	RSSHub             // routes on one RSSHub instance, in the "routes" setting
+)
+
+// New builds a plugin of the given kind. Its "check" action takes the
+// subscription to check in "feed" (RSS) or "route" (RSSHub).
+func New(kind Kind) cat.Plugin {
 	var w *watcher
+	param, noun := "feed", "订阅源"
+	if kind == RSSHub {
+		param, noun = "route", "路由"
+	}
 	return cat.Plugin{
 		Start: func(ctx context.Context, h *cat.Host) error {
 			var err error
-			if w, err = newWatcher(h.Config); err != nil {
+			if w, err = newWatcher(kind, h.Config); err != nil {
 				return err
 			}
-			h.Log("info", "订阅 %d 个源，每 %s 检查一次", len(w.subs), w.interval)
+			h.Log("info", "订阅 %d 个%s，每 %s 检查一次", len(w.subs), noun, w.interval)
 			go w.poll(ctx, h)
 			return nil
 		},
@@ -472,10 +534,10 @@ func New() cat.Plugin {
 					return nil, errors.New("实例尚未启动")
 				}
 				subs := w.subs
-				if want, _ := p["feed"].(string); strings.TrimSpace(want) != "" {
+				if want, _ := p[param].(string); strings.TrimSpace(want) != "" {
 					want = strings.TrimSpace(want)
-					if strings.HasPrefix(strings.ToLower(want), "rsshub://") {
-						want = "/" + strings.TrimLeft(want[len("rsshub://"):], "/")
+					if kind == RSSHub {
+						want, _ = route(want)
 					}
 					subs = nil
 					for _, s := range w.subs {
@@ -484,7 +546,7 @@ func New() cat.Plugin {
 						}
 					}
 					if subs == nil {
-						return nil, fmt.Errorf("配置里没有这个订阅源：%s", want)
+						return nil, fmt.Errorf("配置里没有这个%s：%s", noun, want)
 					}
 				}
 				res := w.round(ctx, h, subs)
