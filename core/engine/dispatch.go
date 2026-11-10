@@ -56,6 +56,15 @@ func (e *Engine) SaveRule(r rules.Rule) (rules.Rule, error) {
 	if r.Name == "" {
 		return r, fmt.Errorf("规则名称不能为空")
 	}
+	if r.Graph != nil {
+		// a graph stands in for the single condition and the list of steps
+		r.Condition, r.Steps = "", []rules.Step{}
+		for _, n := range r.Graph.Nodes {
+			if n.Kind == rules.KindAction && (n.Instance == "" || n.Action == "") {
+				return r, fmt.Errorf("动作 %s 缺少目标或动作", n.ID)
+			}
+		}
+	}
 	seen := map[string]bool{}
 	for i := range r.Steps {
 		s := &r.Steps[i]
@@ -142,7 +151,13 @@ func (e *Engine) dispatch(ev *event.Event, onlyRule string, replay bool) int {
 		if !r.Enabled && !(replay && onlyRule != "") {
 			continue
 		}
-		ok, err := r.Match(ev)
+		// Replays skip throttling. Otherwise a throttle node that would hold
+		// the event back is looked at here, and counted when the rule runs.
+		var look rules.Gate
+		if !replay {
+			look = func(n *rules.Node, env map[string]any) bool { return !e.held(r.ID, n, env, false) }
+		}
+		ok, err := r.MatchPast(ev, look)
 		e.mu.Lock()
 		if err != nil {
 			e.ruleErrs[r.ID] = "条件求值失败：" + err.Error()
@@ -188,6 +203,31 @@ func (e *Engine) throttled(r *rules.Compiled, ev *event.Event) bool {
 	return false
 }
 
+// held reports whether a throttle node holds a walk back: whether it let one
+// past, for the same key, less than its window ago. With count set, a walk
+// that is not held starts a new window.
+func (e *Engine) held(ruleID string, n *rules.Node, env map[string]any, count bool) bool {
+	if n.ThrottleSeconds <= 0 {
+		return false
+	}
+	key := ruleID + "\x00" + n.ID
+	if n.ThrottleKey != "" {
+		if v, err := rules.Eval(n.ThrottleKey, env); err == nil {
+			key += "\x00" + fmt.Sprint(v)
+		}
+	}
+	now := time.Now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if last, ok := e.throttle[key]; ok && now.Sub(last) < time.Duration(n.ThrottleSeconds)*time.Second {
+		return true
+	}
+	if count {
+		e.throttle[key] = now
+	}
+	return false
+}
+
 // TestCondition evaluates a condition against a stored event without side effects.
 func (e *Engine) TestCondition(condition, eventID string) (bool, error) {
 	ev, err := e.Store.GetEvent(eventID)
@@ -208,10 +248,21 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) {
 		ID: id.New(), RuleID: r.ID, RuleName: r.Name, EventID: ev.ID,
 		Status: "running", StartedAt: time.Now(), Steps: []store.StepResult{}, Replay: replay,
 	}
-	e.saveRun(run)
+	// A graph rule's run is recorded from its first action on: an event that
+	// a throttle holds back after all (another got past it in the meantime),
+	// or that takes a branch leading nowhere, leaves no run behind.
+	recorded := r.Graph == nil
+	if recorded {
+		e.saveRun(run)
+	}
 	outputs := map[string]any{}
 	failed := false
-	for _, step := range r.Steps {
+	// act runs one step and reports whether what follows it may run.
+	act := func(step rules.Step) bool {
+		if !recorded {
+			recorded = true
+			e.saveRun(run)
+		}
 		res := e.runStep(step, ev, r.ID, run.ID, outputs)
 		run.Steps = append(run.Steps, res)
 		if res.Output != nil {
@@ -222,10 +273,30 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) {
 		if res.Error != "" {
 			failed = true
 			if !step.ContinueOnError {
-				break
+				return false
 			}
 		}
 		e.saveRun(run)
+		return true
+	}
+	if r.Graph != nil {
+		// A failed action ends its own branch; the other branches still run.
+		r.Walk(ev, outputs, act, func(nodeID string, err error) {
+			failed, recorded = true, true
+			run.Steps = append(run.Steps, store.StepResult{ID: nodeID, Action: "condition", Error: "条件求值失败：" + err.Error()})
+			e.saveRun(run)
+		}, func(n *rules.Node, env map[string]any) bool {
+			return replay || !e.held(r.ID, n, env, true)
+		})
+	} else {
+		for _, step := range r.Steps {
+			if !act(step) {
+				break
+			}
+		}
+	}
+	if !recorded {
+		return
 	}
 	now := time.Now()
 	run.FinishedAt = &now

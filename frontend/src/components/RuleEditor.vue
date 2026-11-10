@@ -1,190 +1,937 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-vue-next'
-import { useHub, clock, summarize } from '../hub'
+// The rule editor: a canvas on which the rule is wired up as a graph, a panel
+// that edits the node picked there, and a bar of the things done to the rule
+// as a whole.
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type Component } from 'vue'
+import {
+  ArrowLeft,
+  Bot,
+  ChevronRight,
+  ClipboardPaste,
+  Copy,
+  CopyPlus,
+  Filter,
+  LayoutGrid,
+  Play,
+  Radar,
+  Reply,
+  Search,
+  MessageSquare,
+  Maximize,
+  Plus,
+  Redo2,
+  Settings2,
+  Timer,
+  Trash2,
+  Undo2,
+  Unlink,
+  Wrench,
+  X,
+  Zap,
+} from 'lucide-vue-next'
+import { useHub, clock, summarize, timeAgo } from '../hub'
 import { del, post, put } from '../api'
-import type { ActionSpec, Rule, Step } from '../types'
-import { commonFields, compile, operators, type Builder } from '../condition'
+import type { ActionSpec, Instance, Plugin, Rule } from '../types'
+import { commonFields, operators } from '../condition'
+import {
+  NODE_H,
+  NODE_W,
+  blankNode,
+  clipboard,
+  conditionOf,
+  edgeKey,
+  freshId,
+  fromRule,
+  layout,
+  toRule,
+  typesOf,
+  upstreamActions,
+  wouldLoop,
+  type Doc,
+  type ENode,
+} from '../graph'
 import Drawer from './Drawer.vue'
+import ContextMenu, { type MenuItem } from './ContextMenu.vue'
+import FlowCanvas, { type CanvasNode, type Point } from './FlowCanvas.vue'
 import SchemaForm from './SchemaForm.vue'
+import SetupWizard from './SetupWizard.vue'
+import type { VarGroup } from './VarPicker.vue'
 
 const props = defineProps<{ rule: Rule }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
 const hub = useHub()
 
-const rule = reactive<Rule>(JSON.parse(JSON.stringify(props.rule)))
-rule.sources ||= []
-rule.steps ||= []
-const builder = reactive<Builder>(
-  rule.meta?.builder || { mode: rule.condition ? 'expr' : 'builder', join: 'and', rows: [] },
-)
-const typesText = ref((rule.types || []).join(', '))
-const testEventId = ref('')
-const testResult = ref<null | { matched: boolean; error?: string }>(null)
+const declared = new Set(hub.plugins.flatMap((p) => p.events?.map((e) => e.type) || []))
 
+const doc = reactive<Doc>(fromRule(props.rule, declared))
+const canvas = ref<InstanceType<typeof FlowCanvas>>()
+
+// What is picked on the canvas: a node (by its id) or a wire (by its key).
+// The panel shows for a node.
+const sel = ref<string | null>(props.rule.id ? null : (doc.nodes[0]?.id ?? null))
+const node = computed(() => doc.nodes.find((n) => n.id === sel.value))
+const panel = computed(() => !!node.value)
+const PANEL_W = 468
+
+// ---- trigger ----
 const sourceInstances = computed(() =>
   hub.instances.filter((i) => hub.pluginOf(i.plugin)?.capabilities.includes('source')),
 )
 const actionInstances = computed(() => hub.instances.filter((i) => hub.pluginOf(i.plugin)?.actions?.length))
-const knownTypes = computed(() => [...new Set(hub.plugins.flatMap((p) => p.events?.map((e) => e.type) || []))])
-const condition = computed(() => (builder.mode === 'builder' ? compile(builder) : rule.condition || ''))
-const scopedEvents = computed(() =>
-  hub.events.filter((e) => !rule.sources!.length || rule.sources!.includes(e.source)).slice(0, 30),
-)
+const triggers = computed(() => doc.nodes.filter((n) => n.kind === 'trigger'))
+// The instances whose events a trigger listens to: the chosen ones, or all.
+const listening = (t: ENode) =>
+  t.sources.length ? sourceInstances.value.filter((i) => t.sources.includes(i.id)) : sourceInstances.value
+// Every instance some trigger of the rule listens to.
+const allListening = computed(() => {
+  const ids = new Set(triggers.value.flatMap((t) => listening(t).map((i) => i.id)))
+  return sourceInstances.value.filter((i) => ids.has(i.id))
+})
+const eventsOf = (pluginId: string) => hub.pluginOf(pluginId)?.events || []
+const typeTitle = (type: string) => hub.plugins.flatMap((p) => p.events || []).find((e) => e.type === type)?.title
+
+// The events on offer for a trigger: what its sources say they emit, each with
+// who emits it and the latest one actually received, so it reads as a real thing.
+function offered(t: ENode) {
+  const rows = new Map<string, { type: string; title: string; from: string[]; stray?: boolean }>()
+  for (const inst of listening(t)) {
+    for (const e of eventsOf(inst.plugin)) {
+      const row = rows.get(e.type) || { type: e.type, title: e.title, from: [] }
+      row.from.push(inst.name)
+      rows.set(e.type, row)
+    }
+  }
+  // still ticked, though no listened-to source emits it any more
+  for (const type of t.pickedTypes) {
+    if (!rows.has(type)) rows.set(type, { type, title: typeTitle(type) || type, from: [], stray: true })
+  }
+  const ids = new Set(listening(t).map((i) => i.id))
+  return [...rows.values()].map((r) => ({
+    ...r,
+    last: hub.events.find((e) => e.type === r.type && ids.has(e.source)),
+  }))
+}
+function toggle(list: string[], value: string) {
+  const i = list.indexOf(value)
+  if (i >= 0) list.splice(i, 1)
+  else list.push(value)
+}
+const triggerTitle = (t: ENode) => (t.sources.length ? t.sources.map(hub.instanceName).join('、') : '任意来源')
+const triggerSummary = (t: ENode) => {
+  const types = typesOf(t)
+  return types.length ? types.map((x) => typeTitle(x) || x).join('、') : '所有事件'
+}
+
+// ---- conditions ----
+const testEventId = ref('')
+const testResult = ref<null | { matched: boolean; error?: string }>(null)
+const scopedEvents = computed(() => {
+  const ids = new Set(allListening.value.map((i) => i.id))
+  return hub.events.filter((e) => ids.has(e.source)).slice(0, 30)
+})
+// The event the editor shows as an example: the one picked for testing, else the latest in scope.
+const sampleEvent = computed(() => hub.events.find((e) => e.id === testEventId.value) || scopedEvents.value[0])
 const fieldHints = computed(() => {
-  const ev = hub.events.find((e) => e.id === testEventId.value) || scopedEvents.value[0]
-  const extra = ev ? Object.keys(ev.payload || {}).map((k) => `payload.${k}`) : []
+  const extra = Object.keys(sampleEvent.value?.payload || {}).map((k) => `payload.${k}`)
   return [...new Set([...commonFields, ...extra])]
 })
-
-watch([condition, testEventId], () => {
+function conditionTitle(n: ENode): string {
+  if (n.builder.mode === 'expr') return n.expr.trim() || '总是成立'
+  const rows = n.builder.rows.filter((r) => r.field.trim())
+  if (!rows.length) return '总是成立'
+  return rows
+    .map((r) => {
+      const op = operators.find((o) => o.id === r.op)
+      return [r.field, op?.label, op?.noValue ? '' : r.value].filter(Boolean).join(' ')
+    })
+    .join(n.builder.join === 'and' ? ' 且 ' : ' 或 ')
+}
+// Switching to the expression editor keeps what the builder had compiled.
+function showExpression(n: ENode) {
+  n.expr = conditionOf(n)
+  n.builder.mode = 'expr'
+}
+watch([sel, () => node.value && conditionOf(node.value), testEventId], () => {
   testResult.value = null
 })
-
-// Switching to the expression editor keeps what the builder had compiled.
-function showExpression() {
-  rule.condition = condition.value
-  builder.mode = 'expr'
-}
-
-function toggleSource(id: string) {
-  const i = rule.sources!.indexOf(id)
-  if (i >= 0) rule.sources!.splice(i, 1)
-  else rule.sources!.push(id)
-}
-
-// Actions offered for a step. "$source" replies through whichever instance
-// emitted the event, so offer what the rule's possible sources can do.
-function actionsFor(step: Step): ActionSpec[] {
-  if (step.instance !== '$source') return hub.pluginOf(hub.instanceOf(step.instance)?.plugin || '')?.actions || []
-  const pool = rule.sources!.length
-    ? sourceInstances.value.filter((i) => rule.sources!.includes(i.id))
-    : sourceInstances.value
-  const seen = new Map<string, ActionSpec>()
-  for (const i of pool) for (const a of hub.pluginOf(i.plugin)?.actions || []) seen.set(a.name, a)
-  return [...seen.values()]
-}
-const specOf = (step: Step) => actionsFor(step).find((a) => a.name === step.action)
-
-// Start a step's parameters from the defaults its schema declares.
-function resetParams(step: Step) {
-  const params: Record<string, unknown> = {}
-  for (const [key, s] of Object.entries(specOf(step)?.params?.properties || {})) {
-    if (s.default !== undefined) params[key] = s.default
-  }
-  step.params = params
-}
-function addStep() {
-  const first = actionInstances.value[0]
-  const step: Step = {
-    id: `s${rule.steps.length + 1}`,
-    instance: first?.id || '',
-    action: hub.pluginOf(first?.plugin || '')?.actions?.[0]?.name || '',
-    params: {},
-  }
-  resetParams(step)
-  rule.steps.push(step)
-}
-function onTarget(step: Step) {
-  const list = actionsFor(step)
-  if (!list.some((a) => a.name === step.action)) step.action = list[0]?.name || ''
-  resetParams(step)
-}
-function move(i: number, d: number) {
-  const [s] = rule.steps.splice(i, 1)
-  rule.steps.splice(i + d, 0, s)
-}
-
-async function test() {
+async function test(n: ENode) {
   const id = testEventId.value || scopedEvents.value[0]?.id
   if (!id) return hub.notify('还没有可用于测试的事件', true)
   testEventId.value = id
-  testResult.value = (await hub.run(() => post('/rules/test', { condition: condition.value, event_id: id }))) || null
+  testResult.value = (await hub.run(() => post('/rules/test', { condition: conditionOf(n), event_id: id }))) || null
 }
 
-function payload(): Rule {
-  return {
-    ...JSON.parse(JSON.stringify(rule)),
-    types: typesText.value.split(/[,，\s]+/).filter(Boolean),
-    condition: condition.value,
-    throttle_seconds: Number(rule.throttle_seconds) || 0,
-    meta: { ...rule.meta, builder: JSON.parse(JSON.stringify(builder)) },
-    error: undefined,
+// ---- throttles ----
+const throttleTitle = (n: ENode) => (Number(n.seconds) > 0 ? `${n.seconds} 秒内只放行一次` : '不限制')
+
+// ---- actions ----
+// Actions offered for a node. "$source" replies through whichever instance
+// emitted the event, so offer what the rule's possible sources can do.
+function actionsFor(n: ENode): ActionSpec[] {
+  if (n.instance !== '$source') return hub.pluginOf(hub.instanceOf(n.instance)?.plugin || '')?.actions || []
+  const seen = new Map<string, ActionSpec>()
+  for (const i of allListening.value) for (const a of hub.pluginOf(i.plugin)?.actions || []) seen.set(a.name, a)
+  return [...seen.values()]
+}
+const specOf = (n: ENode) => actionsFor(n).find((a) => a.name === n.action)
+const targetName = (n: ENode) => (n.instance === '$source' ? '原路回复' : hub.instanceName(n.instance) || '未选择')
+const actionTitle = (n: ENode) => specOf(n)?.title || n.action || '未选择动作'
+// A line of what the action is given: its first free-text parameter, which
+// says more than a choice such as the HTTP method.
+function actionSummary(n: ENode): string {
+  const props = specOf(n)?.params?.properties || {}
+  const text = Object.entries(n.params || {}).find(([k, v]) => typeof v === 'string' && v.trim() && !props[k]?.enum)
+  return text ? String(text[1]).replace(/\s+/g, ' ') : ''
+}
+
+// Start an action's parameters from the defaults its schema declares.
+function resetParams(n: ENode) {
+  const params: Record<string, unknown> = {}
+  for (const [key, s] of Object.entries(specOf(n)?.params?.properties || {})) {
+    if (s.default !== undefined) params[key] = s.default
   }
+  n.params = params
+}
+// ---- choosing what carries an action out ----
+// An action node is told apart by what it uses: Claude Code, QQ, an HTTP
+// request. Adding one, or changing what one uses, opens a list of exactly
+// those things: what needs no setting up, what is set up, and what could be,
+// which is then set up here without leaving the editor.
+const SOURCE = '$source'
+const kindTitle: Record<Plugin['category'], string> = { processor: 'Agent', channel: '渠道', monitor: '监控' }
+const kindIcon: Record<Plugin['category'], Component> = { processor: Bot, channel: MessageSquare, monitor: Radar }
+// The picture for whatever an action is sent to.
+function targetIcon(instance: string): Component {
+  if (instance === SOURCE) return Reply
+  const p = hub.pluginOf(hub.instanceOf(instance)?.plugin || '')
+  return !p ? Play : p.singleton ? Wrench : kindIcon[p.category]
+}
+const does = (p?: Plugin) => p?.actions?.map((a) => a.title).join('、') || ''
+
+interface Choice {
+  key: string
+  name: string
+  about: string
+  icon: Component
+  tag?: string
+  instance?: string // something usable as it is
+  plugin?: Plugin // something to set up first
+}
+const picker = ref<null | { title: string; then: (instance: string) => void }>(null)
+const search = ref('')
+const choices = computed(() => {
+  const ready: Choice[] = [
+    {
+      key: SOURCE,
+      name: '原路回复',
+      about: '回复到事件来的地方，不管它来自哪个渠道',
+      icon: Reply,
+      instance: SOURCE,
+    },
+  ]
+  const connected: Choice[] = []
+  for (const i of actionInstances.value) {
+    const p = hub.pluginOf(i.plugin)!
+    const c = { key: i.id, name: i.name, icon: targetIcon(i.id), instance: i.id }
+    if (p.singleton) ready.push({ ...c, about: p.description || does(p) })
+    else
+      connected.push({ ...c, about: (p.name !== i.name ? p.name + ' · ' : '') + does(p), tag: kindTitle[p.category] })
+  }
+  const order = ['processor', 'channel', 'monitor']
+  const more: Choice[] = hub.plugins
+    .filter((p) => !p.singleton && p.actions?.length)
+    .sort((a, b) => order.indexOf(a.category) - order.indexOf(b.category))
+    .map((p) => ({
+      key: 'new:' + p.id,
+      name: p.name,
+      // a monitor's own description is about what it watches; as an action
+      // it only offers to be told to check now
+      about: p.category === 'monitor' ? `接入后可以让它：${does(p)}` : p.description || does(p),
+      icon: kindIcon[p.category],
+      tag: kindTitle[p.category],
+      plugin: p,
+    }))
+  const q = search.value.trim().toLowerCase()
+  const hit = (c: Choice) => !q || (c.name + c.about + (c.tag || '')).toLowerCase().includes(q)
+  return [
+    { title: '直接可用', items: ready.filter(hit) },
+    { title: '已接入', items: connected.filter(hit) },
+    { title: '接入新的', items: more.filter(hit) },
+  ].filter((g) => g.items.length)
+})
+function pickAction(title: string, then: (instance: string) => void) {
+  search.value = ''
+  picker.value = { title, then }
+}
+function choose(c: Choice) {
+  const then = picker.value!.then
+  picker.value = null
+  if (c.instance) return then(c.instance)
+  const plugin = c.plugin!
+  connecting.value = { plugin, then, name: plugin.name, config: {}, before: hub.instances.map((i) => i.id) }
+}
+// Change what a node uses.
+function retarget(n: ENode) {
+  pickAction('换一个来执行', (instance) => {
+    n.instance = instance
+    onTarget(n)
+  })
+}
+
+const connecting = ref<null | {
+  plugin: Plugin
+  then: (instance: string) => void
+  name: string
+  config: Record<string, any>
+  before: string[] // the instances there were, to tell which one a wizard made
+}>(null)
+async function createInstance() {
+  const c = connecting.value!
+  const made = await hub.run(
+    () => post<Instance>('/instances', { plugin: c.plugin.id, name: c.name, enabled: true, config: c.config }),
+    `已接入 ${c.name}`,
+  )
+  if (made) connected(made.id)
+}
+// Go on with the instance just made (a wizard does not say which, so it is
+// the one of this plugin that was not there before).
+async function connected(id?: string) {
+  const c = connecting.value
+  if (!c) return
+  connecting.value = null
+  await hub.reloadInstances()
+  id ||= hub.instances.find((i) => i.plugin === c.plugin.id && !c.before.includes(i.id))?.id
+  if (id) c.then(id)
+}
+
+function onTarget(n: ENode) {
+  const list = actionsFor(n)
+  if (!list.some((a) => a.name === n.action)) n.action = list[0]?.name || ''
+  resetParams(n)
+}
+
+const brief = (v: unknown) =>
+  v === undefined || v === null ? '' : (typeof v === 'string' ? v : JSON.stringify(v)).replace(/\s+/g, ' ').slice(0, 40)
+const dig = (obj: unknown, path: string) => path.split('.').reduce((o: any, k) => o?.[k], obj)
+
+// What a node's parameters may refer to: the event, and the outputs of the
+// actions that run before it. Output fields are not declared anywhere, so they
+// are read off the latest run in which the same action produced something.
+function variablesFor(n: ENode): VarGroup[] {
+  const groups: VarGroup[] = [
+    {
+      title: '事件',
+      items: fieldHints.value.map((f) => ({ expr: f, sample: brief(dig(sampleEvent.value, f)) })),
+    },
+  ]
+  for (const prev of upstreamActions(doc, n.id)) {
+    let output: Record<string, unknown> | undefined
+    for (const run of hub.runs) {
+      output = run.steps?.find((s) => s.action === prev.action && s.output)?.output
+      if (output) break
+    }
+    const keys = Object.keys(output || {})
+    groups.push({
+      title: `${prev.id} · ${targetName(prev)} · ${actionTitle(prev)}`,
+      items: keys.length
+        ? keys.map((k) => ({ expr: `steps.${prev.id}.${k}`, sample: brief(output![k]) }))
+        : [{ expr: `steps.${prev.id}`, sample: '整个输出（运行一次后可选具体字段）' }],
+    })
+  }
+  return groups
+}
+
+// ---- the graph on the canvas ----
+const nodes = computed<CanvasNode[]>(() =>
+  doc.nodes.map<CanvasNode>((n) => {
+    const at = { id: n.id, kind: n.kind, x: n.x, y: n.y }
+    if (n.kind === 'trigger') return { ...at, icon: Zap, label: '触发', title: triggerTitle(n), sub: triggerSummary(n) }
+    if (n.kind === 'condition') return { ...at, icon: Filter, label: '条件', title: conditionTitle(n) }
+    if (n.kind === 'throttle')
+      return {
+        ...at,
+        icon: Timer,
+        label: '节流',
+        title: throttleTitle(n),
+        sub: n.key.trim() ? `按 ${n.key.trim()} 分别计` : '',
+      }
+    return {
+      ...at,
+      icon: targetIcon(n.instance),
+      label: targetName(n),
+      title: actionTitle(n),
+      sub: actionSummary(n),
+      bad: !specOf(n),
+    }
+  }),
+)
+function onMove(id: string, x: number, y: number) {
+  const at = doc.nodes.find((n) => n.id === id)
+  if (at) Object.assign(at, { x, y })
+}
+
+// Nudge a new node down until it is clear of the others.
+function clear(at: Point): Point {
+  const taken = (p: Point) =>
+    doc.nodes.some((n) => Math.abs(n.x - p.x) < NODE_W + 16 && Math.abs(n.y - p.y) < NODE_H + 12)
+  const p = { x: Math.round(at.x), y: Math.round(at.y) }
+  while (taken(p)) p.y += NODE_H + 24
+  return p
+}
+// Add a node, wired from `from` when given, and open it for editing.
+function addNode(kind: ENode['kind'], at?: Point, from?: { id: string; branch: string }, instance = ''): ENode {
+  const c = canvas.value!.center()
+  const p = clear(at || { x: c.x - NODE_W / 2, y: c.y - NODE_H / 2 })
+  const n = blankNode(kind, freshId(doc, kind), p.x, p.y)
+  if (kind === 'action') {
+    n.instance = instance
+    const list = actionsFor(n)
+    n.action = (list.find((a) => a.name === 'reply') || list[0])?.name || ''
+    resetParams(n)
+  }
+  doc.nodes.push(n)
+  if (from) doc.edges.push({ from: from.id, to: n.id, ...(from.branch ? { branch: from.branch } : {}) })
+  sel.value = n.id
+  return n
+}
+function connect(from: string, branch: string, to: string) {
+  if (from === to || doc.nodes.find((n) => n.id === to)?.kind === 'trigger') return
+  if (doc.edges.some((e) => e.from === from && e.to === to && (e.branch || '') === branch)) return
+  if (wouldLoop(doc, from, to)) return hub.notify('这样连会形成循环，规则不能绕回前面的节点', true)
+  doc.edges.push({ from, to, ...(branch ? { branch } : {}) })
+}
+// Put a new node in the middle of a wire.
+function splice(key: string, kind: ENode['kind'], at: Point, instance?: string) {
+  const i = doc.edges.findIndex((e) => edgeKey(e) === key)
+  if (i < 0) return
+  const [e] = doc.edges.splice(i, 1)
+  const n = addNode(
+    kind,
+    { x: at.x - NODE_W / 2, y: at.y - NODE_H / 2 },
+    { id: e.from, branch: e.branch || '' },
+    instance,
+  )
+  doc.edges.push({ from: n.id, to: e.to })
+}
+function removeNode(id: string) {
+  const n = doc.nodes.find((x) => x.id === id)
+  if (n?.kind === 'trigger' && triggers.value.length === 1) {
+    return hub.notify('至少要留一个触发节点，否则这条规则永远不会运行', true)
+  }
+  doc.nodes.splice(
+    doc.nodes.findIndex((n) => n.id === id),
+    1,
+  )
+  doc.edges = doc.edges.filter((e) => e.from !== id && e.to !== id)
+  if (sel.value === id) sel.value = null
+}
+function removeEdge(key: string) {
+  doc.edges = doc.edges.filter((e) => edgeKey(e) !== key)
+  if (sel.value === key) sel.value = null
+}
+function unlink(id: string) {
+  doc.edges = doc.edges.filter((e) => e.from !== id && e.to !== id)
+}
+function removeSelected() {
+  if (!sel.value) return
+  if (node.value) removeNode(sel.value)
+  else removeEdge(sel.value)
+}
+// A copy of a node placed nearby (or at `at`), under a new id and unwired.
+function paste(src: ENode, at?: Point) {
+  const p = clear(at || { x: src.x + 28, y: src.y + 28 })
+  const n: ENode = { ...JSON.parse(JSON.stringify(src)), id: freshId(doc, src.kind), ...p }
+  doc.nodes.push(n)
+  sel.value = n.id
+}
+function copy(n: ENode) {
+  clipboard.node = JSON.parse(JSON.stringify(n))
+  hub.notify('已复制节点')
+}
+function tidy() {
+  layout(doc)
+  nextTick(() => canvas.value?.fit())
+}
+
+// ---- undo ----
+// Every settled change to the document is kept as a snapshot.
+let last = JSON.stringify(doc)
+const saved = ref(last)
+const past: string[] = []
+const future: string[] = []
+const state = reactive({ undo: false, redo: false, dirty: false })
+let restoring = false
+let timer = 0
+function settle() {
+  clearTimeout(timer)
+  const now = JSON.stringify(doc)
+  if (now !== last) {
+    past.push(last)
+    if (past.length > 200) past.shift()
+    future.length = 0
+    last = now
+  }
+  Object.assign(state, { undo: past.length > 0, redo: future.length > 0, dirty: last !== saved.value })
+}
+watch(
+  doc,
+  () => {
+    if (restoring) return
+    clearTimeout(timer)
+    timer = window.setTimeout(settle, 250)
+  },
+  { deep: true },
+)
+function restore(snapshot: string) {
+  restoring = true
+  Object.assign(doc, JSON.parse(snapshot))
+  last = snapshot
+  if (sel.value && !doc.nodes.some((n) => n.id === sel.value)) sel.value = null
+  nextTick(() => {
+    restoring = false
+    settle()
+  })
+}
+function undo() {
+  settle()
+  if (!past.length) return
+  future.push(last)
+  restore(past.pop()!)
+}
+function redo() {
+  settle()
+  if (!future.length) return
+  past.push(last)
+  restore(future.pop()!)
+}
+
+// ---- menus ----
+const menu = ref<null | { x: number; y: number; items: MenuItem[] }>(null)
+const mod = /Mac|iP(hone|ad)/.test(navigator.platform) ? '⌘' : 'Ctrl+'
+function show(e: MouseEvent, items: MenuItem[]) {
+  menu.value = { x: e.clientX, y: e.clientY, items }
+}
+// What may follow a node: offered when a wire is dropped on empty canvas, when
+// a port is clicked, and in the node's menu.
+function nextItems(from: string, branch: string, at?: Point): MenuItem[] {
+  const src = doc.nodes.find((n) => n.id === from)!
+  const where = at || { x: src.x + NODE_W + 88, y: src.y + (branch ? NODE_H + 24 : 0) }
+  const lead = src.kind !== 'condition' ? '' : branch ? '不满足时 ' : '满足时 '
+  return makers(
+    (name) => `${lead}→ ${name}`,
+    (kind, instance) => addNode(kind, where, { id: from, branch }, instance),
+  )
+}
+// One menu entry for each kind of node that can be put after another. An
+// action first asks what is to carry it out.
+function makers(label: (name: string) => string, make: (kind: ENode['kind'], instance?: string) => void): MenuItem[] {
+  return [
+    { label: label('动作…'), icon: Play, run: () => pickAction('添加动作：用什么来执行', (i) => make('action', i)) },
+    { label: label('条件'), icon: Filter, run: () => make('condition') },
+    { label: label('节流'), icon: Timer, run: () => make('throttle') },
+  ]
+}
+function onSpawn(from: string, branch: string, at: Point, e: MouseEvent) {
+  show(e, nextItems(from, branch, at))
+}
+function onMenu(target: { node?: string; edge?: string } | null, at: Point, e: MouseEvent) {
+  const n = doc.nodes.find((x) => x.id === target?.node)
+  if (target?.edge) {
+    sel.value = target.edge
+    return show(e, [
+      ...makers(
+        (name) => `插入：${name}`,
+        (kind, instance) => splice(target.edge!, kind, at, instance),
+      ),
+      {
+        label: '删除连线',
+        icon: Trash2,
+        hint: 'Del',
+        danger: true,
+        divided: true,
+        run: () => removeEdge(target.edge!),
+      },
+    ])
+  }
+  if (n) {
+    const wired = doc.edges.some((x) => x.from === n.id || x.to === n.id)
+    return show(e, [
+      { label: '配置', icon: Settings2, run: () => (sel.value = n.id) },
+      { label: '复制', icon: Copy, hint: mod + 'C', divided: true, run: () => copy(n) },
+      { label: '创建副本', icon: CopyPlus, hint: mod + 'D', run: () => paste(n) },
+      { label: '断开所有连线', icon: Unlink, disabled: !wired, run: () => unlink(n.id) },
+      { label: '删除', icon: Trash2, hint: 'Del', danger: true, divided: true, run: () => removeNode(n.id) },
+    ])
+  }
+  const here = { x: at.x - NODE_W / 2, y: at.y - NODE_H / 2 }
+  show(e, [
+    ...makers(
+      (name) => `添加：${name}`,
+      (kind, instance) => addNode(kind, here, undefined, instance),
+    ),
+    { label: '添加：触发', icon: Zap, run: () => addNode('trigger', here) },
+    {
+      label: '粘贴',
+      icon: ClipboardPaste,
+      hint: mod + 'V',
+      disabled: !clipboard.node,
+      run: () => paste(clipboard.node!, here),
+    },
+    { label: '撤销', icon: Undo2, hint: mod + 'Z', divided: true, disabled: !state.undo, run: undo },
+    { label: '重做', icon: Redo2, hint: mod + '⇧Z', disabled: !state.redo, run: redo },
+    { label: '整理布局', icon: LayoutGrid, divided: true, run: tidy },
+    { label: '适应窗口', icon: Maximize, run: () => canvas.value?.fit() },
+  ])
+}
+
+// ---- keyboard ----
+function onKey(e: KeyboardEvent) {
+  if (connecting.value || picker.value) return
+  const cmd = e.metaKey || e.ctrlKey
+  const key = e.key.toLowerCase()
+  if (cmd && key === 's') {
+    e.preventDefault()
+    return save()
+  }
+  // typing in a field keeps its own keys, undo included
+  const t = e.target as HTMLElement
+  if (menu.value || t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return
+  if (e.key === 'Delete' || e.key === 'Backspace') removeSelected()
+  else if (cmd && key === 'z') e.shiftKey ? redo() : undo()
+  else if (cmd && key === 'y') redo()
+  else if (cmd && key === 'd' && node.value) paste(node.value)
+  else if (cmd && key === 'c' && node.value) copy(node.value)
+  else if (cmd && key === 'v' && clipboard.node) paste(clipboard.node)
+  else return
+  e.preventDefault()
+}
+// Escape first lets go of what is picked; only with nothing picked does it
+// reach the drawer and close the editor.
+function onEscape(e: KeyboardEvent) {
+  if (e.key === 'Escape' && (connecting.value || picker.value)) {
+    // the dialog on top takes it; a wizard is left by its own buttons
+    e.stopPropagation()
+    picker.value = null
+    if (!connecting.value?.plugin.setup) connecting.value = null
+    return
+  }
+  if (e.key !== 'Escape' || !sel.value || menu.value) return
+  e.stopPropagation()
+  ;(document.activeElement as HTMLElement | null)?.blur?.()
+  sel.value = null
+}
+onMounted(() => {
+  window.addEventListener('keydown', onEscape, true)
+  window.addEventListener('keydown', onKey)
+})
+onBeforeUnmount(() => {
+  clearTimeout(timer)
+  window.removeEventListener('keydown', onEscape, true)
+  window.removeEventListener('keydown', onKey)
+})
+
+// ---- the rule as a whole ----
+function close() {
+  settle()
+  if (state.dirty && !confirm('有未保存的修改，确定要关闭吗？')) return
+  emit('close')
 }
 async function save() {
-  const body = payload()
-  const ok = await hub.run(() => (rule.id ? put(`/rules/${rule.id}`, body) : post('/rules', body)), '规则已保存')
+  settle()
+  const body = toRule(doc, props.rule)
+  const ok = await hub.run(
+    () => (props.rule.id ? put(`/rules/${props.rule.id}`, body) : post('/rules', body)),
+    '规则已保存',
+  )
   if (ok) emit('saved')
 }
 async function remove() {
-  if (!confirm(`删除规则「${rule.name}」？`)) return
-  await hub.run(() => del(`/rules/${rule.id}`), '已删除')
+  if (!confirm(`删除规则「${doc.name}」？`)) return
+  await hub.run(() => del(`/rules/${props.rule.id}`), '已删除')
   emit('saved')
 }
+
+// Put the cursor in a field as soon as it shows.
+const vFocus = { mounted: (el: HTMLElement) => el.focus() }
 </script>
 
 <template>
-  <Drawer :title="rule.id ? '编辑规则' : '新建规则'" wide @close="emit('close')">
-    <div class="space-y-6">
-      <section class="flex items-end gap-3">
-        <div class="flex-1">
-          <label class="label">名称</label
-          ><input v-model="rule.name" class="input" placeholder="例如：部署通知触发 Agent" />
+  <Drawer title="" full @close="close">
+    <template #header>
+      <header class="flex items-center gap-3 border-b border-line px-3 py-2">
+        <div class="flex min-w-0 flex-1 items-center gap-2">
+          <button class="btn btn-ghost px-1.5" title="返回规则列表" aria-label="返回规则列表" @click="close">
+            <ArrowLeft :size="16" />
+          </button>
+          <input v-model="doc.name" class="name" placeholder="未命名规则" aria-label="规则名称" />
+          <span v-if="state.dirty" class="shrink-0 text-xs text-mute">未保存</span>
         </div>
-        <label class="flex cursor-pointer items-center gap-2 pb-2 text-sm"
-          ><input v-model="rule.enabled" type="checkbox" />启用</label
-        >
-      </section>
 
-      <section>
-        <h3 class="mb-2 text-sm font-semibold">① 当这些来源收到事件</h3>
-        <div class="flex flex-wrap gap-2">
+        <div class="tools">
+          <button :disabled="!state.undo" :title="`撤销（${mod}Z）`" aria-label="撤销" @click="undo">
+            <Undo2 :size="15" />
+          </button>
+          <button :disabled="!state.redo" :title="`重做（${mod}⇧Z）`" aria-label="重做" @click="redo">
+            <Redo2 :size="15" />
+          </button>
+          <i />
+          <button title="再添加一个触发节点：另一批来源和事件，走自己的流程" @click="addNode('trigger')">
+            <Zap :size="14" />触发
+          </button>
+          <i />
           <button
+            title="添加一个动作节点：交给 Agent、发消息、发请求、跑脚本…"
+            @click="pickAction('添加动作：用什么来执行', (i) => addNode('action', undefined, undefined, i))"
+          >
+            <Play :size="14" />动作
+          </button>
+          <i />
+          <button title="添加一个条件节点" @click="addNode('condition')"><Filter :size="14" />条件</button>
+          <button title="添加一个节流节点：一段时间内只放行一次" @click="addNode('throttle')">
+            <Timer :size="14" />节流
+          </button>
+          <i />
+          <button title="自动排列所有节点" @click="tidy"><LayoutGrid :size="14" />整理</button>
+        </div>
+
+        <div class="flex flex-1 items-center justify-end gap-2">
+          <label class="mr-1 flex cursor-pointer items-center gap-2 text-sm text-mute"
+            ><input v-model="doc.enabled" type="checkbox" />启用</label
+          >
+          <button
+            v-if="rule.id"
+            class="btn btn-ghost btn-danger px-1.5"
+            title="删除规则"
+            aria-label="删除规则"
+            @click="remove"
+          >
+            <Trash2 :size="15" />
+          </button>
+          <button class="btn btn-primary" :title="`保存（${mod}S）`" @click="save">保存</button>
+        </div>
+      </header>
+    </template>
+
+    <FlowCanvas
+      ref="canvas"
+      class="min-w-0 flex-1"
+      :nodes="nodes"
+      :edges="doc.edges"
+      :selected="sel"
+      :pad-right="panel ? PANEL_W : 0"
+      @select="sel = $event"
+      @move="onMove"
+      @connect="connect"
+      @spawn="onSpawn"
+      @menu="onMenu"
+    />
+    <p v-if="!panel" class="hint">
+      拖动节点右侧的圆点连线，点一下圆点添加下一步 · 右键查看更多操作 · 滚轮平移，{{ mod === '⌘' ? '⌘' : 'Ctrl' }} +
+      滚轮缩放
+    </p>
+    <ContextMenu v-if="menu" v-bind="menu" @close="menu = null" />
+
+    <Teleport to="body">
+      <Transition name="modal">
+        <div
+          v-if="picker"
+          class="scrim fixed inset-0 z-50 flex items-start justify-center p-4 pt-[12vh]"
+          @click.self="picker = null"
+        >
+          <section class="pop flex max-h-[70vh] w-full max-w-lg flex-col overflow-hidden">
+            <header class="flex items-center gap-2 border-b border-line px-4 py-2.5">
+              <Search :size="15" class="shrink-0 text-mute" />
+              <input
+                v-model="search"
+                v-focus
+                class="min-w-0 flex-1 bg-transparent py-1 text-sm !outline-none placeholder:text-mute/70"
+                :placeholder="picker.title + '，可以输入名字查找'"
+                @keydown.enter="choices[0] && choose(choices[0].items[0])"
+              />
+              <button class="btn btn-ghost px-1.5" aria-label="关闭" @click="picker = null"><X :size="16" /></button>
+            </header>
+            <div class="flex-1 overflow-y-auto p-2">
+              <template v-for="g in choices" :key="g.title">
+                <div class="px-3 pt-2 pb-1 text-[11px] font-medium text-mute">{{ g.title }}</div>
+                <button v-for="c in g.items" :key="c.key" class="choice" @click="choose(c)">
+                  <span class="glyph"><component :is="c.icon" :size="15" /></span>
+                  <span class="min-w-0 flex-1">
+                    <span class="flex items-center gap-2 text-sm font-medium">
+                      {{ c.name }}<span v-if="c.tag" class="chip !font-sans">{{ c.tag }}</span>
+                    </span>
+                    <span class="block truncate text-xs text-mute">{{ c.about }}</span>
+                  </span>
+                  <span v-if="c.plugin" class="shrink-0 text-xs text-accent">接入</span>
+                </button>
+              </template>
+              <p v-if="!choices.length" class="px-3 py-6 text-center text-sm text-mute">没有找到「{{ search }}」</p>
+            </div>
+          </section>
+        </div>
+        <SetupWizard v-else-if="connecting?.plugin.setup" :plugin="connecting.plugin" @close="connected()" />
+        <div
+          v-else-if="connecting"
+          class="scrim fixed inset-0 z-50 flex items-center justify-center p-4"
+          @click.self="connecting = null"
+        >
+          <section class="pop flex max-h-full w-full max-w-md flex-col overflow-hidden">
+            <header class="flex items-center justify-between border-b border-line px-5 py-3">
+              <h2 class="text-[15px] font-semibold">接入 {{ connecting.plugin.name }}</h2>
+              <button class="btn btn-ghost px-1.5" aria-label="关闭" @click="connecting = null">
+                <X :size="16" />
+              </button>
+            </header>
+            <div class="flex-1 space-y-3 overflow-y-auto p-5">
+              <p v-if="connecting.plugin.description" class="text-sm text-mute">{{ connecting.plugin.description }}</p>
+              <div><label class="label">名称</label><input v-model="connecting.name" class="input" /></div>
+              <SchemaForm v-model="connecting.config" :schema="connecting.plugin.config_schema" />
+            </div>
+            <footer class="flex justify-end gap-2 border-t border-line px-5 py-3">
+              <button class="btn" @click="connecting = null">取消</button>
+              <button class="btn btn-primary" @click="createInstance">接入并选用</button>
+            </footer>
+          </section>
+        </div>
+      </Transition>
+    </Teleport>
+
+    <aside
+      v-if="panel"
+      :key="sel!"
+      class="pop absolute top-3 right-3 bottom-3 overflow-y-auto p-5"
+      :style="{ width: PANEL_W - 24 + 'px', animation: 'row-slide 0.24s var(--ease-glide)' }"
+    >
+      <template v-if="node?.kind === 'trigger'">
+        <div class="mb-3 flex items-center gap-1">
+          <h3 class="mr-auto truncate text-sm font-semibold">触发：什么事件会启动这条规则</h3>
+          <button
+            v-if="triggers.length > 1"
+            class="btn btn-ghost btn-danger px-1.5"
+            title="删除节点（Del）"
+            aria-label="删除节点"
+            @click="removeNode(node.id)"
+          >
+            <Trash2 :size="14" />
+          </button>
+          <button class="btn btn-ghost px-1.5" title="收起（Esc）" aria-label="收起" @click="sel = null">
+            <X :size="14" />
+          </button>
+        </div>
+        <label class="label">从哪里来</label>
+        <div v-if="sourceInstances.length" class="list">
+          <label
             v-for="s in sourceInstances"
             :key="s.id"
-            class="btn"
-            :class="{ '!border-accent/40 !bg-accent-soft !text-accent': rule.sources!.includes(s.id) }"
-            @click="toggleSource(s.id)"
+            class="row link flex cursor-pointer items-center gap-3 px-3 py-2"
           >
-            {{ s.name }}
-          </button>
-          <span v-if="!sourceInstances.length" class="text-xs text-mute"
-            >还没有事件来源，请先到「接入」添加渠道或监控。</span
-          >
+            <div class="min-w-0 flex-1">
+              <div class="text-sm font-medium">{{ s.name }}</div>
+              <div class="truncate text-xs text-mute">
+                会发出：{{
+                  eventsOf(s.plugin)
+                    .map((e) => e.title)
+                    .join('、') || '（未声明）'
+                }}
+              </div>
+            </div>
+            <input type="checkbox" :checked="node.sources.includes(s.id)" @change="toggle(node.sources, s.id)" />
+          </label>
         </div>
-        <p class="mt-1 text-xs text-mute">不选表示任意来源。</p>
-        <label class="label mt-3">事件类型（可选，逗号分隔，支持 message.* 通配）</label>
-        <input v-model="typesText" class="input" list="known-types" placeholder="任意类型" />
-        <datalist id="known-types"><option v-for="t in knownTypes" :key="t" :value="t" /></datalist>
-      </section>
+        <p v-else class="text-xs text-mute">还没有事件来源，请先到「接入」添加渠道或监控。</p>
+        <p class="mt-1 text-xs text-mute">
+          {{ node.sources.length ? '只听上面打开的来源。' : '一个都不打开，表示所有来源都听。' }}
+        </p>
 
-      <section>
-        <div class="mb-2 flex items-center justify-between">
-          <h3 class="text-sm font-semibold">② 并且满足条件</h3>
-          <div class="seg">
+        <label class="label mt-5">发生什么事时触发</label>
+        <div v-if="offered(node).length" class="list">
+          <label
+            v-for="e in offered(node)"
+            :key="e.type"
+            class="row link flex cursor-pointer items-center gap-3 px-3 py-2"
+          >
+            <div class="min-w-0 flex-1">
+              <div class="flex items-baseline gap-2">
+                <span class="text-sm font-medium">{{ e.title }}</span>
+                <code class="chip">{{ e.type }}</code>
+              </div>
+              <div v-if="e.stray" class="truncate text-xs text-warn">当前所听的来源不会发出这个事件</div>
+              <template v-else>
+                <div class="truncate text-xs text-mute">来自 {{ e.from.join('、') }}</div>
+                <div class="truncate text-xs text-mute">
+                  <template v-if="e.last"
+                    >最近一次（{{ timeAgo(e.last.time) }}）：{{
+                      summarize(e.last).slice(0, 80) || '（无内容）'
+                    }}</template
+                  >
+                  <template v-else>还没收到过</template>
+                </div>
+              </template>
+            </div>
+            <input
+              type="checkbox"
+              :checked="node.pickedTypes.includes(e.type)"
+              @change="toggle(node.pickedTypes, e.type)"
+            />
+          </label>
+        </div>
+        <p class="mt-1 text-xs text-mute">
+          {{ typesOf(node).length ? '只有上面打开的事件会触发。' : '一个都不打开，表示任何事件都触发。' }}
+        </p>
+        <details class="mt-3 text-xs text-mute" :open="!!node.otherTypes">
+          <summary>高级：按类型名匹配</summary>
+          <input
+            v-model="node.otherTypes"
+            class="input mt-2 font-mono text-xs"
+            placeholder="例如 message.*，多个用逗号分隔"
+          />
+          <p class="mt-1">用来匹配上面没列出的事件，支持 * 通配。</p>
+        </details>
+      </template>
+
+      <template v-else-if="node?.kind === 'condition'">
+        <div class="mb-3 flex items-center gap-1">
+          <h3 class="mr-auto truncate text-sm font-semibold">条件</h3>
+          <div class="seg mr-1">
             <button
               class="!py-0.5 !text-xs"
-              :class="{ on: builder.mode === 'builder' }"
-              @click="builder.mode = 'builder'"
+              :class="{ on: node.builder.mode === 'builder' }"
+              @click="node.builder.mode = 'builder'"
             >
               可视化
             </button>
-            <button class="!py-0.5 !text-xs" :class="{ on: builder.mode === 'expr' }" @click="showExpression">
+            <button
+              class="!py-0.5 !text-xs"
+              :class="{ on: node.builder.mode === 'expr' }"
+              @click="showExpression(node)"
+            >
               表达式
             </button>
           </div>
+          <button
+            class="btn btn-ghost btn-danger px-1.5"
+            title="删除节点（Del）"
+            aria-label="删除节点"
+            @click="removeNode(node.id)"
+          >
+            <Trash2 :size="14" />
+          </button>
+          <button class="btn btn-ghost px-1.5" title="收起（Esc）" aria-label="收起" @click="sel = null">
+            <X :size="14" />
+          </button>
         </div>
+        <p class="mb-3 text-xs text-mute">
+          成立时走「是」那一头接出去的节点，不成立时走「否」。后面可以接动作，也可以再接条件。
+        </p>
 
-        <template v-if="builder.mode === 'builder'">
+        <template v-if="node.builder.mode === 'builder'">
           <div
-            v-for="(row, i) in builder.rows"
+            v-for="(row, i) in node.builder.rows"
             :key="i"
             class="mb-2 flex items-center gap-2"
             style="animation: item-in 0.2s var(--ease-glide)"
           >
-            <span class="w-8 shrink-0 text-center text-xs text-mute">{{
-              i === 0 ? '当' : builder.join === 'and' ? '且' : '或'
+            <span class="w-5 shrink-0 text-center text-xs text-mute">{{
+              i === 0 ? '当' : node.builder.join === 'and' ? '且' : '或'
             }}</span>
             <input
               v-model="row.field"
@@ -192,7 +939,7 @@ async function remove() {
               list="field-hints"
               placeholder="payload.text"
             />
-            <select v-model="row.op" class="input w-28">
+            <select v-model="row.op" class="input w-24">
               <option v-for="o in operators" :key="o.id" :value="o.id">{{ o.label }}</option>
             </select>
             <input
@@ -201,43 +948,44 @@ async function remove() {
               class="input flex-1"
               :placeholder="row.op === 'in' ? '用逗号分隔' : '值'"
             />
-            <button class="btn btn-ghost px-2" aria-label="删除条件" @click="builder.rows.splice(i, 1)">
+            <button class="btn btn-ghost px-1.5" aria-label="删除这一行" @click="node.builder.rows.splice(i, 1)">
               <Trash2 :size="14" />
             </button>
           </div>
           <datalist id="field-hints"><option v-for="f in fieldHints" :key="f" :value="f" /></datalist>
           <div class="flex items-center gap-3">
-            <button class="btn" @click="builder.rows.push({ field: 'payload.text', op: 'contains', value: '' })">
-              <Plus :size="14" />添加条件
+            <button class="btn" @click="node.builder.rows.push({ field: 'payload.text', op: 'contains', value: '' })">
+              <Plus :size="14" />添加一行
             </button>
-            <select v-if="builder.rows.length > 1" v-model="builder.join" class="input w-36">
+            <select v-if="node.builder.rows.length > 1" v-model="node.builder.join" class="input w-36">
               <option value="and">全部满足</option>
               <option value="or">满足任一</option>
             </select>
-            <span v-if="!builder.rows.length" class="text-xs text-mute">没有条件表示所有事件都命中。</span>
+            <span v-if="!node.builder.rows.length" class="text-xs text-mute">一行都没有时总是成立。</span>
           </div>
-          <p v-if="condition" class="mt-2 font-mono text-[11px] break-all text-mute">{{ condition }}</p>
+          <p v-if="conditionOf(node)" class="mt-2 font-mono text-[11px] break-all text-mute">{{ conditionOf(node) }}</p>
         </template>
         <template v-else>
           <textarea
-            v-model="rule.condition"
+            v-model="node.expr"
             class="input font-mono text-xs"
-            rows="3"
+            rows="4"
             placeholder='payload.text contains "deploy" and actor.id in ["123", "456"]'
           />
           <p class="mt-1 text-xs text-mute">
-            expr 表达式。可用变量：payload、actor、conversation、type、source、raw。留空表示全部命中。
+            expr 表达式。可用变量：payload、actor、conversation、type、source、raw，以及前面动作的输出
+            steps.&lt;标识&gt;。留空表示总是成立。
           </p>
         </template>
 
-        <div class="mt-3 flex items-center gap-2">
-          <select v-model="testEventId" class="input flex-1 text-xs">
+        <div class="mt-4 flex items-center gap-2">
+          <select v-model="testEventId" class="input min-w-0 flex-1 text-xs">
             <option value="">用最近一个事件测试</option>
             <option v-for="e in scopedEvents" :key="e.id" :value="e.id">
               {{ clock(e.time) }} · {{ e.type }} · {{ summarize(e).slice(0, 60) }}
             </option>
           </select>
-          <button class="btn" @click="test">测试条件</button>
+          <button class="btn" @click="test(node)">测试</button>
           <Transition name="swap" mode="out-in">
             <span
               v-if="testResult"
@@ -245,91 +993,216 @@ async function remove() {
               class="flex shrink-0 items-center gap-1.5 text-sm font-medium"
             >
               <span class="dot" :class="testResult.error ? 'bad' : testResult.matched ? 'ok' : ''" />
-              {{ testResult.error ? '出错' : testResult.matched ? '命中' : '不命中' }}
+              {{ testResult.error ? '出错' : testResult.matched ? '是' : '否' }}
             </span>
           </Transition>
         </div>
         <p v-if="testResult?.error" class="mt-1 text-xs text-bad">{{ testResult.error }}</p>
-      </section>
+      </template>
 
-      <section>
-        <h3 class="mb-2 text-sm font-semibold">③ 依次执行</h3>
-        <div
-          v-for="(step, i) in rule.steps"
-          :key="i"
-          class="mb-3 rounded-xl border border-line p-4"
-          style="animation: item-in 0.24s var(--ease-glide)"
-        >
-          <div class="mb-3 flex items-center gap-2">
-            <span
-              class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sunken text-[11px] font-medium text-mute tabular-nums"
-              >{{ i + 1 }}</span
-            >
-            <select v-model="step.instance" class="input flex-1" @change="onTarget(step)">
-              <option value="$source">事件来源（原路回复）</option>
-              <option v-for="a in actionInstances" :key="a.id" :value="a.id">{{ a.name }}</option>
-            </select>
-            <select v-model="step.action" class="input flex-1" @change="resetParams(step)">
-              <option v-for="a in actionsFor(step)" :key="a.name" :value="a.name">{{ a.title }}</option>
-            </select>
-            <button class="btn btn-ghost px-1.5" :disabled="i === 0" aria-label="上移" @click="move(i, -1)">
-              <ArrowUp :size="14" />
-            </button>
-            <button
-              class="btn btn-ghost px-1.5"
-              :disabled="i === rule.steps.length - 1"
-              aria-label="下移"
-              @click="move(i, 1)"
-            >
-              <ArrowDown :size="14" />
-            </button>
-            <button class="btn btn-ghost btn-danger px-1.5" aria-label="删除步骤" @click="rule.steps.splice(i, 1)">
-              <Trash2 :size="14" />
-            </button>
-          </div>
-          <p v-if="specOf(step)?.description" class="mb-3 text-xs text-mute">{{ specOf(step)!.description }}</p>
-          <SchemaForm
-            :model-value="step.params || {}"
-            :schema="specOf(step)?.params"
-            templated
-            @update:model-value="step.params = $event"
-          />
-          <details class="mt-3 text-xs text-mute">
-            <summary class="cursor-pointer">高级</summary>
-            <div class="mt-2 flex items-center gap-4">
-              <label class="flex items-center gap-2"
-                >步骤标识<input v-model="step.id" class="input w-28 font-mono text-xs"
-              /></label>
-              <label class="flex cursor-pointer items-center gap-2"
-                ><input v-model="step.continue_on_error" type="checkbox" />失败后继续执行后续步骤</label
-              >
-            </div>
-          </details>
+      <template v-else-if="node?.kind === 'throttle'">
+        <div class="mb-3 flex items-center gap-1">
+          <h3 class="mr-auto truncate text-sm font-semibold">节流</h3>
+          <button
+            class="btn btn-ghost btn-danger px-1.5"
+            title="删除节点（Del）"
+            aria-label="删除节点"
+            @click="removeNode(node.id)"
+          >
+            <Trash2 :size="14" />
+          </button>
+          <button class="btn btn-ghost px-1.5" title="收起（Esc）" aria-label="收起" @click="sel = null">
+            <X :size="14" />
+          </button>
         </div>
-        <button class="btn" @click="addStep"><Plus :size="14" />添加动作</button>
-        <p class="mt-2 text-xs text-mute">
-          参数里可以用 <code class="chip" v-text="'{{ payload.text }}'" /> 引用事件，用
-          <code class="chip" v-text="'{{ steps.s1.text }}'" /> 引用前面步骤的输出。
+        <p class="mb-4 text-xs text-mute">
+          事件走到这里时，一段时间内只放行第一个，其余的到此为止，后面的节点不会执行。只影响经过它的这条线。
         </p>
-      </section>
-
-      <section>
-        <h3 class="mb-2 text-sm font-semibold">节流（可选）</h3>
+        <label class="label">多长时间内只放行一次</label>
         <div class="flex items-center gap-2 text-sm">
-          同一个<input
-            v-model="rule.throttle_key"
-            class="input w-48 font-mono text-xs"
-            placeholder="规则（或如 actor.id）"
-          />
-          在<input v-model="rule.throttle_seconds" type="number" min="0" class="input w-20" />秒内只触发一次
+          <input v-model="node.seconds" type="number" min="0" class="input w-28" />秒
         </div>
-      </section>
-    </div>
+        <label class="label mt-4">分别计算（可选）</label>
+        <input
+          v-model="node.key"
+          class="input font-mono text-xs"
+          list="field-hints-throttle"
+          placeholder="留空：所有事件共用一个计时"
+        />
+        <datalist id="field-hints-throttle"><option v-for="f in fieldHints" :key="f" :value="f" /></datalist>
+        <p class="mt-1 text-xs text-mute">
+          填一个字段，就按它的值各自计时。例如填 <code class="chip">actor.id</code> 表示每个人各自
+          {{ Number(node.seconds) || 0 }} 秒内只放行一次。
+        </p>
+      </template>
 
-    <template #footer>
-      <button v-if="rule.id" class="btn btn-danger mr-auto" @click="remove">删除</button>
-      <button class="btn" @click="emit('close')">取消</button>
-      <button class="btn btn-primary" @click="save">保存</button>
-    </template>
+      <template v-else-if="node">
+        <div class="mb-3 flex items-center gap-1">
+          <h3 class="mr-auto truncate text-sm font-semibold">{{ targetName(node) }} · {{ actionTitle(node) }}</h3>
+          <button
+            class="btn btn-ghost btn-danger px-1.5"
+            title="删除节点（Del）"
+            aria-label="删除节点"
+            @click="removeNode(node.id)"
+          >
+            <Trash2 :size="14" />
+          </button>
+          <button class="btn btn-ghost px-1.5" title="收起（Esc）" aria-label="收起" @click="sel = null">
+            <X :size="14" />
+          </button>
+        </div>
+        <div class="mb-3 flex items-center gap-2">
+          <button
+            class="input flex flex-1 cursor-pointer items-center gap-2 text-left"
+            title="换一个来执行"
+            @click="retarget(node)"
+          >
+            <component :is="targetIcon(node.instance)" :size="14" class="shrink-0 text-mute" />
+            <span class="min-w-0 flex-1 truncate">{{ targetName(node) }}</span>
+            <span class="shrink-0 text-xs text-mute">更换</span>
+          </button>
+          <select v-model="node.action" class="input flex-1" @change="resetParams(node)">
+            <option v-for="a in actionsFor(node)" :key="a.name" :value="a.name">{{ a.title }}</option>
+          </select>
+        </div>
+        <p v-if="specOf(node)?.description" class="mb-3 text-xs text-mute">{{ specOf(node)!.description }}</p>
+        <SchemaForm
+          :model-value="node.params || {}"
+          :schema="specOf(node)?.params"
+          :variables="variablesFor(node)"
+          templated
+          @update:model-value="node.params = $event"
+        />
+        <details class="mt-3 text-xs text-mute">
+          <summary class="cursor-pointer">高级</summary>
+          <div class="mt-2 space-y-2">
+            <label class="flex cursor-pointer items-center gap-2"
+              ><input v-model="node.continue_on_error" type="checkbox" />失败后仍然执行它后面的节点</label
+            >
+            <p>
+              节点标识 <code class="chip">{{ node.id }}</code
+              >，后面的节点用 <code class="chip" v-text="`{{ steps.${node.id}.… }}`" /> 引用它的输出。
+            </p>
+          </div>
+        </details>
+        <p class="mt-3 text-xs text-mute">
+          参数里用「插入变量」引用事件和前面动作的输出，也可以直接写
+          <code class="chip" v-text="'{{ payload.text }}'" />。
+        </p>
+      </template>
+    </aside>
   </Drawer>
 </template>
+
+<style scoped>
+/* The rule's name reads as a title until it is being edited. */
+.name {
+  width: 100%;
+  max-width: 22rem;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 600;
+  outline: none;
+  transition:
+    border-color 0.12s,
+    background-color 0.12s;
+}
+.name::placeholder {
+  color: var(--color-faint);
+}
+.name:hover {
+  background: var(--color-sunken);
+}
+.name:focus {
+  border-color: var(--color-accent);
+  background: var(--color-surface);
+}
+
+/* The tools in the middle of the bar: one pill of quiet buttons. */
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--seg-track);
+}
+.tools > button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  font-size: 13px;
+  white-space: nowrap;
+  color: var(--color-mute);
+  cursor: pointer;
+  transition:
+    color 0.12s,
+    background-color 0.12s,
+    transform 0.14s var(--ease-snap);
+}
+.tools > button:hover {
+  background: var(--seg-thumb);
+  box-shadow: var(--seg-edge);
+  color: var(--color-ink);
+}
+.tools > button:active {
+  transform: scale(0.95);
+}
+.tools > button:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+.tools > i {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--color-line);
+}
+
+.choice {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 12px;
+  border-radius: 9px;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+.choice:hover,
+.choice:focus-visible {
+  background: var(--hover);
+}
+.choice .glyph {
+  display: flex;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.hint {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  max-width: calc(100% - 26rem);
+  overflow: hidden;
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-mute);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+</style>

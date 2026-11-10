@@ -1,10 +1,18 @@
 <script setup lang="ts">
 // Renders a form from a JSON Schema object. With `templated`, every field
 // accepts {{ expression }} placeholders, so numbers are edited as text.
-import { computed } from 'vue'
+import { computed, nextTick } from 'vue'
 import type { Schema } from '../types'
+import VarPicker, { type VarGroup } from './VarPicker.vue'
 
-const props = defineProps<{ schema?: Schema; modelValue: Record<string, any>; templated?: boolean }>()
+// `variables` lists what a templated text field may refer to; when given,
+// those fields offer a menu that inserts the placeholder at the cursor.
+const props = defineProps<{
+  schema?: Schema
+  modelValue: Record<string, any>
+  templated?: boolean
+  variables?: VarGroup[]
+}>()
 const emit = defineEmits<{ 'update:modelValue': [value: Record<string, any>] }>()
 
 // JSON objects carry no order, so schemas list theirs in "x-order".
@@ -50,6 +58,27 @@ function setText(key: string, s: Schema, raw: string) {
   set(key, raw)
 }
 
+type TextField = HTMLInputElement | HTMLTextAreaElement
+const els: Record<string, TextField> = {}
+const bind = (key: string) => (el: unknown) => {
+  if (el) els[key] = el as TextField
+  else delete els[key]
+}
+const pickable = (s: Schema) => !!props.variables && (kind(s) === 'text' || kind(s) === 'textarea')
+
+function insert(key: string, s: Schema, expr: string) {
+  const el = els[key]
+  const cur = show(key, s)
+  const start = el?.selectionStart ?? cur.length
+  const end = el?.selectionEnd ?? start
+  const text = `{{ ${expr} }}`
+  setText(key, s, cur.slice(0, start) + text + cur.slice(end))
+  nextTick(() => {
+    el?.focus()
+    el?.setSelectionRange(start + text.length, start + text.length)
+  })
+}
+
 function setJSON(key: string, raw: string) {
   if (raw.trim() === '') return set(key, undefined)
   try {
@@ -63,9 +92,12 @@ function setJSON(key: string, raw: string) {
 <template>
   <div class="space-y-3">
     <div v-for="[key, s] in fields" :key="key">
-      <label v-if="kind(s) !== 'boolean'" class="label">
-        {{ s.title || key }}<span v-if="required.has(key)" class="text-bad"> *</span>
-      </label>
+      <div v-if="kind(s) !== 'boolean'" class="mb-1 flex items-center justify-between">
+        <label class="label !mb-0">
+          {{ s.title || key }}<span v-if="required.has(key)" class="text-bad"> *</span>
+        </label>
+        <VarPicker v-if="pickable(s)" :groups="variables!" @pick="insert(key, s, $event)" />
+      </div>
       <select
         v-if="kind(s) === 'enum'"
         class="input"
@@ -108,6 +140,7 @@ function setJSON(key: string, raw: string) {
       />
       <textarea
         v-else-if="kind(s) === 'textarea'"
+        :ref="bind(key)"
         class="input font-mono text-xs"
         rows="3"
         :value="show(key, s)"
@@ -115,6 +148,7 @@ function setJSON(key: string, raw: string) {
       />
       <input
         v-else
+        :ref="bind(key)"
         class="input"
         :type="kind(s) === 'password' ? 'password' : 'text'"
         :value="show(key, s)"

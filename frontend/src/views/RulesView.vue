@@ -60,9 +60,11 @@ async function toggle(r: Rule) {
 }
 function describe(r: Rule): string {
   const from = r.sources?.length ? r.sources.map(hub.instanceName).join('、') : '任意来源'
-  const to = r.steps
+  // a graph may branch, so its actions are listed rather than chained
+  const steps = r.graph ? r.graph.nodes.filter((n) => n.kind === 'action') : r.steps || []
+  const to = steps
     .map((s) => `${s.instance === '$source' ? '原路' : hub.instanceName(s.instance)}·${s.action}`)
-    .join(' → ')
+    .join(r.graph ? '、' : ' → ')
   return `${from} → ${to || '（无动作）'}`
 }
 </script>

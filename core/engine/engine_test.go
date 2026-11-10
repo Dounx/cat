@@ -348,3 +348,98 @@ func TestWebsocketRejectsBadURL(t *testing.T) {
 		return ok && v.Status == engine.StatusError
 	})
 }
+
+func TestGraphRuleBranches(t *testing.T) {
+	e := newEngine(t)
+	hook, _ := e.SaveInstance(store.Instance{Plugin: "webhook", Enabled: true})
+	waitRunning(t, e, hook.ID)
+	waitRunning(t, e, "shell")
+	echo := func(id, text string) rules.Node {
+		return rules.Node{Kind: rules.KindAction, Step: rules.Step{
+			ID: id, Instance: "shell", Action: "run", Params: map[string]any{"command": "echo " + text},
+		}}
+	}
+	// trigger → urgent? ─ yes → first → (first printed "one"?) → second
+	//                    └ else → other
+	rule, err := e.SaveRule(rules.Rule{Name: "g", Enabled: true, Graph: &rules.Graph{
+		Nodes: []rules.Node{
+			{Kind: rules.KindCondition, Step: rules.Step{ID: "urgent"}, Condition: `payload.level == "urgent"`},
+			{Kind: rules.KindCondition, Step: rules.Step{ID: "said"}, Condition: `steps.first.stdout contains "one"`},
+			echo("first", "one"), echo("second", "two"), echo("other", "three"),
+		},
+		Edges: []rules.Edge{
+			{From: rules.TriggerNode, To: "urgent"},
+			{From: "urgent", To: "first"},
+			{From: "first", To: "said"},
+			{From: "said", To: "second"},
+			{From: "urgent", To: "other", Branch: rules.BranchElse},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := func(n int) []string {
+		t.Helper()
+		waitFor(t, "runs", func() bool {
+			runs, _ := e.Store.ListRuns(rule.ID, "", 10)
+			return len(runs) == n && runs[0].Status == "ok"
+		})
+		runs, _ := e.Store.ListRuns(rule.ID, "", 10)
+		var ids []string
+		for _, s := range runs[0].Steps {
+			ids = append(ids, s.ID)
+		}
+		return ids
+	}
+	post(t, e, hook.ID, `{"level":"urgent"}`, map[string]string{"Content-Type": "application/json"})
+	if got := strings.Join(steps(1), ","); got != "first,second" {
+		t.Fatalf("urgent event ran %q", got)
+	}
+	post(t, e, hook.ID, `{"level":"low"}`, map[string]string{"Content-Type": "application/json"})
+	if got := strings.Join(steps(2), ","); got != "other" {
+		t.Fatalf("other event ran %q", got)
+	}
+
+	if _, err := e.SaveRule(rules.Rule{Name: "loop", Graph: &rules.Graph{
+		Nodes: []rules.Node{echo("a", "x"), echo("b", "y")},
+		Edges: []rules.Edge{{From: "a", To: "b"}, {From: "b", To: "a"}},
+	}}); err == nil {
+		t.Fatal("a graph with a loop should be rejected")
+	}
+}
+
+func TestGraphThrottleNode(t *testing.T) {
+	e := newEngine(t)
+	hook, _ := e.SaveInstance(store.Instance{Plugin: "webhook", Enabled: true})
+	waitRunning(t, e, hook.ID)
+	waitRunning(t, e, "shell")
+	// trigger → limit (once a minute per payload.user) → run
+	rule, err := e.SaveRule(rules.Rule{Name: "t", Enabled: true, Graph: &rules.Graph{
+		Nodes: []rules.Node{
+			{Kind: rules.KindTrigger, Step: rules.Step{ID: "in"}},
+			{Kind: rules.KindThrottle, Step: rules.Step{ID: "limit"}, ThrottleSeconds: 60, ThrottleKey: "payload.user"},
+			{Kind: rules.KindAction, Step: rules.Step{ID: "run", Instance: "shell", Action: "run", Params: map[string]any{"command": "echo hi"}}},
+		},
+		Edges: []rules.Edge{{From: "in", To: "limit"}, {From: "limit", To: "run"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	json := map[string]string{"Content-Type": "application/json"}
+	post(t, e, hook.ID, `{"user":"a"}`, json)
+	post(t, e, hook.ID, `{"user":"a"}`, json) // held back: same user, inside the window
+	post(t, e, hook.ID, `{"user":"b"}`, json)
+	waitFor(t, "two runs", func() bool {
+		runs, _ := e.Store.ListRuns(rule.ID, "", 10)
+		return len(runs) == 2 && runs[0].Status == "ok" && runs[1].Status == "ok"
+	})
+	time.Sleep(200 * time.Millisecond)
+	runs, _ := e.Store.ListRuns(rule.ID, "", 10)
+	if len(runs) != 2 {
+		t.Fatalf("the repeated event should have been held back, got %d runs", len(runs))
+	}
+	// a replay is let through whatever the throttle says
+	if n, err := e.Replay(runs[0].EventID, rule.ID); err != nil || n != 1 {
+		t.Fatalf("replay matched %d, err %v", n, err)
+	}
+}

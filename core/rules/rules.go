@@ -35,6 +35,9 @@ type Rule struct {
 	Types     []string `json:"types,omitempty"`   // globs such as "message.*"; empty = any
 	Condition string   `json:"condition,omitempty"`
 	Steps     []Step   `json:"steps"`
+	// Graph, when set, replaces Condition and Steps: the rule runs as a graph
+	// of condition and action nodes (see graph.go).
+	Graph *Graph `json:"graph,omitempty"`
 	// ThrottleSeconds drops matches arriving within this window of the last
 	// accepted one sharing the same ThrottleKey (an expression; empty = rule-wide).
 	ThrottleSeconds int    `json:"throttle_seconds,omitempty"`
@@ -79,7 +82,8 @@ func Eval(src string, env map[string]any) (any, error) {
 // Compiled is a rule with its condition ready to run.
 type Compiled struct {
 	Rule
-	cond *vm.Program
+	cond  *vm.Program
+	graph *compiledGraph
 }
 
 func Compile(r Rule) (*Compiled, error) {
@@ -92,18 +96,34 @@ func Compile(r Rule) (*Compiled, error) {
 			return nil, fmt.Errorf("throttle_key: %w", err)
 		}
 	}
-	return &Compiled{Rule: r, cond: p}, nil
+	c := &Compiled{Rule: r, cond: p}
+	if r.Graph != nil {
+		if c.graph, err = compileGraph(r.Graph); err != nil {
+			return nil, err
+		}
+	}
+	return c, nil
 }
 
-// Scope reports whether the event falls within the rule's sources and types.
+// Scope reports whether the event falls within the rule's sources and types,
+// or, for a graph with trigger nodes, within those of any of them.
 func (c *Compiled) Scope(ev *event.Event) bool {
-	if len(c.Sources) > 0 && !contains(c.Sources, ev.Source) {
+	if c.graph != nil && len(c.graph.triggers) > 0 {
+		return len(c.graph.starts(ev)) > 0
+	}
+	return inScope(c.Sources, c.Types, ev)
+}
+
+// inScope reports whether the event comes from one of the sources and is of
+// one of the types (globs such as "message.*"); an empty list allows any.
+func inScope(sources, types []string, ev *event.Event) bool {
+	if len(sources) > 0 && !contains(sources, ev.Source) {
 		return false
 	}
-	if len(c.Types) == 0 {
+	if len(types) == 0 {
 		return true
 	}
-	for _, t := range c.Types {
+	for _, t := range types {
 		if ok, _ := path.Match(t, ev.Type); ok || t == ev.Type {
 			return true
 		}
@@ -111,11 +131,23 @@ func (c *Compiled) Scope(ev *event.Event) bool {
 	return false
 }
 
-// Match reports whether the rule applies to the event. A condition that
-// fails to evaluate (e.g. a missing field) is returned as an error.
+// Match reports whether the rule applies to the event: for a graph rule,
+// whether the event gets past the conditions to some action. A condition
+// that fails to evaluate (e.g. a missing field) is returned as an error.
 func (c *Compiled) Match(ev *event.Event) (bool, error) {
+	return c.MatchPast(ev, nil)
+}
+
+// MatchPast is Match with a say in the throttle nodes of a graph rule: an
+// event held back by every throttle on its way does not match. gate must
+// only look, not count the event as let through. With gate nil no throttle
+// holds anything back.
+func (c *Compiled) MatchPast(ev *event.Event, gate Gate) (bool, error) {
 	if !c.Scope(ev) {
 		return false, nil
+	}
+	if c.graph != nil {
+		return c.graph.reaches(ev, gate)
 	}
 	if c.cond == nil {
 		return true, nil
