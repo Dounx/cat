@@ -3,10 +3,10 @@
 把各处来的事件接到一起，按规则筛选，再触发动作。
 
 ```
-QQ / Discord / Telegram / 企业微信 / RSS / 网页变动 / 接口变动 / WebHook ──▶ 规则（条件）──▶ 动作流水线
-                                                                    ├─ 交给 Agent（Claude Code / Codex / DeepSeek）
-                                                                    ├─ 原路回复、跨平台转发
-                                                                    └─ 发 HTTP 请求、跑脚本
+QQ / Discord / Telegram / 企业微信 / RSS / 网页变动 / 接口变动 / 定时 / WebHook ──▶ 规则（条件）──▶ 动作流水线
+                                                                           ├─ 交给 Agent（Claude Code / Codex / DeepSeek）
+                                                                           ├─ 原路回复、跨平台转发
+                                                                           └─ 发 HTTP 请求、跑脚本
 ```
 
 - **插件化**：每个平台、每种 Agent 都是独立进程的插件，用任何语言都能写。官方提供 Go 和 TypeScript SDK。
@@ -103,6 +103,31 @@ POST https://api.example.com/orders/query  data.items  # 请求体填在「请�
 - 认证信息填在「Authorization」里，会按密钥保存；其他请求头填在「请求头」。它们对同一个监控里的所有接口生效，认证不同的接口另建一个监控。
 - 列表里插入或删除一项时，只报告多出来或少掉的那一项，不会把后面的每一项都算作变了。
 
+## 定时触发
+
+「接入」→「监控」→ 添加 **定时触发**，在「定时」里每行写一个：先写时间，空一格后面可以跟一段内容。
+
+```
+9:00  汇总昨天的 GitHub 通知，列出需要我处理的     # 每天 9 点
+0 18 * * 5  该写周报了                             # cron：分 时 日 月 周，这是每周五 18 点
+@every 30m                                         # 每 30 分钟，落在每小时的 0 分和 30 分
+```
+
+到点就发出一个 `schedule.fired` 事件：`payload.text` 是时间后面的那段内容，另有 `schedule`（时间的写法）、`scheduled`（应当触发的时刻）、`date`、`time`、`weekday`、`missed`、`manual`。`conversation.id` 是这一整行，同一个实例里有多个定时时用它区分。
+
+它和 Agent、渠道直接组合。比如每天让 Agent 汇总再发到群里，建一条规则：
+
+1. 来源选这个定时。
+2. 第一步选 Agent 的「对话」，步骤标识填 `agent`，提示词保持 `{{ payload.text }}`（也可以直接把提示词写在这里，用 `{{ payload.date }}` 带上日期）。
+3. 第二步选聊天渠道的「发送到指定会话」，内容填 `{{ steps.agent.text }}`。
+
+只是定时提醒的话不需要 Agent：一步「发送到指定会话」，内容填 `{{ payload.text }}`。
+
+- 时间按这台机器的时区算，也可以在「时区」里指定，如 `Asia/Shanghai`。
+- 到点时电脑在睡眠或 Cat 没在运行，这一次默认跳过。打开「错过的补发一次」后会在恢复时补发，同一个定时不管错过几次都只补一次，事件里 `missed` 为 `true`。
+- 「立即触发」是这个插件提供的动作：放进另一条规则里（比如由 WebHook 或聊天里的一句口令触发），不等到点就发出定时事件，用来试规则或手动补跑。
+- Agent 默认按 `conversation.id` 续接对话，所以同一个定时每次触发都接着上一次聊。想每次从头开始，勾上 Agent 步骤的「丢弃之前的对话，重新开始」。
+
 ## 规则怎么写
 
 条件是 [expr](https://expr-lang.org) 表达式，界面里可以用可视化条件构造器，也可以直接写：
@@ -128,6 +153,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 | RSSHub / RSS | 订阅 RSSHub 路由和普通 RSS / Atom 源，有新条目时发出 `feed.item` 事件 |
 | 网页变动 | 定时检查网页，文字内容有变化时发出 `page.changed` 事件，可用 CSS 选择器只盯一块 |
 | 接口变动 | 定时请求 HTTP 接口，返回的数据有变化时发出 `api.changed` 事件并列出变了的字段，可用字段路径只盯一处 |
+| 定时触发 | 到了设定的时间发出 `schedule.fired` 事件：每天几点、每隔多久，或 cron 表达式 |
 | Claude Code / Codex / DeepSeek | Agent，按会话续接对话 |
 | 大模型对话 | 任意 OpenAI 兼容接口，纯对话 |
 

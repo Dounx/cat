@@ -15,7 +15,7 @@ const editing = ref<null | { plugin: Plugin; id?: string; name: string; enabled:
 type Category = Plugin['category']
 const categories: { id: Category; title: string; hint: string; empty: string }[] = [
   { id: 'channel', title: '渠道', hint: '消息从哪里来，回复和通知发到哪里去', empty: '还没有接入任何渠道，从下面选一个开始。' },
-  { id: 'monitor', title: '监控', hint: '盯着外面的变化，有动静时发出事件；通知由规则交给渠道发出', empty: '还没有添加监控，从下面选一个开始。' },
+  { id: 'monitor', title: '监控', hint: '盯着外面的变化或时间，有动静、到点时发出事件；通知由规则交给渠道发出', empty: '还没有添加监控，从下面选一个开始。' },
   { id: 'processor', title: '处理器', hint: '收到事件后由谁来处理并给出结果', empty: '还没有添加处理器，从下面选一个开始。' },
 ]
 function categoryOf(i: Instance): Category { return hub.pluginOf(i.plugin)?.category ?? 'channel' }
