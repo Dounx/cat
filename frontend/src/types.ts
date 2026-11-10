@@ -12,6 +12,7 @@ export interface Schema {
 export interface ActionSpec { name: string; title: string; description?: string; params?: Schema }
 export interface Plugin {
   id: string; name: string; version: string; description?: string; icon?: string
+  category: 'channel' | 'processor'
   capabilities: string[]; config_schema?: Schema; actions?: ActionSpec[]
   events?: { type: string; title: string }[]
   singleton?: boolean; ingress?: boolean; setup?: boolean; builtin: boolean

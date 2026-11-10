@@ -77,6 +77,11 @@ func LoadManifest(dir string) (*Manifest, error) {
 	if m.Name == "" {
 		m.Name = m.ID
 	}
+	category, ok := plugin.NormalizeCategory(m.Category)
+	if !ok {
+		return nil, fmt.Errorf("plugin.json: unknown category %q (want %q or %q)", m.Category, plugin.CategoryChannel, plugin.CategoryProcessor)
+	}
+	m.Category = category
 	m.Builtin, m.Singleton = false, false
 	m.Dir, _ = filepath.Abs(dir)
 	return &m, nil

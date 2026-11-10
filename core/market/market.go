@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/dounx/cat/core/engine"
+	"github.com/dounx/cat/core/plugin"
 	"github.com/dounx/cat/core/pluginhost"
 )
 
@@ -24,8 +25,10 @@ type Entry struct {
 	Name        string `json:"name"`
 	Version     string `json:"version"`
 	Description string `json:"description,omitempty"`
-	Author      string `json:"author,omitempty"`
-	Homepage    string `json:"homepage,omitempty"`
+	// Category is the plugin's category; empty means "channel".
+	Category string `json:"category,omitempty"`
+	Author   string `json:"author,omitempty"`
+	Homepage string `json:"homepage,omitempty"`
 	// Platforms maps "os/arch", "os" or "any" to the archive for it. The
 	// archive must contain plugin.json at its root.
 	Platforms map[string]pluginhost.Artifact `json:"platforms"`
@@ -126,6 +129,7 @@ func (m *Market) List(ctx context.Context) ([]Listing, error) {
 	out := make([]Listing, 0, len(idx.Plugins))
 	for _, e := range idx.Plugins {
 		l := Listing{Entry: e}
+		l.Category, _ = plugin.NormalizeCategory(e.Category)
 		_, perr := pluginhost.Dependency{Platforms: e.Platforms}.Pick()
 		l.Supported = perr == nil
 		if man, ok := have[e.ID]; ok {

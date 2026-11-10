@@ -14,6 +14,29 @@ const (
 	CapAction = "action"
 )
 
+// A plugin's category is the role it plays for the user. It only affects how
+// the plugin is presented; any plugin can be used in any rule step.
+const (
+	// CategoryChannel plugins connect to the outside world: where events
+	// come from and where actions are sent.
+	CategoryChannel = "channel"
+	// CategoryProcessor plugins take an event and work out a result, e.g. an
+	// AI agent, an auto-responder or a hand-off to a person.
+	CategoryProcessor = "processor"
+)
+
+// NormalizeCategory maps the empty string to CategoryChannel and reports
+// whether the category is a known one.
+func NormalizeCategory(c string) (string, bool) {
+	switch c {
+	case "", CategoryChannel:
+		return CategoryChannel, true
+	case CategoryProcessor:
+		return CategoryProcessor, true
+	}
+	return c, false
+}
+
 // ActionSpec describes one action a plugin can perform.
 type ActionSpec struct {
 	Name        string         `json:"name"`
@@ -30,11 +53,13 @@ type EventSpec struct {
 
 // Manifest is the static description of a plugin (plugin.json for external ones).
 type Manifest struct {
-	ID           string         `json:"id"`
-	Name         string         `json:"name"`
-	Version      string         `json:"version"`
-	Description  string         `json:"description,omitempty"`
-	Icon         string         `json:"icon,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Description string `json:"description,omitempty"`
+	Icon        string `json:"icon,omitempty"`
+	// Category is CategoryChannel (the default) or CategoryProcessor.
+	Category     string         `json:"category"`
 	Capabilities []string       `json:"capabilities"`
 	ConfigSchema map[string]any `json:"config_schema,omitempty"` // JSON Schema
 	Actions      []ActionSpec   `json:"actions,omitempty"`

@@ -115,7 +115,7 @@ async function remove() {
         <h3 class="mb-2 text-sm font-semibold">① 当这些来源收到事件</h3>
         <div class="flex flex-wrap gap-2">
           <button v-for="s in sourceInstances" :key="s.id" class="btn" :class="{ '!border-accent !bg-accent-soft !text-accent': rule.sources!.includes(s.id) }" @click="toggleSource(s.id)">{{ s.name }}</button>
-          <span v-if="!sourceInstances.length" class="text-xs text-mute">还没有事件来源，请先到「接入」添加。</span>
+          <span v-if="!sourceInstances.length" class="text-xs text-mute">还没有能收到事件的渠道，请先到「接入」添加。</span>
         </div>
         <p class="mt-1 text-xs text-mute">不选表示任意来源。</p>
         <label class="label mt-3">事件类型（可选，逗号分隔，支持 message.* 通配）</label>

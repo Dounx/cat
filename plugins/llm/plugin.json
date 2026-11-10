@@ -2,6 +2,7 @@
   "id": "llm",
   "name": "大模型对话",
   "version": "0.1.0",
+  "category": "processor",
   "description": "调用任意 OpenAI 兼容接口进行纯对话（不带工具），按会话保留上下文。",
   "config_schema": {
     "type": "object",

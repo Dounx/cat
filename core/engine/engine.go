@@ -112,6 +112,11 @@ func (e *Engine) DataDir() string { return e.dataDir }
 
 // RegisterPlugin makes a plugin available. Re-registering replaces it.
 func (e *Engine) RegisterPlugin(m plugin.Manifest, f plugin.Factory) {
+	if c, ok := plugin.NormalizeCategory(m.Category); ok {
+		m.Category = c
+	} else {
+		m.Category = plugin.CategoryChannel
+	}
 	e.mu.Lock()
 	e.plugins[m.ID] = registered{m, f}
 	e.mu.Unlock()

@@ -46,7 +46,8 @@ def main():
             continue
         manifest = json.load(open(manifest_path, encoding="utf-8"))
         entry = {"id": pid, "name": manifest["name"], "version": manifest["version"],
-                 "description": manifest.get("description", ""), "platforms": {}}
+                 "description": manifest.get("description", ""),
+                 "category": manifest.get("category", "channel"), "platforms": {}}
         for goos, goarch in platforms:
             exe = f"cat-plugin-{pid}" + (".exe" if goos == "windows" else "")
             tmp = os.path.join(OUT, f".build-{exe}")

@@ -12,9 +12,19 @@ import SetupWizard from '../components/SetupWizard.vue'
 const hub = useHub()
 const editing = ref<null | { plugin: Plugin; id?: string; name: string; enabled: boolean; config: Record<string, any> }>(null)
 
-const addable = computed(() => hub.plugins.filter((p) => !p.singleton))
-const configured = computed(() => hub.instances.filter((i) => !hub.pluginOf(i.plugin)?.singleton))
-const builtins = computed(() => hub.instances.filter((i) => hub.pluginOf(i.plugin)?.singleton))
+type Category = Plugin['category']
+const categories: { id: Category; title: string; hint: string; empty: string }[] = [
+  { id: 'channel', title: '渠道', hint: '事件从哪里来，动作发到哪里去', empty: '还没有接入任何渠道，从下面选一个开始。' },
+  { id: 'processor', title: '处理器', hint: '收到事件后由谁来处理并给出结果', empty: '还没有添加处理器，从下面选一个开始。' },
+]
+function categoryOf(i: Instance): Category { return hub.pluginOf(i.plugin)?.category ?? 'channel' }
+const groups = computed(() => categories.map((c) => ({
+  ...c,
+  addable: hub.plugins.filter((p) => !p.singleton && p.category === c.id),
+  configured: hub.instances.filter((i) => !hub.pluginOf(i.plugin)?.singleton && categoryOf(i) === c.id),
+  builtins: hub.instances.filter((i) => hub.pluginOf(i.plugin)?.singleton && categoryOf(i) === c.id),
+  market: market.value.plugins.filter((p) => p.category === c.id),
+})))
 
 const statusText: Record<string, string> = { running: '运行中', starting: '启动中', stopped: '已停用', error: '出错' }
 const statusColor: Record<string, string> = { running: 'bg-ok', starting: 'bg-warn', stopped: 'bg-mute', error: 'bg-bad' }
@@ -26,7 +36,7 @@ async function copy(text: string) {
 }
 
 interface MarketPlugin {
-  id: string; name: string; version: string; description?: string; homepage?: string
+  id: string; name: string; version: string; description?: string; homepage?: string; category: Category
   supported: boolean; installed_version: string; bundled: boolean
 }
 const market = ref<{ configured: boolean; error?: string; plugins: MarketPlugin[] }>({ configured: false, plugins: [] })
@@ -91,12 +101,13 @@ async function remove(i: Instance) {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="接入" hint="事件从哪里来，动作发到哪里去" />
+    <PageHeader title="接入" hint="渠道负责收发，处理器负责处理" />
     <div class="flex-1 space-y-8 overflow-y-auto p-6">
-      <section>
-        <h2 class="mb-3 text-sm font-semibold">已接入</h2>
-        <p v-if="!configured.length" class="card p-6 text-center text-sm text-mute">还没有接入任何来源，从下面选一个开始。</p>
-        <div v-for="i in configured" :key="i.id" class="card mb-2 flex items-center gap-4 px-4 py-3">
+      <section v-for="g in groups" :key="g.id">
+        <h2 class="text-sm font-semibold">{{ g.title }}</h2>
+        <p class="mb-3 text-xs text-mute">{{ g.hint }}</p>
+        <p v-if="!g.configured.length" class="card p-6 text-center text-sm text-mute">{{ g.addable.length ? g.empty : '还没有这一类插件，可以在下面的插件市场安装。' }}</p>
+        <div v-for="i in g.configured" :key="i.id" class="card mb-2 flex items-center gap-4 px-4 py-3">
           <span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="statusColor[i.status]" :title="statusText[i.status]" />
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2 text-sm font-medium">{{ i.name }}<span class="chip">{{ hub.pluginOf(i.plugin)?.name || i.plugin }}</span>
@@ -111,55 +122,58 @@ async function remove(i: Instance) {
           <button class="btn btn-ghost px-2" :title="i.enabled ? '停用' : '启用'" @click="toggle(i)"><Power :size="15" :class="i.enabled ? 'text-ok' : 'text-mute'" /></button>
           <button class="btn btn-ghost btn-danger px-2" title="删除" @click="remove(i)"><Trash2 :size="15" /></button>
         </div>
-      </section>
 
-      <section>
-        <h2 class="mb-3 text-sm font-semibold">添加</h2>
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(15rem,1fr))] gap-3">
-          <button v-for="p in addable" :key="p.id" class="card flex flex-col items-start p-4 text-left transition hover:border-accent" @click="add(p)">
-            <div class="mb-1 flex w-full items-center justify-between text-sm font-medium">{{ p.name }}<Plus :size="16" class="text-mute" /></div>
-            <p class="mb-2 line-clamp-2 text-xs text-mute">{{ p.description }}</p>
-            <div class="mt-auto flex gap-1">
-              <span v-if="p.capabilities.includes('source')" class="chip">事件来源</span>
-              <span v-if="p.capabilities.includes('action')" class="chip">动作</span>
-              <span v-if="!p.builtin" class="chip">插件 {{ p.version }}</span>
+        <template v-if="g.addable.length">
+          <h3 class="mb-2 mt-4 text-xs font-medium text-mute">添加</h3>
+          <div class="grid grid-cols-[repeat(auto-fill,minmax(15rem,1fr))] gap-3">
+            <button v-for="p in g.addable" :key="p.id" class="card flex flex-col items-start p-4 text-left transition hover:border-accent" @click="add(p)">
+              <div class="mb-1 flex w-full items-center justify-between text-sm font-medium">{{ p.name }}<Plus :size="16" class="text-mute" /></div>
+              <p class="mb-2 line-clamp-2 text-xs text-mute">{{ p.description }}</p>
+              <div class="mt-auto flex gap-1">
+                <span v-if="p.capabilities.includes('source')" class="chip">事件来源</span>
+                <span v-if="p.capabilities.includes('action')" class="chip">动作</span>
+                <span v-if="!p.builtin" class="chip">插件 {{ p.version }}</span>
+              </div>
+            </button>
+          </div>
+        </template>
+
+        <template v-if="g.builtins.length">
+          <h3 class="mb-2 mt-4 text-xs font-medium text-mute">内置，无需配置</h3>
+          <div class="flex flex-wrap gap-2">
+            <div v-for="i in g.builtins" :key="i.id" class="card flex items-center gap-2 px-3 py-2 text-sm">
+              <span class="h-2 w-2 rounded-full" :class="statusColor[i.status]" />{{ i.name }}
+              <span class="text-xs text-mute">{{ hub.pluginOf(i.plugin)?.description }}</span>
             </div>
-          </button>
-        </div>
+          </div>
+        </template>
       </section>
 
       <section>
         <h2 class="mb-1 text-sm font-semibold">插件市场</h2>
         <p class="mb-3 text-xs text-mute">插件以你的用户身份运行，没有沙箱。安装前会校验文件的 SHA-256。</p>
         <p v-if="market.error" class="card p-4 text-sm text-mute">{{ market.error }}</p>
-        <div v-for="p in market.plugins" :key="p.id" class="card mb-2 flex items-center gap-4 px-4 py-3">
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2 text-sm font-medium">{{ p.name }}<span class="chip">{{ p.version }}</span>
-              <span v-if="p.bundled" class="text-xs font-normal text-mute">随应用提供</span>
-              <span v-else-if="p.installed_version" class="text-xs font-normal text-ok">已安装 {{ p.installed_version }}</span>
+        <template v-for="g in groups" :key="g.id">
+          <h3 v-if="g.market.length" class="mb-2 mt-4 text-xs font-medium text-mute">{{ g.title }}</h3>
+          <div v-for="p in g.market" :key="p.id" class="card mb-2 flex items-center gap-4 px-4 py-3">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2 text-sm font-medium">{{ p.name }}<span class="chip">{{ p.version }}</span>
+                <span v-if="p.bundled" class="text-xs font-normal text-mute">随应用提供</span>
+                <span v-else-if="p.installed_version" class="text-xs font-normal text-ok">已安装 {{ p.installed_version }}</span>
+              </div>
+              <p class="truncate text-xs text-mute">{{ p.description }}</p>
             </div>
-            <p class="truncate text-xs text-mute">{{ p.description }}</p>
-          </div>
-          <span v-if="installing === p.id" class="text-xs text-mute">下载中 {{ progress }}</span>
-          <template v-else-if="!p.bundled">
-            <span v-if="!p.supported" class="text-xs text-mute">不支持当前系统</span>
-            <button v-else-if="!p.installed_version" class="btn" @click="install(p)">安装</button>
-            <template v-else>
-              <button v-if="p.installed_version !== p.version" class="btn btn-primary" @click="install(p)">更新</button>
-              <button class="btn btn-ghost btn-danger" @click="uninstall(p)">卸载</button>
+            <span v-if="installing === p.id" class="text-xs text-mute">下载中 {{ progress }}</span>
+            <template v-else-if="!p.bundled">
+              <span v-if="!p.supported" class="text-xs text-mute">不支持当前系统</span>
+              <button v-else-if="!p.installed_version" class="btn" @click="install(p)">安装</button>
+              <template v-else>
+                <button v-if="p.installed_version !== p.version" class="btn btn-primary" @click="install(p)">更新</button>
+                <button class="btn btn-ghost btn-danger" @click="uninstall(p)">卸载</button>
+              </template>
             </template>
-          </template>
-        </div>
-      </section>
-
-      <section>
-        <h2 class="mb-3 text-sm font-semibold">内置动作</h2>
-        <div class="flex flex-wrap gap-2">
-          <div v-for="i in builtins" :key="i.id" class="card flex items-center gap-2 px-3 py-2 text-sm">
-            <span class="h-2 w-2 rounded-full" :class="statusColor[i.status]" />{{ i.name }}
-            <span class="text-xs text-mute">{{ hub.pluginOf(i.plugin)?.description }}</span>
           </div>
-        </div>
+        </template>
       </section>
     </div>
 

@@ -5,6 +5,7 @@
   "protocol": 1,
   "description": "一个最小的 TypeScript 插件：定时发出事件，并提供一个动作。",
   "command": ["bun", "run", "src/index.ts"],
+  "category": "channel",
   "capabilities": ["source", "action"],
   "config_schema": {
     "type": "object",

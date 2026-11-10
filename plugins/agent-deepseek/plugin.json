@@ -2,6 +2,7 @@
   "id": "agent-deepseek",
   "name": "DeepSeek",
   "version": "0.1.0",
+  "category": "processor",
   "setup": true,
   "description": "用 DeepSeek 对话。可以驱动本机的 DeepSeek Harness（带工具的 Agent），也可以只调用 API 纯对话，或用 DeepSeek 模型驱动 Claude Code。",
   "config_schema": {

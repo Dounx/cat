@@ -219,3 +219,27 @@ func TestSetupCancel(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadManifestCategory(t *testing.T) {
+	load := func(category string) (*pluginhost.Manifest, error) {
+		dir := t.TempDir()
+		body := `{"id":"x","command":["./x"]` + category + `}`
+		if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return pluginhost.LoadManifest(dir)
+	}
+	for in, want := range map[string]string{
+		``:                        plugin.CategoryChannel,
+		`,"category":"channel"`:   plugin.CategoryChannel,
+		`,"category":"processor"`: plugin.CategoryProcessor,
+	} {
+		m, err := load(in)
+		if err != nil || m.Category != want {
+			t.Errorf("category %q: got %v, %v; want %q", in, m, err, want)
+		}
+	}
+	if _, err := load(`,"category":"agent"`); err == nil {
+		t.Error("unknown category should be rejected")
+	}
+}
