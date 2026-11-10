@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -25,6 +26,9 @@ type Options struct {
 	Addr    string // listen address; ":0" style picks a free port
 	DataDir string // default ~/.cat
 	Token   string
+	// UIDev is the URL of a running frontend dev server. When set the hub
+	// proxies the UI to it instead of serving the embedded build.
+	UIDev string
 	// PluginDirs are extra directories searched for plugins, ahead of
 	// <data>/plugins and the plugins directory beside the executable.
 	PluginDirs []string
@@ -87,6 +91,15 @@ func New(opts Options) (*App, error) {
 	}
 	ui, _ := fs.Sub(frontend.Dist, "dist")
 	srv := &api.Server{Engine: eng, Token: opts.Token, UI: ui}
+	if opts.UIDev != "" {
+		dev, err := url.Parse(opts.UIDev)
+		if err != nil || dev.Host == "" {
+			ln.Close()
+			st.Close()
+			return nil, fmt.Errorf("ui dev server %q: not a URL", opts.UIDev)
+		}
+		srv.UIDev = dev
+	}
 	a := &App{Engine: eng, Store: st, Server: srv, DataDir: opts.DataDir, listener: ln, opts: opts}
 	if err := a.extend(); err != nil {
 		ln.Close()

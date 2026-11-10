@@ -1,8 +1,8 @@
 #!/bin/sh
 # Development loop behind `make dev`: the hub plus the Vite dev server.
 #
-#   - frontend/src is served by Vite with hot module replacement; open the
-#     URL Vite prints, not the hub's (that one serves the last `pnpm build`).
+#   - frontend/src is served by Vite with hot module replacement. The hub
+#     proxies its UI to Vite, so the hub's own address hot-reloads too.
 #   - Go sources, plugin manifests and the TypeScript plugins are polled once
 #     a second; on a change the plugins and catd are rebuilt and the hub is
 #     restarted. A failed build leaves the running hub alone.
@@ -13,6 +13,7 @@ cd "$(dirname "$0")/.."
 
 EXE=${EXE:-}
 MAKE=${MAKE:-make}
+UI_DEV_PORT=${UI_DEV_PORT:-5173}
 hub=
 vite=
 stamp=$(mktemp)
@@ -22,7 +23,7 @@ build() {
 }
 
 start_hub() {
-	"./bin/catd$EXE" --plugins ./plugins "$@" &
+	"./bin/catd$EXE" --plugins ./plugins --ui-dev "http://localhost:$UI_DEV_PORT" "$@" &
 	hub=$!
 }
 
@@ -57,7 +58,7 @@ touch "$stamp"
 build || exit 1
 start_hub "$@"
 
-(cd frontend && pnpm install --silent && exec pnpm dev) &
+(cd frontend && pnpm install --silent && exec pnpm dev --port "$UI_DEV_PORT" --strictPort) &
 vite=$!
 
 while sleep 1; do

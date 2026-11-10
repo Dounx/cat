@@ -175,7 +175,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 
 ```bash
 make test                                # 全部测试
-make dev                                 # 热重载：界面走 Vite（打开它输出的地址），Go / 插件改动后自动重新构建并重启后端
+make dev                                 # 热重载：打开 http://127.0.0.1:7788，界面改动即时生效，Go / 插件改动后自动重新构建并重启后端
 ```
 
 ### 发布

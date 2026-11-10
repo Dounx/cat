@@ -70,8 +70,9 @@ run: all
 	./bin/catd$(EXE) --plugins ./plugins $(ARGS)
 
 # Development loop: the hub, rebuilt and restarted when Go or plugin sources
-# change, plus the Vite dev server with hot reload for the UI (open the URL
-# Vite prints). ARGS is passed to catd as in `run`.
+# change, plus the Vite dev server with hot reload for the UI. The hub proxies
+# its UI to Vite, so http://127.0.0.1:7788 hot-reloads as well. ARGS is passed
+# to catd as in `run`.
 dev:
 	@mkdir -p frontend/dist
 	@EXE=$(EXE) MAKE=$(MAKE) sh scripts/dev.sh $(ARGS)

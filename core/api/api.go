@@ -10,6 +10,8 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,10 @@ type Server struct {
 	Token string
 	// UI is the built web frontend; nil serves the API only.
 	UI fs.FS
+	// UIDev, when set, replaces UI: everything that is not the API or ingress
+	// is proxied to the frontend dev server, so its hot reload works at the
+	// hub's own address.
+	UIDev *url.URL
 	// Desktop is reported by /api/status so the UI can adapt to the desktop shell.
 	Desktop bool
 
@@ -172,7 +178,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/ingress/{id}", s.ingress)
 	mux.HandleFunc("/ingress/{id}/{rest...}", s.ingress)
 
-	if s.UI != nil {
+	if s.UIDev != nil {
+		mux.Handle("/", devUI(s.UIDev))
+	} else if s.UI != nil {
 		mux.Handle("/", spa(s.UI))
 	}
 	return s.guard(mux)
@@ -297,6 +305,24 @@ func spa(ui fs.FS) http.Handler {
 			return
 		}
 		files.ServeHTTP(w, r)
+	})
+}
+
+// devUI proxies to the frontend dev server, WebSocket upgrades included (the
+// hot-reload channel).
+func devUI(target *url.URL) http.Handler {
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(r *httputil.ProxyRequest) { r.SetURL(target) },
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			http.Error(w, "frontend dev server at "+target.String()+" is not reachable: "+err.Error(), http.StatusBadGateway)
+		},
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			writeErr(w, 404, "not found")
+			return
+		}
+		proxy.ServeHTTP(w, r)
 	})
 }
 

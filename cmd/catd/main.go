@@ -23,6 +23,7 @@ func main() {
 	flag.StringVar(&opts.Token, "token", os.Getenv("CAT_TOKEN"), "API token; required when listening on a non-loopback address")
 	plugins := flag.String("plugins", os.Getenv("CAT_PLUGINS"), "extra plugin directories, separated by "+string(os.PathListSeparator))
 	flag.StringVar(&opts.MarketURL, "market", os.Getenv("CAT_MARKET"), "plugin market index URL")
+	flag.StringVar(&opts.UIDev, "ui-dev", os.Getenv("CAT_UI_DEV"), "frontend dev server URL to proxy the UI to (development)")
 	flag.Parse()
 	opts.PluginDirs = filepath.SplitList(*plugins)
 
