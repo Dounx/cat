@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Plus } from 'lucide-vue-next'
+import { ChevronRight, Plus, Workflow } from 'lucide-vue-next'
 import { useHub } from '../hub'
 import { put } from '../api'
 import type { Rule } from '../types'
@@ -80,25 +80,38 @@ function describe(r: Rule): string {
       </button>
       <button class="btn btn-primary" @click="create"><Plus :size="15" />新建规则</button>
     </PageHeader>
-    <div class="flex-1 overflow-y-auto p-6">
-      <p v-if="!hub.rules.length" class="card p-10 text-center text-sm text-mute">
-        还没有规则。新建一条，把事件和动作连起来。
-      </p>
-      <div
-        v-for="r in hub.rules"
-        :key="r.id"
-        class="card mb-2 flex cursor-pointer items-center gap-4 px-4 py-3 hover:border-accent"
-        @click="editing = JSON.parse(JSON.stringify(r))"
-      >
-        <input type="checkbox" :checked="r.enabled" title="启用" @click.stop @change="toggle(r)" />
-        <div class="min-w-0 flex-1">
-          <div class="text-sm font-medium" :class="{ 'text-mute': !r.enabled }">{{ r.name }}</div>
-          <div class="truncate text-xs text-mute">{{ describe(r) }}</div>
-          <div v-if="r.condition" class="mt-1 truncate font-mono text-[11px] text-mute">{{ r.condition }}</div>
-          <div v-if="r.error" class="mt-1 text-xs text-bad">{{ r.error }}</div>
-        </div>
+    <div class="gutter flex-1 overflow-y-auto pb-6">
+      <div v-if="!hub.rules.length" class="card empty">
+        <Workflow :size="28" :stroke-width="1.5" />
+        <p class="text-ink">还没有规则</p>
+        <p class="text-xs">新建一条，把事件和动作连起来。</p>
       </div>
+      <TransitionGroup v-else tag="div" name="item" class="list">
+        <div
+          v-for="r in hub.rules"
+          :key="r.id"
+          class="row link flex cursor-pointer items-center gap-4 px-4 py-3"
+          @click="editing = JSON.parse(JSON.stringify(r))"
+        >
+          <div class="min-w-0 flex-1 transition-opacity duration-200" :class="{ 'opacity-50': !r.enabled }">
+            <div class="text-sm font-medium">{{ r.name }}</div>
+            <div class="truncate text-xs text-mute">{{ describe(r) }}</div>
+            <div v-if="r.condition" class="mt-1 truncate font-mono text-[11px] text-mute">{{ r.condition }}</div>
+            <div v-if="r.error" class="mt-1 text-xs text-bad">{{ r.error }}</div>
+          </div>
+          <input
+            type="checkbox"
+            :checked="r.enabled"
+            :title="r.enabled ? '已启用' : '已停用'"
+            @click.stop
+            @change="toggle(r)"
+          />
+          <ChevronRight :size="15" class="text-faint" />
+        </div>
+      </TransitionGroup>
     </div>
-    <RuleEditor v-if="editing" :rule="editing" @close="editing = null" @saved="onSaved" />
+    <Transition name="drawer">
+      <RuleEditor v-if="editing" :rule="editing" @close="editing = null" @saved="onSaved" />
+    </Transition>
   </div>
 </template>

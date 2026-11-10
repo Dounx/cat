@@ -132,7 +132,7 @@ async function remove() {
           <label class="label">名称</label
           ><input v-model="rule.name" class="input" placeholder="例如：部署通知触发 Agent" />
         </div>
-        <label class="flex items-center gap-1.5 pb-2 text-sm"
+        <label class="flex cursor-pointer items-center gap-2 pb-2 text-sm"
           ><input v-model="rule.enabled" type="checkbox" />启用</label
         >
       </section>
@@ -144,7 +144,7 @@ async function remove() {
             v-for="s in sourceInstances"
             :key="s.id"
             class="btn"
-            :class="{ '!border-accent !bg-accent-soft !text-accent': rule.sources!.includes(s.id) }"
+            :class="{ '!border-accent/40 !bg-accent-soft !text-accent': rule.sources!.includes(s.id) }"
             @click="toggleSource(s.id)"
           >
             {{ s.name }}
@@ -162,26 +162,27 @@ async function remove() {
       <section>
         <div class="mb-2 flex items-center justify-between">
           <h3 class="text-sm font-semibold">② 并且满足条件</h3>
-          <div class="flex overflow-hidden rounded-md border border-line text-xs">
+          <div class="seg">
             <button
-              class="px-2.5 py-1"
-              :class="builder.mode === 'builder' ? 'bg-accent-soft text-accent' : 'bg-surface text-mute'"
+              class="!py-0.5 !text-xs"
+              :class="{ on: builder.mode === 'builder' }"
               @click="builder.mode = 'builder'"
             >
               可视化
             </button>
-            <button
-              class="px-2.5 py-1"
-              :class="builder.mode === 'expr' ? 'bg-accent-soft text-accent' : 'bg-surface text-mute'"
-              @click="showExpression"
-            >
+            <button class="!py-0.5 !text-xs" :class="{ on: builder.mode === 'expr' }" @click="showExpression">
               表达式
             </button>
           </div>
         </div>
 
         <template v-if="builder.mode === 'builder'">
-          <div v-for="(row, i) in builder.rows" :key="i" class="mb-2 flex items-center gap-2">
+          <div
+            v-for="(row, i) in builder.rows"
+            :key="i"
+            class="mb-2 flex items-center gap-2"
+            style="animation: item-in 0.2s var(--ease-glide)"
+          >
             <span class="w-8 shrink-0 text-center text-xs text-mute">{{
               i === 0 ? '当' : builder.join === 'and' ? '且' : '或'
             }}</span>
@@ -237,22 +238,33 @@ async function remove() {
             </option>
           </select>
           <button class="btn" @click="test">测试条件</button>
-          <span
-            v-if="testResult"
-            class="text-sm font-medium"
-            :class="testResult.error ? 'text-bad' : testResult.matched ? 'text-ok' : 'text-mute'"
-          >
-            {{ testResult.error ? '出错' : testResult.matched ? '命中' : '不命中' }}
-          </span>
+          <Transition name="swap" mode="out-in">
+            <span
+              v-if="testResult"
+              :key="testResult.error ? 'e' : testResult.matched ? 'y' : 'n'"
+              class="flex shrink-0 items-center gap-1.5 text-sm font-medium"
+            >
+              <span class="dot" :class="testResult.error ? 'bad' : testResult.matched ? 'ok' : ''" />
+              {{ testResult.error ? '出错' : testResult.matched ? '命中' : '不命中' }}
+            </span>
+          </Transition>
         </div>
         <p v-if="testResult?.error" class="mt-1 text-xs text-bad">{{ testResult.error }}</p>
       </section>
 
       <section>
         <h3 class="mb-2 text-sm font-semibold">③ 依次执行</h3>
-        <div v-for="(step, i) in rule.steps" :key="i" class="card mb-3 p-4">
+        <div
+          v-for="(step, i) in rule.steps"
+          :key="i"
+          class="mb-3 rounded-xl border border-line p-4"
+          style="animation: item-in 0.24s var(--ease-glide)"
+        >
           <div class="mb-3 flex items-center gap-2">
-            <span class="text-sm font-medium text-mute">{{ i + 1 }}</span>
+            <span
+              class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sunken text-[11px] font-medium text-mute tabular-nums"
+              >{{ i + 1 }}</span
+            >
             <select v-model="step.instance" class="input flex-1" @change="onTarget(step)">
               <option value="$source">事件来源（原路回复）</option>
               <option v-for="a in actionInstances" :key="a.id" :value="a.id">{{ a.name }}</option>
@@ -288,7 +300,7 @@ async function remove() {
               <label class="flex items-center gap-2"
                 >步骤标识<input v-model="step.id" class="input w-28 font-mono text-xs"
               /></label>
-              <label class="flex items-center gap-1.5"
+              <label class="flex cursor-pointer items-center gap-2"
                 ><input v-model="step.continue_on_error" type="checkbox" />失败后继续执行后续步骤</label
               >
             </div>

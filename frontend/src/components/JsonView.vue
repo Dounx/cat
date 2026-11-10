@@ -6,6 +6,6 @@ const text = computed(() => (typeof props.value === 'string' ? props.value : JSO
 
 <template>
   <pre
-    class="max-h-96 overflow-auto rounded-md border border-line bg-sunken p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all"
+    class="max-h-96 overflow-auto rounded-lg bg-sunken p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all"
     >{{ text }}</pre>
 </template>

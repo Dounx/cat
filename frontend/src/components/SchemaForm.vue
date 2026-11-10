@@ -75,7 +75,7 @@ function setJSON(key: string, raw: string) {
         <option v-if="!required.has(key) && s.default === undefined" value="">（默认）</option>
         <option v-for="o in s.enum" :key="o" :value="o">{{ o }}</option>
       </select>
-      <label v-else-if="kind(s) === 'boolean'" class="flex items-center gap-2 text-sm">
+      <label v-else-if="kind(s) === 'boolean'" class="flex cursor-pointer items-center gap-2 text-sm">
         <input
           type="checkbox"
           :checked="modelValue[key] ?? s.default ?? false"

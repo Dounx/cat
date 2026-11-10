@@ -3,7 +3,7 @@
 // renders whatever step the host says is current.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
-import { ExternalLink } from 'lucide-vue-next'
+import { CircleCheck, CircleX, ExternalLink, LoaderCircle, X } from 'lucide-vue-next'
 import { useHub } from '../hub'
 import { get, post } from '../api'
 import type { Plugin, Schema } from '../types'
@@ -97,54 +97,74 @@ async function cancel() {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-    <section class="card flex max-h-full w-full max-w-md flex-col overflow-hidden shadow-xl">
+  <div class="scrim fixed inset-0 z-50 flex items-center justify-center p-4">
+    <section class="pop flex max-h-full w-full max-w-md flex-col overflow-hidden">
       <header class="flex items-center justify-between border-b border-line px-5 py-3">
         <h2 class="text-[15px] font-semibold">接入 {{ plugin.name }}</h2>
-        <button class="btn btn-ghost px-2" aria-label="关闭" @click="cancel">✕</button>
+        <button class="btn btn-ghost px-1.5" aria-label="关闭" @click="cancel"><X :size="16" /></button>
       </header>
 
       <div class="min-h-40 flex-1 overflow-y-auto p-5">
-        <p v-if="startError" class="text-sm text-bad">{{ startError }}</p>
-
-        <template v-else-if="session?.state === 'done'">
-          <h3 class="mb-1 text-base font-semibold text-ok">接入完成</h3>
-          <p v-if="step?.kind === 'info'" class="mb-1 text-sm font-medium">{{ step.title }}</p>
-          <p class="text-sm whitespace-pre-line text-mute">
-            {{ step?.kind === 'info' ? step.description : '实例已保存并启动。' }}
-          </p>
-        </template>
-
-        <template v-else-if="session?.state === 'error'">
-          <h3 class="mb-1 text-base font-semibold text-bad">接入失败</h3>
-          <p class="text-sm whitespace-pre-line">{{ session.error }}</p>
-        </template>
-
-        <template v-else-if="step">
-          <h3 class="mb-1 text-base font-semibold">{{ step.title }}</h3>
-          <p v-if="step.description" class="mb-3 text-sm whitespace-pre-line text-mute">{{ step.description }}</p>
-          <a v-if="step.url" :href="step.url" target="_blank" rel="noopener" class="btn mb-3"
-            ><ExternalLink :size="14" />打开链接</a
+        <Transition name="swap" mode="out-in">
+          <div
+            :key="
+              startError
+                ? 'start'
+                : session?.state === 'done' || session?.state === 'error'
+                  ? session.state
+                  : step
+                    ? step.kind
+                    : 'boot'
+            "
           >
+            <p v-if="startError" class="text-sm text-bad">{{ startError }}</p>
 
-          <div v-if="step.kind === 'progress'" class="h-2 overflow-hidden rounded-full bg-sunken">
-            <div
-              v-if="(step.progress ?? -1) >= 0"
-              class="h-full rounded-full bg-accent transition-all"
-              :style="{ width: Math.round((step.progress || 0) * 100) + '%' }"
-            />
-            <div v-else class="h-full w-1/3 animate-pulse rounded-full bg-accent" />
-          </div>
-          <div v-else-if="step.kind === 'qrcode'" class="flex justify-center">
-            <img :src="step.image || qr" alt="二维码" class="h-60 w-60 rounded-md bg-white p-1" />
-          </div>
-          <form v-else-if="step.kind === 'form'" @submit.prevent="answer(values)">
-            <SchemaForm v-model="values" :schema="step.schema" />
-            <button class="btn btn-primary mt-4 w-full" :disabled="busy">继续</button>
-          </form>
-        </template>
+            <template v-else-if="session?.state === 'done'">
+              <h3 class="mb-1 flex items-center gap-2 text-base font-semibold text-ok">
+                <CircleCheck :size="20" class="tick" />接入完成
+              </h3>
+              <p v-if="step?.kind === 'info'" class="mb-1 text-sm font-medium">{{ step.title }}</p>
+              <p class="text-sm whitespace-pre-line text-mute">
+                {{ step?.kind === 'info' ? step.description : '实例已保存并启动。' }}
+              </p>
+            </template>
 
-        <p v-else class="text-sm text-mute">正在启动向导…</p>
+            <template v-else-if="session?.state === 'error'">
+              <h3 class="mb-1 flex items-center gap-2 text-base font-semibold text-bad">
+                <CircleX :size="20" class="tick" />接入失败
+              </h3>
+              <p class="text-sm whitespace-pre-line">{{ session.error }}</p>
+            </template>
+
+            <template v-else-if="step">
+              <h3 class="mb-1 text-base font-semibold">{{ step.title }}</h3>
+              <p v-if="step.description" class="mb-3 text-sm whitespace-pre-line text-mute">{{ step.description }}</p>
+              <a v-if="step.url" :href="step.url" target="_blank" rel="noopener" class="btn mb-3"
+                ><ExternalLink :size="14" />打开链接</a
+              >
+
+              <div v-if="step.kind === 'progress'" class="h-2 overflow-hidden rounded-full bg-sunken">
+                <div
+                  v-if="(step.progress ?? -1) >= 0"
+                  class="h-full rounded-full bg-accent transition-[width] duration-300 ease-glide"
+                  :style="{ width: Math.round((step.progress || 0) * 100) + '%' }"
+                />
+                <div v-else class="bar-sweep h-full w-1/3 rounded-full bg-accent" />
+              </div>
+              <div v-else-if="step.kind === 'qrcode'" class="flex justify-center">
+                <img :src="step.image || qr" alt="二维码" class="h-60 w-60 rounded-xl bg-white p-2" />
+              </div>
+              <form v-else-if="step.kind === 'form'" @submit.prevent="answer(values)">
+                <SchemaForm v-model="values" :schema="step.schema" />
+                <button class="btn btn-primary mt-4 w-full" :disabled="busy">继续</button>
+              </form>
+            </template>
+
+            <p v-else class="flex items-center gap-2 text-sm text-mute">
+              <LoaderCircle :size="15" class="spin" />正在启动向导…
+            </p>
+          </div>
+        </Transition>
       </div>
 
       <footer class="flex justify-end gap-2 border-t border-line px-5 py-3">
