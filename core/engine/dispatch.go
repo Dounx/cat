@@ -1,0 +1,282 @@
+package engine
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/dounx/cat/core/event"
+	"github.com/dounx/cat/core/id"
+	"github.com/dounx/cat/core/plugin"
+	"github.com/dounx/cat/core/rules"
+	"github.com/dounx/cat/core/store"
+)
+
+// ---- rules ----
+
+func (e *Engine) reloadRules() error {
+	list, err := e.Store.ListRules()
+	if err != nil {
+		return err
+	}
+	compiled := make([]*rules.Compiled, 0, len(list))
+	errs := map[string]string{}
+	for _, r := range list {
+		c, err := rules.Compile(r)
+		if err != nil {
+			errs[r.ID] = err.Error()
+			c = nil
+		}
+		if c != nil {
+			compiled = append(compiled, c)
+		}
+	}
+	e.mu.Lock()
+	e.rules, e.ruleErrs = compiled, errs
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *Engine) Rules() ([]RuleView, error) {
+	list, err := e.Store.ListRules()
+	if err != nil {
+		return nil, err
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]RuleView, len(list))
+	for i, r := range list {
+		out[i] = RuleView{Rule: r, Error: e.ruleErrs[r.ID]}
+	}
+	return out, nil
+}
+
+// SaveRule validates and stores a rule. Invalid expressions are rejected.
+func (e *Engine) SaveRule(r rules.Rule) (rules.Rule, error) {
+	if r.Name == "" {
+		return r, fmt.Errorf("规则名称不能为空")
+	}
+	seen := map[string]bool{}
+	for i := range r.Steps {
+		s := &r.Steps[i]
+		if s.ID == "" {
+			s.ID = fmt.Sprintf("s%d", i+1)
+		}
+		if seen[s.ID] {
+			return r, fmt.Errorf("步骤标识重复：%s", s.ID)
+		}
+		seen[s.ID] = true
+		if s.Instance == "" || s.Action == "" {
+			return r, fmt.Errorf("步骤 %s 缺少目标或动作", s.ID)
+		}
+	}
+	if _, err := rules.Compile(r); err != nil {
+		return r, err
+	}
+	if r.ID == "" {
+		r.ID = id.New()
+	}
+	if err := e.Store.SaveRule(&r); err != nil {
+		return r, err
+	}
+	return r, e.reloadRules()
+}
+
+func (e *Engine) DeleteRule(ruleID string) error {
+	if err := e.Store.DeleteRule(ruleID); err != nil {
+		return err
+	}
+	return e.reloadRules()
+}
+
+// ---- events ----
+
+// Emit stores an event, pushes it to subscribers and dispatches it to rules.
+func (e *Engine) Emit(ev *event.Event) (string, error) {
+	if ev.ID == "" {
+		ev.ID = id.New()
+	}
+	if ev.Time.IsZero() {
+		ev.Time = time.Now()
+	}
+	if ev.Payload == nil {
+		ev.Payload = map[string]any{}
+	}
+	if err := e.Store.SaveEvent(ev); err != nil {
+		return "", err
+	}
+	e.publish(Message{Kind: "event", Data: ev})
+	e.dispatch(ev, "", false)
+
+	e.mu.Lock()
+	e.emitted++
+	prune := e.emitted%500 == 0
+	e.mu.Unlock()
+	if prune {
+		if err := e.Store.PruneEvents(keepEvents); err != nil {
+			e.log.Warn("prune events", "err", err)
+		}
+	}
+	return ev.ID, nil
+}
+
+// Replay re-dispatches a stored event. With ruleID set only that rule is
+// considered. Throttling is skipped. It returns how many rules matched.
+func (e *Engine) Replay(eventID, ruleID string) (int, error) {
+	ev, err := e.Store.GetEvent(eventID)
+	if err != nil {
+		return 0, err
+	}
+	return e.dispatch(ev, ruleID, true), nil
+}
+
+func (e *Engine) dispatch(ev *event.Event, onlyRule string, replay bool) int {
+	e.mu.RLock()
+	list := e.rules
+	e.mu.RUnlock()
+	matched := 0
+	for _, r := range list {
+		if onlyRule != "" && r.ID != onlyRule {
+			continue
+		}
+		if !r.Enabled && !(replay && onlyRule != "") {
+			continue
+		}
+		ok, err := r.Match(ev)
+		e.mu.Lock()
+		if err != nil {
+			e.ruleErrs[r.ID] = "条件求值失败：" + err.Error()
+		} else if r.Scope(ev) {
+			delete(e.ruleErrs, r.ID)
+		}
+		e.mu.Unlock()
+		if !ok {
+			continue
+		}
+		if !replay && e.throttled(r, ev) {
+			continue
+		}
+		matched++
+		e.wg.Add(1)
+		go func(r *rules.Compiled) {
+			defer e.wg.Done()
+			e.sem <- struct{}{}
+			defer func() { <-e.sem }()
+			e.execute(r, ev, replay)
+		}(r)
+	}
+	return matched
+}
+
+func (e *Engine) throttled(r *rules.Compiled, ev *event.Event) bool {
+	if r.ThrottleSeconds <= 0 {
+		return false
+	}
+	key := r.ID
+	if r.ThrottleKey != "" {
+		if v, err := rules.Eval(r.ThrottleKey, rules.Env(ev, nil)); err == nil {
+			key += "\x00" + fmt.Sprint(v)
+		}
+	}
+	now := time.Now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if last, ok := e.throttle[key]; ok && now.Sub(last) < time.Duration(r.ThrottleSeconds)*time.Second {
+		return true
+	}
+	e.throttle[key] = now
+	return false
+}
+
+// TestCondition evaluates a condition against a stored event without side effects.
+func (e *Engine) TestCondition(condition, eventID string) (bool, error) {
+	ev, err := e.Store.GetEvent(eventID)
+	if err != nil {
+		return false, err
+	}
+	c, err := rules.Compile(rules.Rule{Condition: condition})
+	if err != nil {
+		return false, err
+	}
+	return c.Match(ev)
+}
+
+// ---- pipeline ----
+
+func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) {
+	run := &store.Run{
+		ID: id.New(), RuleID: r.ID, RuleName: r.Name, EventID: ev.ID,
+		Status: "running", StartedAt: time.Now(), Steps: []store.StepResult{}, Replay: replay,
+	}
+	e.saveRun(run)
+	outputs := map[string]any{}
+	failed := false
+	for _, step := range r.Steps {
+		res := e.runStep(step, ev, r.ID, run.ID, outputs)
+		run.Steps = append(run.Steps, res)
+		if res.Output != nil {
+			outputs[step.ID] = res.Output
+		} else {
+			outputs[step.ID] = map[string]any{}
+		}
+		if res.Error != "" {
+			failed = true
+			if !step.ContinueOnError {
+				break
+			}
+		}
+		e.saveRun(run)
+	}
+	now := time.Now()
+	run.FinishedAt = &now
+	run.Status = "ok"
+	if failed {
+		run.Status = "error"
+	}
+	e.saveRun(run)
+}
+
+func (e *Engine) saveRun(run *store.Run) {
+	if err := e.Store.SaveRun(run); err != nil {
+		e.log.Error("save run", "err", err)
+	}
+	copied := *run
+	copied.Steps = append([]store.StepResult(nil), run.Steps...)
+	e.publish(Message{Kind: "run", Data: copied})
+}
+
+func (e *Engine) runStep(step rules.Step, ev *event.Event, ruleID, runID string, outputs map[string]any) store.StepResult {
+	target := step.Instance
+	if target == rules.SourceInstance {
+		target = ev.Source
+	}
+	res := store.StepResult{ID: step.ID, Instance: target, Action: step.Action}
+	start := time.Now()
+	defer func() { res.DurationMS = time.Since(start).Milliseconds() }()
+
+	rendered, err := rules.Render(map[string]any(step.Params), rules.Env(ev, outputs))
+	if err != nil {
+		res.Error = "参数模板错误：" + err.Error()
+		res.DurationMS = time.Since(start).Milliseconds()
+		return res
+	}
+	params, _ := rendered.(map[string]any)
+	if params == nil {
+		params = map[string]any{}
+	}
+	res.Params = params
+
+	timeout := defaultStepTimeout
+	if step.TimeoutSeconds > 0 {
+		timeout = time.Duration(step.TimeoutSeconds) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := e.Invoke(ctx, target, step.Action, params, plugin.InvokeContext{Event: ev, RuleID: ruleID, RunID: runID})
+	res.Output = out
+	if err != nil {
+		res.Error = err.Error()
+	}
+	res.DurationMS = time.Since(start).Milliseconds()
+	return res
+}
