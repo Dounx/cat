@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dounx/cat/plugins/internal/sidecar"
 	cat "github.com/dounx/cat/sdk/go"
 	"github.com/dounx/cat/sdk/go/jsonrpc"
 )
@@ -184,12 +185,12 @@ func startManaged(ctx context.Context, h *cat.Host) (*napcat, error) {
 }
 
 func startDocker(ctx context.Context, h *cat.Host) (*napcat, error) {
-	if err := dockerReady(); err != nil {
+	if err := sidecar.DockerReady(); err != nil {
 		return nil, err
 	}
-	if !dockerImagePresent(dockerImage) { // e.g. the pinned version moved on
+	if !sidecar.DockerImagePresent(dockerImage) { // e.g. the pinned version moved on
 		h.Log("info", "正在拉取镜像 %s", dockerImage)
-		if err := dockerPull(ctx, dockerImage, nil); err != nil {
+		if err := sidecar.DockerPull(ctx, dockerImage, nil); err != nil {
 			return nil, err
 		}
 	}

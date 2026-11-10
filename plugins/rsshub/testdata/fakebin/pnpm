@@ -1,0 +1,11 @@
+#!/bin/sh
+# A stand-in for pnpm: it records what it was asked to do, and "builds" by
+# creating the file RSSHub is started from.
+state="$(dirname "$0")"
+echo "$* (skip-browser=$PUPPETEER_SKIP_DOWNLOAD)" >> "$state/pnpm.log"
+case "$1" in
+install) echo "Done in 0.1s" ;;
+build)
+	[ -f "$state/build-fails" ] && { echo "ERR_PNPM build exploded" >&2; exit 1; }
+	mkdir -p dist && echo "// built" > dist/index.mjs ;;
+esac

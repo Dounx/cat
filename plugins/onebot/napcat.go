@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/dounx/cat/plugins/internal/sidecar"
 )
 
 // napcat is a NapCat process managed by this plugin.
@@ -97,15 +98,6 @@ func installNapCat(depDir, dataDir string) (string, error) {
 		return "", fmt.Errorf("准备 NapCat 失败：%w", err)
 	}
 	return dir, os.WriteFile(marker, []byte(depDir), 0o644)
-}
-
-func freePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
 // writeNapCatConfig writes the default OneBot config NapCat applies to any
@@ -210,7 +202,7 @@ func startNapCat(dir, uin string) (*napcat, error) {
 func startProcess(cmd *exec.Cmd, container string) (*napcat, error) {
 	pr, pw := io.Pipe()
 	cmd.Stdout, cmd.Stderr = pw, pw
-	isolate(cmd)
+	sidecar.Isolate(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("启动 NapCat 失败：%w", err)
 	}
@@ -256,7 +248,7 @@ func (n *napcat) stop() {
 			// Killing the docker client would leave the container running.
 			_ = exec.Command("docker", "rm", "-f", n.container).Run()
 		}
-		killTree(n.cmd)
+		sidecar.KillTree(n.cmd)
 		<-n.done
 		live.Lock()
 		delete(live.m, n)
@@ -269,7 +261,7 @@ func (n *napcat) stop() {
 // console goes away.
 func (n *napcat) release() {
 	n.stopOnce.Do(func() {
-		killTree(n.cmd) // the attached docker client; the container runs on
+		sidecar.KillTree(n.cmd) // the attached docker client; the container runs on
 		select {
 		case <-n.done:
 		case <-time.After(time.Second): // whatever still holds the console open, we are done with it

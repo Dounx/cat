@@ -3,14 +3,15 @@
   "name": "RSSHub",
   "version": "0.1.0",
   "protocol": 1,
-  "description": "订阅 RSSHub 实例上的路由，有新条目时发出事件。定时轮询，不需要公网地址。",
+  "description": "订阅 RSSHub 实例上的路由，有新条目时发出事件。可以用已有的实例，也可以让 Cat 在 Docker 容器里或用本机的 Node.js 运行一个。定时轮询，不需要公网地址。",
   "command": ["./cat-plugin-rsshub"],
   "category": "monitor",
   "capabilities": ["source", "action"],
+  "setup": true,
   "config_schema": {
     "type": "object",
     "required": ["routes"],
-    "x-order": ["routes", "base_url", "access_key", "interval", "emit_existing"],
+    "x-order": ["routes", "mode", "base_url", "access_key", "port", "interval", "emit_existing"],
     "properties": {
       "routes": {
         "type": "string",
@@ -18,17 +19,29 @@
         "format": "textarea",
         "description": "每行一个，以 / 开头（如 /github/issue/DIYgod/RSSHub，也可写成 rsshub://github/issue/DIYgod/RSSHub）。# 开头的行是注释。"
       },
+      "mode": {
+        "type": "string",
+        "title": "方式",
+        "enum": ["external", "docker", "local"],
+        "default": "external",
+        "description": "external：使用已有的 RSSHub 实例。docker：由 Cat 在 Docker 容器里运行 RSSHub。local：由 Cat 用本机的 Node.js 从源码构建并运行 RSSHub。后两种通过接入向导配置。"
+      },
       "base_url": {
         "type": "string",
-        "title": "实例地址",
+        "title": "实例地址（external 方式）",
         "default": "https://rsshub.app",
-        "description": "路由会拼在这个地址后面。公共实例经常被限流，建议填自建实例。"
+        "description": "路由会拼在这个地址后面。公共实例经常被限流，建议填自建实例，或改用 docker、local 方式。"
       },
       "access_key": {
         "type": "string",
         "title": "访问密钥（可选）",
         "format": "password",
-        "description": "自建实例设置了 ACCESS_KEY 时填写。"
+        "description": "external 方式：自建实例设置了 ACCESS_KEY 时填写。docker、local 方式由接入向导生成。"
+      },
+      "port": {
+        "type": "integer",
+        "title": "本机端口（docker、local 方式）",
+        "description": "Cat 运行的 RSSHub 监听 127.0.0.1 上的这个端口，由接入向导选定。"
       },
       "interval": {
         "type": "integer",
@@ -56,6 +69,22 @@
         "x-order": ["route"],
         "properties": {
           "route": { "type": "string", "title": "路由（可选）", "description": "和配置里的写法一致；留空检查全部。" }
+        }
+      }
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "rsshub",
+      "title": "RSSHub 源码",
+      "version": "bbc351a",
+      "notice": "RSSHub 是第三方开源项目（github.com/DIYgod/RSSHub）。下载后会用本机的 Node.js 和 pnpm 安装它的依赖包并构建，需要几分钟和约 1 GB 磁盘空间；没有 pnpm 时通过 npx 获取。不会下载浏览器，少数需要浏览器渲染的路由用不了。",
+      "platforms": {
+        "any": {
+          "url": "https://github.com/DIYgod/RSSHub/archive/bbc351a29d44f58aa66cfaf4eec5a6af61205ffb.tar.gz",
+          "sha256": "587288ea5cc66203fb759bf816df6f701524e7a2abca455b17b7f531919efd7f",
+          "format": "tar.gz",
+          "strip": 1
         }
       }
     }

@@ -1,0 +1,11 @@
+#!/bin/sh
+# A stand-in for Node.js: it reports a version, and "runs" a built RSSHub by
+# starting the fake one next to this script.
+state="$(dirname "$0")"
+case "$1" in
+--version) cat "$state/node-version" ;;
+dist/index.mjs)
+	[ -f dist/index.mjs ] || { echo "Cannot find module dist/index.mjs" >&2; exit 1; }
+	FAKE_RSSHUB_LOG="$state/hub.log" exec "$state/fakersshub" ;;
+*) echo "fake node: unsupported: $*" >&2; exit 1 ;;
+esac

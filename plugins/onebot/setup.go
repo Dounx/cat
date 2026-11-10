@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dounx/cat/plugins/internal/sidecar"
 	cat "github.com/dounx/cat/sdk/go"
 )
 
@@ -139,7 +140,7 @@ func setupManaged(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[st
 		return nil, err
 	}
 	return login(ctx, s, cfg, "managed", false, func(wsPort int, token string) (*napcat, error) {
-		webuiPort, err := freePort()
+		webuiPort, err := sidecar.FreePort()
 		if err != nil {
 			return nil, err
 		}
@@ -151,10 +152,10 @@ func setupManaged(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[st
 }
 
 func setupDocker(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[string]any, error) {
-	if err := dockerReady(); err != nil {
+	if err := sidecar.DockerReady(); err != nil {
 		return nil, err
 	}
-	if !dockerImagePresent(dockerImage) {
+	if !sidecar.DockerImagePresent(dockerImage) {
 		ok, err := s.Ask(ctx, cat.Step{
 			Kind: cat.StepConfirm, Title: "需要拉取 NapCat 镜像", URL: "https://github.com/NapNeko/NapCat-Docker",
 			Description: "将从 Docker Hub 拉取镜像 " + dockerImage + "（约 600 MB，内含 Linux 版 QQ）。\n\nNapCat 是第三方开源项目（github.com/NapNeko/NapCatQQ），不是腾讯官方软件。使用它登录 QQ 存在账号被限制的风险，建议使用小号。",
@@ -166,7 +167,7 @@ func setupDocker(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[str
 			return nil, cat.ErrCancelled
 		}
 		s.Progress("正在拉取镜像…", -1)
-		if err := dockerPull(ctx, dockerImage, func(l string) { s.Progress("正在拉取镜像："+l, -1) }); err != nil {
+		if err := sidecar.DockerPull(ctx, dockerImage, func(l string) { s.Progress("正在拉取镜像："+l, -1) }); err != nil {
 			return nil, err
 		}
 	}
@@ -184,7 +185,7 @@ func setupDocker(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[str
 // code login, and returns the instance config for that mode. With keep, a
 // NapCat that logged in is left running for the instance to take over.
 func login(ctx context.Context, s *cat.Setup, cfg map[string]any, mode string, keep bool, start func(wsPort int, token string) (*napcat, error)) (map[string]any, error) {
-	wsPort, err := freePort()
+	wsPort, err := sidecar.FreePort()
 	if err != nil {
 		return nil, err
 	}
