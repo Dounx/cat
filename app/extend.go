@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/dounx/cat/core/api"
 	"github.com/dounx/cat/core/pluginhost"
@@ -26,6 +27,28 @@ func (a *App) extend() error {
 		slog.Warn("plugin skipped", "err", err)
 	}
 	a.Server.Extend(a.pluginRoutes)
+	a.Server.Desktop = a.opts.Desktop
+	if open := a.opts.OpenURL; open != nil {
+		a.Server.Extend(func(mux *http.ServeMux) {
+			mux.HandleFunc("POST /api/open-url", func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					URL string `json:"url"`
+				}
+				if !api.ReadJSON(w, r, &body) {
+					return
+				}
+				if !strings.HasPrefix(body.URL, "https://") && !strings.HasPrefix(body.URL, "http://") {
+					api.WriteErr(w, 400, "only http(s) links can be opened")
+					return
+				}
+				if err := open(body.URL); err != nil {
+					api.WriteErr(w, 500, err.Error())
+					return
+				}
+				api.WriteJSON(w, 200, map[string]bool{"ok": true})
+			})
+		})
+	}
 	return nil
 }
 

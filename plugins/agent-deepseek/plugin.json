@@ -3,18 +3,16 @@
   "name": "DeepSeek",
   "version": "0.1.0",
   "setup": true,
-  "description": "用 DeepSeek 模型对话。可以只调用 API（纯对话），也可以驱动本机的 Claude Code 获得读写文件等工具能力。",
+  "description": "用 DeepSeek 对话。可以驱动本机的 DeepSeek Harness（带工具的 Agent），也可以只调用 API 纯对话，或用 DeepSeek 模型驱动 Claude Code。",
   "config_schema": {
     "type": "object",
-    "required": [
-      "api_key"
-    ],
     "x-order": [
-      "api_key",
       "mode",
+      "api_key",
       "model",
       "system_prompt",
       "cwd",
+      "harness_permission",
       "permission_mode",
       "allowed_tools",
       "allowed_actors",
@@ -26,17 +24,19 @@
       "api_key": {
         "type": "string",
         "title": "API Key",
-        "format": "password"
+        "format": "password",
+        "description": "api 和 claude-code 方式必填。harness 方式下，如果 DeepSeek Harness 自己已经配置了密钥可以留空。"
       },
       "mode": {
         "type": "string",
         "title": "方式",
         "enum": [
+          "harness",
           "api",
           "claude-code"
         ],
-        "default": "api",
-        "description": "api：纯对话，不带工具。claude-code：用 DeepSeek 模型驱动本机的 Claude Code（需已安装）。"
+        "default": "harness",
+        "description": "harness：本机的 DeepSeek Harness（需已安装）。api：只调用 API，纯对话不带工具。claude-code：用 DeepSeek 模型驱动本机的 Claude Code。"
       },
       "model": {
         "type": "string",
@@ -50,7 +50,8 @@
       },
       "cwd": {
         "type": "string",
-        "title": "工作目录（仅 claude-code）"
+        "title": "工作目录（harness / claude-code）",
+        "description": "留空使用实例自己的空目录。"
       },
       "permission_mode": {
         "type": "string",
@@ -84,7 +85,13 @@
       },
       "bin": {
         "type": "string",
-        "title": "claude 命令路径（可选）"
+        "title": "命令路径（可选）",
+        "description": "dsh 或 claude 的路径，留空自动查找。"
+      },
+      "harness_permission": {
+        "type": "string",
+        "title": "权限预设（仅 harness，可选）",
+        "description": "DeepSeek Harness 里配置的权限预设名称，如 workspace-write。留空使用它的默认预设。无论哪种预设，需要人工批准的操作都会被拒绝而不是等待。"
       }
     }
   },

@@ -286,6 +286,6 @@ func TestDiscordSetup(t *testing.T) {
 	waitFor(t, "done", func() bool { return state().State == pluginhost.SetupDone })
 	waitFor(t, "instance running with the new token", func() bool {
 		v, _ := e.Instance(seed.ID)
-		return v.Status == engine.StatusRunning && v.Config["token"] == "good-token"
+		return v.Status == engine.StatusRunning && v.Config["token"] == engine.SecretMask
 	})
 }

@@ -30,6 +30,8 @@ type Server struct {
 	Token string
 	// UI is the built web frontend; nil serves the API only.
 	UI fs.FS
+	// Desktop is reported by /api/status so the UI can adapt to the desktop shell.
+	Desktop bool
 
 	mux    *http.ServeMux
 	extras []func(mux *http.ServeMux)
@@ -45,7 +47,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]any{"ok": true, "auth": s.Token != ""})
+		writeJSON(w, 200, map[string]any{"ok": true, "auth": s.Token != "", "desktop": s.Desktop})
 	})
 	mux.HandleFunc("GET /api/stream", s.stream)
 

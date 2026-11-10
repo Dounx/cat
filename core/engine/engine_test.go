@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -204,5 +205,63 @@ func TestInvalidRuleRejected(t *testing.T) {
 	e := newEngine(t)
 	if _, err := e.SaveRule(rules.Rule{Name: "bad", Condition: "payload.text ==="}); err == nil {
 		t.Fatal("expected a compile error")
+	}
+}
+
+type memSecrets map[string]string
+
+func (m memSecrets) Get(k string) (string, bool) { v, ok := m[k]; return v, ok }
+func (m memSecrets) Set(k, v string) error       { m[k] = v; return nil }
+func (m memSecrets) Delete(k string) error       { delete(m, k); return nil }
+
+func TestSecretsStayOutOfDatabaseAndAPI(t *testing.T) {
+	st, _ := store.Open(":memory:")
+	e := engine.New(st, t.TempDir(), nil)
+	secrets := memSecrets{}
+	e.Secrets = secrets
+	for _, b := range builtin.All() {
+		e.RegisterPlugin(b.Manifest, b.Factory)
+	}
+	if err := e.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { e.Stop(); st.Close() })
+
+	hook, err := e.SaveInstance(store.Instance{Plugin: "webhook", Enabled: true, Config: map[string]any{"secret": "s3cr3t", "event_type": "x.y"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hook.Config["secret"] != engine.SecretMask {
+		t.Fatalf("API view should be masked: %v", hook.Config)
+	}
+	stored, _ := st.ListInstances()
+	for _, rec := range stored {
+		if b, _ := json.Marshal(rec); strings.Contains(string(b), "s3cr3t") {
+			t.Fatalf("secret reached the database: %s", b)
+		}
+	}
+	if secrets[hook.ID+"/secret"] != "s3cr3t" {
+		t.Fatalf("secret store: %v", secrets)
+	}
+	// The running instance still received the real value.
+	waitRunning(t, e, hook.ID)
+	if r := post(t, e, hook.ID, `{}`, map[string]string{"X-Cat-Secret": "s3cr3t"}); r.Status != 202 {
+		t.Fatalf("instance did not get its secret: %d", r.Status)
+	}
+	// Saving the masked view back keeps the secret; other fields update.
+	view, _ := e.Instance(hook.ID)
+	view.Config["event_type"] = "a.b"
+	if _, err := e.SaveInstance(view.Instance); err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, e, hook.ID)
+	if r := post(t, e, hook.ID, `{}`, map[string]string{"X-Cat-Secret": "s3cr3t"}); r.Status != 202 {
+		t.Fatalf("secret lost after an edit: %d", r.Status)
+	}
+	// Clearing the field removes it; deleting the instance removes the rest.
+	view.Config["secret"] = ""
+	_, _ = e.SaveInstance(view.Instance)
+	if _, ok := secrets[hook.ID+"/secret"]; ok {
+		t.Fatal("cleared secret still stored")
 	}
 }

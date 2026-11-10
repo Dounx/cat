@@ -70,7 +70,9 @@ type running struct {
 }
 
 type Engine struct {
-	Store   *store.Store
+	Store *store.Store
+	// Secrets, when set, holds credential config values instead of the database.
+	Secrets Secrets
 	dataDir string
 	log     *slog.Logger
 
@@ -169,6 +171,13 @@ func (e *Engine) Start() error {
 		}
 	}
 	for _, rec := range stored {
+		// Move any secret still stored in plain form into the secret store.
+		if sealed, err := e.seal(rec); err == nil && e.Secrets != nil {
+			if fmt.Sprint(sealed.Config) != fmt.Sprint(rec.Config) {
+				_ = e.Store.SaveInstance(&sealed)
+			}
+			rec = sealed
+		}
 		e.launch(rec)
 	}
 	return nil
@@ -216,7 +225,7 @@ func (e *Engine) launch(rec store.Instance) {
 		e.setStatus(r, StatusError, "插件未安装："+rec.Plugin)
 		return
 	}
-	inst, err := reg.factory(rec.Config)
+	inst, err := reg.factory(e.unseal(rec).Config)
 	if err != nil {
 		e.setStatus(r, StatusError, err.Error())
 		return
@@ -239,8 +248,9 @@ func (e *Engine) setStatus(r *running, status, errMsg string) {
 	e.mu.Lock()
 	current := e.running[r.rec.ID] == r
 	r.status, r.err = status, errMsg
-	view := InstanceView{Instance: r.rec, Status: status, Error: errMsg}
+	rec := r.rec
 	e.mu.Unlock()
+	view := InstanceView{Instance: e.masked(rec), Status: status, Error: errMsg}
 	if current {
 		e.publish(Message{Kind: "instance", Data: view})
 	}
@@ -261,10 +271,13 @@ func (e *Engine) ReportStatus(instanceID, status, errMsg string) {
 
 func (e *Engine) Instances() []InstanceView {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
 	out := make([]InstanceView, 0, len(e.running))
 	for _, r := range e.running {
 		out = append(out, InstanceView{Instance: r.rec, Status: r.status, Error: r.err})
+	}
+	e.mu.RUnlock()
+	for i := range out {
+		out[i].Instance = e.masked(out[i].Instance)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -272,12 +285,17 @@ func (e *Engine) Instances() []InstanceView {
 
 func (e *Engine) Instance(instanceID string) (InstanceView, bool) {
 	e.mu.RLock()
-	defer e.mu.RUnlock()
 	r, ok := e.running[instanceID]
+	var view InstanceView
+	if ok {
+		view = InstanceView{Instance: r.rec, Status: r.status, Error: r.err}
+	}
+	e.mu.RUnlock()
 	if !ok {
 		return InstanceView{}, false
 	}
-	return InstanceView{Instance: r.rec, Status: r.status, Error: r.err}, true
+	view.Instance = e.masked(view.Instance)
+	return view, true
 }
 
 // SaveInstance creates or updates an instance and (re)starts it.
@@ -294,11 +312,15 @@ func (e *Engine) SaveInstance(rec store.Instance) (store.Instance, error) {
 	if rec.Config == nil {
 		rec.Config = map[string]any{}
 	}
+	rec, err := e.seal(rec)
+	if err != nil {
+		return rec, fmt.Errorf("保存密钥失败：%w", err)
+	}
 	if err := e.Store.SaveInstance(&rec); err != nil {
 		return rec, err
 	}
 	e.launch(rec)
-	return rec, nil
+	return e.masked(rec), nil
 }
 
 func (e *Engine) DeleteInstance(instanceID string) error {
@@ -308,6 +330,11 @@ func (e *Engine) DeleteInstance(instanceID string) error {
 	e.mu.Unlock()
 	if r != nil {
 		e.halt(r)
+		if e.Secrets != nil {
+			for _, f := range e.secretFields(r.rec.Plugin) {
+				_ = e.Secrets.Delete(instanceID + "/" + f)
+			}
+		}
 	}
 	return e.Store.DeleteInstance(instanceID)
 }

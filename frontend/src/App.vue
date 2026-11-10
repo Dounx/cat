@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { Activity, ListChecks, Plug, Workflow } from 'lucide-vue-next'
 import { useHub } from './hub'
-import { post } from './api'
+import { get, post } from './api'
 
 const hub = useHub()
 const token = ref('')
@@ -25,7 +25,19 @@ async function login() {
   }
 }
 
-onMounted(() => hub.init())
+// Inside the desktop shell a webview cannot open new windows, so external
+// links are handed to the system browser instead.
+onMounted(async () => {
+  hub.init()
+  const status = await get<{ desktop?: boolean }>('/status').catch(() => ({ desktop: false }))
+  if (!status.desktop) return
+  document.addEventListener('click', (e) => {
+    const link = (e.target as HTMLElement).closest?.('a[target="_blank"]') as HTMLAnchorElement | null
+    if (!link) return
+    e.preventDefault()
+    post('/open-url', { url: link.href }).catch((err) => hub.notify(err.message, true))
+  })
+})
 </script>
 
 <template>

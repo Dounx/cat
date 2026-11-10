@@ -28,6 +28,12 @@ type Options struct {
 	// PluginDirs are extra directories searched for plugins, ahead of
 	// <data>/plugins and the plugins directory beside the executable.
 	PluginDirs []string
+	// Secrets overrides where credentials are kept (default: a private file
+	// in the data directory).
+	Secrets engine.Secrets
+	// Desktop marks the desktop shell; OpenURL opens a link in the browser.
+	Desktop bool
+	OpenURL func(url string) error
 }
 
 type App struct {
@@ -70,6 +76,10 @@ func New(opts Options) (*App, error) {
 		return nil, err
 	}
 	eng := engine.New(st, opts.DataDir, slog.Default())
+	eng.Secrets = opts.Secrets
+	if eng.Secrets == nil {
+		eng.Secrets = &engine.FileSecrets{Path: filepath.Join(opts.DataDir, "secrets.json")}
+	}
 	for _, b := range builtin.All() {
 		eng.RegisterPlugin(b.Manifest, b.Factory)
 	}
