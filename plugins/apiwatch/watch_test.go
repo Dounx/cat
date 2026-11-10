@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dounx/cat/sdk/go/cattest"
 )
@@ -71,11 +72,32 @@ func (f *fakeAPI) last() request {
 	return f.requests[len(f.requests)-1]
 }
 
-func start(t *testing.T, cfg map[string]any, state map[string]string) *cattest.Harness {
+// start starts the plugin and waits for the round it runs on start to have
+// asked for everything it watches. A test that changes the API only after that
+// knows the change is found by its own check, not by that round.
+func start(t *testing.T, srv *fakeAPI, cfg map[string]any, state map[string]string) *cattest.Harness {
 	t.Helper()
+	watched := 0
+	list, _ := cfg["apis"].(string)
+	for _, line := range strings.Split(list, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			watched++
+		}
+	}
+	count := func() int {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+		return len(srv.requests)
+	}
+	want := count() + watched
 	h := cattest.New(t, New(), cattest.Options{Config: cfg, State: state})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); count() < want; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the round on start made %d of %d requests", count()-want+watched, watched)
+		}
 	}
 	return h
 }
@@ -106,7 +128,7 @@ func changes(t *testing.T, payload map[string]any) []string {
 func TestChange(t *testing.T) {
 	srv := newAPI(t)
 	srv.set("/app", `{"version": "1.0", "size": 9007199254740993, "tags": ["a"], "beta": true}`)
-	h := start(t, map[string]any{"apis": "# watched\n" + srv.URL + "/app?key=secret\n"}, nil)
+	h := start(t, srv, map[string]any{"apis": "# watched\n" + srv.URL + "/app?key=secret\n"}, nil)
 	check(t, h, 0) // the first look only sets the baseline
 
 	// Key order and whitespace are not changes.
@@ -157,7 +179,7 @@ func TestPath(t *testing.T) {
 		return fmt.Sprintf(`{"now": %q, "data": {"items": [{"id": 1, "price": %d}, {"id": 2, "price": 7}]}}`, clock, price)
 	}
 	srv.set("/list", body(5, "10:00"))
-	h := start(t, map[string]any{"apis": srv.URL + "/list   data.items[0].price"}, nil)
+	h := start(t, srv, map[string]any{"apis": srv.URL + "/list   data.items[0].price"}, nil)
 	check(t, h, 0)
 	srv.set("/list", body(5, "10:01")) // outside the path
 	check(t, h, 0)
@@ -191,7 +213,7 @@ func TestIgnore(t *testing.T) {
 	}
 	srv.set("/s", body(3, "a"))
 	cfg := map[string]any{"apis": srv.URL + "/s", "ignore": "ts\nitems[*].seen\nno.such.field\n"}
-	h := start(t, cfg, nil)
+	h := start(t, srv, cfg, nil)
 	check(t, h, 0)
 	srv.set("/s", body(3, "b"))
 	check(t, h, 0)
@@ -203,7 +225,7 @@ func TestIgnore(t *testing.T) {
 
 	// Changing the ignored fields starts over instead of reporting a change.
 	key := stateKey(srv.URL + "/s")
-	h2 := start(t, map[string]any{"apis": srv.URL + "/s"}, map[string]string{key: h.State(key)})
+	h2 := start(t, srv, map[string]any{"apis": srv.URL + "/s"}, map[string]string{key: h.State(key)})
 	check(t, h2, 0)
 	srv.set("/s", body(0, "d"))
 	check(t, h2, 1)
@@ -219,7 +241,7 @@ func TestRequest(t *testing.T) {
 		"headers": "X-Api-Version: 2\n",
 		"body":    `{"q": "open"}`,
 	}
-	h := start(t, cfg, nil)
+	h := start(t, srv, cfg, nil)
 	check(t, h, 0)
 	seen := map[string]request{}
 	srv.mu.Lock()
@@ -254,11 +276,11 @@ func TestSurvivesRestart(t *testing.T) {
 	srv := newAPI(t)
 	srv.set("/v", `{"v": 1}`)
 	cfg := map[string]any{"apis": srv.URL + "/v"}
-	h := start(t, cfg, nil)
+	h := start(t, srv, cfg, nil)
 	check(t, h, 0)
 	key := stateKey(srv.URL + "/v")
 	srv.set("/v", `{"v": 2}`)
-	h2 := start(t, cfg, map[string]string{key: h.State(key)})
+	h2 := start(t, srv, cfg, map[string]string{key: h.State(key)})
 	if got := changes(t, h2.NextEvent().Payload); !reflect.DeepEqual(got, []string{"changed v 1 2"}) {
 		t.Fatalf("changes: %q", got)
 	}
@@ -268,7 +290,7 @@ func TestErrors(t *testing.T) {
 	srv := newAPI(t)
 	srv.set("/ok", `{"a": 1}`)
 	srv.set("/down", `{"a": 1}`)
-	h := start(t, map[string]any{"apis": srv.URL + "/ok\n" + srv.URL + "/down\n" + srv.URL + "/missing"}, nil)
+	h := start(t, srv, map[string]any{"apis": srv.URL + "/ok\n" + srv.URL + "/down\n" + srv.URL + "/missing"}, nil)
 	// Some work, one doesn't: reported, but not a failure of the action.
 	out, err := h.Invoke("check", nil, nil)
 	if err != nil || out["failed"] != float64(1) || !strings.Contains(fmt.Sprint(out["errors"]), "/missing：HTTP 404") {
@@ -293,7 +315,7 @@ func TestErrors(t *testing.T) {
 	}
 	// A path can't be applied to a body that isn't JSON.
 	srv.set("/plain", "hello")
-	h2 := start(t, map[string]any{"apis": srv.URL + "/plain data"}, nil)
+	h2 := start(t, srv, map[string]any{"apis": srv.URL + "/plain data"}, nil)
 	if _, err := h2.Invoke("check", nil, nil); err == nil || !strings.Contains(err.Error(), "不是 JSON") {
 		t.Fatalf("err=%v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dounx/cat/sdk/go/cattest"
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -54,6 +55,22 @@ func (f *fakeSite) set(path, body string) {
 	f.feeds[path] = body
 }
 
+// waitRequests waits until the site has been asked n times.
+func (f *fakeSite) waitRequests(t *testing.T, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(time.Millisecond) {
+		f.mu.Lock()
+		got := len(f.requests)
+		f.mu.Unlock()
+		if got >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the site got %d requests, want %d", got, n)
+		}
+	}
+}
+
 func rss(items ...string) string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/" xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -81,6 +98,9 @@ func TestNewItemsOnly(t *testing.T) {
 	if err != nil || out["new"] != float64(0) {
 		t.Fatalf("baseline: out=%v err=%v", out, err)
 	}
+	// The round the plugin runs on start must be over too, or it could be the
+	// one that finds the new items below.
+	site.waitRequests(t, 2)
 	site.set("/feed.xml", rss(feedItem(4), feedItem(3), feedItem(2), feedItem(1)))
 	out, err = h.Invoke("check", nil, nil)
 	if err != nil || out["new"] != float64(2) || out["failed"] != float64(0) {

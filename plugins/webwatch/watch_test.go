@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dounx/cat/sdk/go/cattest"
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -61,11 +62,32 @@ func doc(body string) string {
  page </title><style>p{color:red}</style></head><body>` + body + `<script>var t = Date.now()</script></body></html>`
 }
 
-func start(t *testing.T, cfg map[string]any, state map[string]string) *cattest.Harness {
+// start starts the plugin and waits for the round it runs on start to have
+// asked for everything it watches. A test that changes the site only after that
+// knows the change is found by its own check, not by that round.
+func start(t *testing.T, site *fakeSite, cfg map[string]any, state map[string]string) *cattest.Harness {
 	t.Helper()
+	watched := 0
+	list, _ := cfg["pages"].(string)
+	for _, line := range strings.Split(list, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			watched++
+		}
+	}
+	count := func() int {
+		site.mu.Lock()
+		defer site.mu.Unlock()
+		return len(site.requests)
+	}
+	want := count() + watched
 	h := cattest.New(t, New(), cattest.Options{Config: cfg, State: state})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); count() < want; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the round on start made %d of %d requests", count()-want+watched, watched)
+		}
 	}
 	return h
 }
@@ -81,7 +103,7 @@ func check(t *testing.T, h *cattest.Harness, changed int) {
 func TestChange(t *testing.T) {
 	site := newSite(t)
 	site.set("/p", doc(`<h1>Plans</h1><p>Basic   $5</p><p>Pro $10</p>`))
-	h := start(t, map[string]any{"pages": "# watched\n" + site.URL + "/p\n"}, nil)
+	h := start(t, site, map[string]any{"pages": "# watched\n" + site.URL + "/p\n"}, nil)
 	check(t, h, 0) // the first look only sets the baseline
 
 	// Markup and whitespace changes are not content changes.
@@ -127,7 +149,7 @@ func TestSelector(t *testing.T) {
 	}
 	site.set("/p", page("A 1", "10:00"))
 	spec := site.URL + "/p   li.price"
-	h := start(t, map[string]any{"pages": spec}, nil)
+	h := start(t, site, map[string]any{"pages": spec}, nil)
 	check(t, h, 0)
 	site.set("/p", page("A 1", "10:01")) // outside the selector
 	check(t, h, 0)
@@ -152,7 +174,7 @@ func TestIgnore(t *testing.T) {
 	site := newSite(t)
 	site.set("/p", doc(`<p>Stock: 3</p><p>Updated 10:00:01</p><p>阅读 120</p>`))
 	cfg := map[string]any{"pages": site.URL + "/p", "ignore": "\\d{2}:\\d{2}:\\d{2}\n阅读 \\d+\n"}
-	h := start(t, cfg, nil)
+	h := start(t, site, cfg, nil)
 	check(t, h, 0)
 	site.set("/p", doc(`<p>Stock: 3</p><p>Updated 10:05:09</p><p>阅读 135</p>`))
 	check(t, h, 0)
@@ -164,7 +186,7 @@ func TestIgnore(t *testing.T) {
 
 	// Changing the patterns starts over instead of reporting a change.
 	key := stateKey(site.URL + "/p")
-	h2 := start(t, map[string]any{"pages": site.URL + "/p"}, map[string]string{key: h.State(key)})
+	h2 := start(t, site, map[string]any{"pages": site.URL + "/p"}, map[string]string{key: h.State(key)})
 	check(t, h2, 0)
 	site.set("/p", doc(`<p>Stock: 0</p><p>Updated 10:07:00</p><p>阅读 140</p>`))
 	check(t, h2, 1)
@@ -174,11 +196,11 @@ func TestSurvivesRestart(t *testing.T) {
 	site := newSite(t)
 	site.set("/p", doc(`<p>one</p>`))
 	cfg := map[string]any{"pages": site.URL + "/p"}
-	h := start(t, cfg, nil)
+	h := start(t, site, cfg, nil)
 	check(t, h, 0)
 	key := stateKey(site.URL + "/p")
 	site.set("/p", doc(`<p>two</p>`))
-	h2 := start(t, cfg, map[string]string{key: h.State(key)})
+	h2 := start(t, site, cfg, map[string]string{key: h.State(key)})
 	if ev := h2.NextEvent(); !reflect.DeepEqual(ev.Payload["removed"], []any{"one"}) {
 		t.Fatalf("event: %v", ev.Payload)
 	}
@@ -194,7 +216,7 @@ func TestNotHTMLAndCharset(t *testing.T) {
 	}
 	site.types["/gbk"] = "text/html"
 	site.set("/gbk", gbk)
-	h := start(t, map[string]any{"pages": site.URL + "/api\n" + site.URL + "/gbk"}, nil)
+	h := start(t, site, map[string]any{"pages": site.URL + "/api\n" + site.URL + "/gbk"}, nil)
 	check(t, h, 0)
 	site.set("/api", `{"version": "1.1"}`)
 	gbk2, _ := simplifiedchinese.GBK.NewEncoder().String(`<html><head><meta charset="gbk"><title>公告</title></head><body><p>再见</p></body></html>`)
@@ -213,7 +235,7 @@ func TestNotHTMLAndCharset(t *testing.T) {
 func TestErrors(t *testing.T) {
 	site := newSite(t)
 	site.set("/ok", doc(`<p>fine</p>`))
-	h := start(t, map[string]any{"pages": site.URL + "/ok\n" + site.URL + "/missing"}, nil)
+	h := start(t, site, map[string]any{"pages": site.URL + "/ok\n" + site.URL + "/missing"}, nil)
 	// One page works, one doesn't: reported, but not a failure of the action.
 	out, err := h.Invoke("check", nil, nil)
 	if err != nil || out["failed"] != float64(1) || !strings.Contains(fmt.Sprint(out["errors"]), "/missing：HTTP 404") {

@@ -89,8 +89,20 @@ func newWorld(t *testing.T, tools []string, manifest func(m map[string]any)) *wo
 	_ = os.WriteFile(filepath.Join(pdir, "plugin.json"), b, 0o644)
 
 	// Plugins inherit PATH. Only the stand-ins and the basic tools their
-	// scripts use are on it, so a real docker or pnpm is never reached.
-	t.Setenv("PATH", w.bin+string(os.PathListSeparator)+"/usr/bin"+string(os.PathListSeparator)+"/bin")
+	// scripts use are on it, so a real docker or pnpm is never reached - not
+	// even one in /usr/bin, where CI runners keep docker.
+	sys := filepath.Join(tmp, "sys")
+	_ = os.MkdirAll(sys, 0o755)
+	for _, name := range []string{"dirname", "cat", "rm", "cut", "touch", "mkdir", "pgrep"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(path, filepath.Join(sys, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", w.bin+string(os.PathListSeparator)+sys)
 
 	st, err := store.Open(":memory:")
 	if err != nil {
