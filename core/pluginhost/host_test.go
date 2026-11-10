@@ -232,6 +232,7 @@ func TestLoadManifestCategory(t *testing.T) {
 	for in, want := range map[string]string{
 		``:                        plugin.CategoryChannel,
 		`,"category":"channel"`:   plugin.CategoryChannel,
+		`,"category":"monitor"`:   plugin.CategoryMonitor,
 		`,"category":"processor"`: plugin.CategoryProcessor,
 	} {
 		m, err := load(in)

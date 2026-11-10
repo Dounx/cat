@@ -79,7 +79,7 @@ func LoadManifest(dir string) (*Manifest, error) {
 	}
 	category, ok := plugin.NormalizeCategory(m.Category)
 	if !ok {
-		return nil, fmt.Errorf("plugin.json: unknown category %q (want %q or %q)", m.Category, plugin.CategoryChannel, plugin.CategoryProcessor)
+		return nil, fmt.Errorf("plugin.json: unknown category %q (want one of %s)", m.Category, strings.Join(plugin.Categories(), ", "))
 	}
 	m.Category = category
 	m.Builtin, m.Singleton = false, false

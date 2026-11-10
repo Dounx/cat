@@ -3,7 +3,7 @@
 把各处来的事件接到一起，按规则筛选，再触发动作。
 
 ```
-QQ / Discord / Telegram / 企业微信 / RSS / WebHook ──▶ 规则（条件）──▶ 动作流水线
+QQ / Discord / Telegram / 企业微信 / RSS / 网页变动 / WebHook ──▶ 规则（条件）──▶ 动作流水线
                                                                     ├─ 交给 Agent（Claude Code / Codex / DeepSeek）
                                                                     ├─ 原路回复、跨平台转发
                                                                     └─ 发 HTTP 请求、跑脚本
@@ -55,7 +55,7 @@ make app                                 # 生成 bin/Cat.app，插件已打包�
 
 ## 订阅 RSSHub / RSS
 
-「接入」→ 添加 **RSSHub / RSS**，在「订阅源」里每行填一个：
+「接入」→「监控」→ 添加 **RSSHub / RSS**，在「订阅源」里每行填一个：
 
 ```
 /github/issue/DIYgod/RSSHub          # RSSHub 路由，拼在「RSSHub 实例地址」后面
@@ -65,6 +65,23 @@ https://go.dev/blog/feed.atom        # 普通 RSS / Atom 源，填完整地址
 每个新条目是一个 `feed.item` 事件：`payload.text` 是「标题 + 摘要 + 链接」，可以直接转发；另有 `title`、`link`、`content`（纯文本全文）、`content_html`、`author`、`categories`、`images`、`published`。`conversation.id` 是订阅源本身，`conversation.name` 是它的标题，可以用来区分不同的源。
 
 新加入的订阅源只记录现有条目，之后出现的才会触发规则。公共实例 `rsshub.app` 经常被限流，建议填自建实例的地址。
+
+## 监控网页变动
+
+「接入」→「监控」→ 添加 **网页变动**，在「网页」里每行填一个地址；只想盯页面上的某一块时，在地址后面空一格写 CSS 选择器：
+
+```
+https://example.com/changelog
+https://example.com/pricing  #price    # 只看 id 为 price 的元素
+```
+
+比较的是页面上看得见的文字，标签、样式和空白的变化不算。文字变了就发出一个 `page.changed` 事件：`payload.text` 是「标题 + 新增和删除的行 + 地址」，可以直接转发；另有 `url`、`title`、`added`、`removed`（数组）、`content`（现在的全文）、`previous`（上一次的全文）。
+
+插件只负责发现变化。要收到通知，建一条规则：来源选这个监控，动作选聊天渠道的「发送到指定会话」，内容填 `{{ payload.text }}`。
+
+- 第一次看到的网页只记录现状，之后变了才触发。
+- 每次打开都不一样的内容（时间、访问量）会造成误报：用选择器缩小范围，或在「忽略的内容」里写正则把它们去掉。
+- 只抓取网页源码，不执行 JavaScript；靠脚本渲染的页面抓不到内容，可以改盯它背后的数据接口。
 
 ## 规则怎么写
 
@@ -89,6 +106,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 | QQ（OneBot） | OneBot 11。Windows 上可自动下载配置 NapCat；其他系统连接你自己运行的 OneBot 服务 |
 | 企业微信 | 自建应用的消息回调 |
 | RSSHub / RSS | 订阅 RSSHub 路由和普通 RSS / Atom 源，有新条目时发出 `feed.item` 事件 |
+| 网页变动 | 定时检查网页，文字内容有变化时发出 `page.changed` 事件，可用 CSS 选择器只盯一块 |
 | Claude Code / Codex / DeepSeek | Agent，按会话续接对话 |
 | 大模型对话 | 任意 OpenAI 兼容接口，纯对话 |
 

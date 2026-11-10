@@ -5,7 +5,7 @@
   "protocol": 1,
   "description": "订阅 RSSHub 路由和普通 RSS / Atom 源，有新条目时发出事件。定时轮询，不需要公网地址。",
   "command": ["./cat-plugin-rss"],
-  "category": "channel",
+  "category": "monitor",
   "capabilities": ["source", "action"],
   "config_schema": {
     "type": "object",

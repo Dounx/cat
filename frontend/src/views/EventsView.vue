@@ -52,7 +52,7 @@ async function replay() {
     <div class="flex-1 overflow-y-auto">
       <div v-if="!filtered.length" class="p-16 text-center text-mute">
         <p class="text-sm">还没有事件。</p>
-        <p class="mt-1 text-xs">到「接入」里添加一个渠道，例如 WebHook，然后向它发一个请求。</p>
+        <p class="mt-1 text-xs">到「接入」里添加一个渠道或监控，例如 WebHook，然后向它发一个请求。</p>
       </div>
       <table v-else class="w-full text-left">
         <tbody>

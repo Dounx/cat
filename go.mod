@@ -15,10 +15,12 @@ require (
 )
 
 require (
+	github.com/andybalholm/cascadia v1.3.5
 	github.com/coder/websocket v1.8.15
 	github.com/dounx/cat/sdk/go v0.0.0
 	github.com/expr-lang/expr v1.17.8
-	golang.org/x/text v0.41.0
+	golang.org/x/net v0.62.0
+	golang.org/x/text v0.43.0
 	modernc.org/sqlite v1.62.0
 )
 

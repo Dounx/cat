@@ -14,7 +14,8 @@ const editing = ref<null | { plugin: Plugin; id?: string; name: string; enabled:
 
 type Category = Plugin['category']
 const categories: { id: Category; title: string; hint: string; empty: string }[] = [
-  { id: 'channel', title: '渠道', hint: '事件从哪里来，动作发到哪里去', empty: '还没有接入任何渠道，从下面选一个开始。' },
+  { id: 'channel', title: '渠道', hint: '消息从哪里来，回复和通知发到哪里去', empty: '还没有接入任何渠道，从下面选一个开始。' },
+  { id: 'monitor', title: '监控', hint: '盯着外面的变化，有动静时发出事件；通知由规则交给渠道发出', empty: '还没有添加监控，从下面选一个开始。' },
   { id: 'processor', title: '处理器', hint: '收到事件后由谁来处理并给出结果', empty: '还没有添加处理器，从下面选一个开始。' },
 ]
 function categoryOf(i: Instance): Category { return hub.pluginOf(i.plugin)?.category ?? 'channel' }
@@ -101,7 +102,7 @@ async function remove(i: Instance) {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="接入" hint="渠道负责收发，处理器负责处理" />
+    <PageHeader title="接入" hint="渠道负责收发，监控负责发现变化，处理器负责处理" />
     <div class="flex-1 space-y-8 overflow-y-auto p-6">
       <section v-for="g in groups" :key="g.id">
         <h2 class="text-sm font-semibold">{{ g.title }}</h2>

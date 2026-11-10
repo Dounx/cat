@@ -17,9 +17,14 @@ const (
 // A plugin's category is the role it plays for the user. It only affects how
 // the plugin is presented; any plugin can be used in any rule step.
 const (
-	// CategoryChannel plugins connect to the outside world: where events
-	// come from and where actions are sent.
+	// CategoryChannel plugins are two-way connections to the outside world,
+	// typically a chat platform: messages come in as events and replies and
+	// notifications go out as actions.
 	CategoryChannel = "channel"
+	// CategoryMonitor plugins watch something and emit an event when it
+	// changes, e.g. a feed or a web page. They have nowhere to send a
+	// message: telling someone is left to a rule and a channel.
+	CategoryMonitor = "monitor"
 	// CategoryProcessor plugins take an event and work out a result, e.g. an
 	// AI agent, an auto-responder or a hand-off to a person.
 	CategoryProcessor = "processor"
@@ -31,10 +36,15 @@ func NormalizeCategory(c string) (string, bool) {
 	switch c {
 	case "", CategoryChannel:
 		return CategoryChannel, true
-	case CategoryProcessor:
-		return CategoryProcessor, true
+	case CategoryMonitor, CategoryProcessor:
+		return c, true
 	}
 	return c, false
+}
+
+// Categories lists the known categories in display order.
+func Categories() []string {
+	return []string{CategoryChannel, CategoryMonitor, CategoryProcessor}
 }
 
 // ActionSpec describes one action a plugin can perform.
@@ -58,7 +68,7 @@ type Manifest struct {
 	Version     string `json:"version"`
 	Description string `json:"description,omitempty"`
 	Icon        string `json:"icon,omitempty"`
-	// Category is CategoryChannel (the default) or CategoryProcessor.
+	// Category is one of Categories(); empty means CategoryChannel.
 	Category     string         `json:"category"`
 	Capabilities []string       `json:"capabilities"`
 	ConfigSchema map[string]any `json:"config_schema,omitempty"` // JSON Schema

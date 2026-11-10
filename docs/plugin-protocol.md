@@ -44,7 +44,7 @@
   "protocol": 1,
   "description": "…",
   "command": ["./cat-plugin-telegram"], // 以 ./ 开头相对插件目录解析，否则走 PATH
-  "category": "channel",       // "channel"（默认）或 "processor"，见下
+  "category": "channel",       // "channel"（默认）、"monitor" 或 "processor"，见下
   "capabilities": ["source", "action"],
   "ingress": false,            // true：接收 /ingress/<实例 ID> 的 HTTP 请求
   "setup": true,               // true：提供接入向导
@@ -59,7 +59,8 @@
 
 `category` 说明插件在用户眼里扮演的角色，只影响界面上的分组，不限制它在规则里怎么用：
 
-- `channel`（渠道，默认）：连接外部世界，事件从这里来、动作发到这里去。例如 Telegram、QQ、Webhook。
+- `channel`（渠道，默认）：和外部世界的双向连接，消息从这里来、回复和通知发到这里去。例如 Telegram、QQ、Webhook。
+- `monitor`（监控）：盯着某样东西，有变化时发出事件，自己没有地方可以“发消息”。例如 RSS 订阅、网页变动。要把变化通知给人，由规则把事件交给某个渠道的动作。
 - `processor`（处理器）：收到事件后负责处理并给出结果。例如 Claude Code、大模型对话，也可以是关键词自动回复、转人工这类不涉及 AI 的实现。
 
 填其它值插件会加载失败。
