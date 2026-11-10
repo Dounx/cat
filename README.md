@@ -3,10 +3,10 @@
 把各处来的事件接到一起，按规则筛选，再触发动作。
 
 ```
-QQ / Discord / Telegram / 企业微信 / WebHook ──▶ 规则（条件）──▶ 动作流水线
-                                                              ├─ 交给 Agent（Claude Code / Codex / DeepSeek）
-                                                              ├─ 原路回复、跨平台转发
-                                                              └─ 发 HTTP 请求、跑脚本
+QQ / Discord / Telegram / 企业微信 / RSS / WebHook ──▶ 规则（条件）──▶ 动作流水线
+                                                                    ├─ 交给 Agent（Claude Code / Codex / DeepSeek）
+                                                                    ├─ 原路回复、跨平台转发
+                                                                    └─ 发 HTTP 请求、跑脚本
 ```
 
 - **插件化**：每个平台、每种 Agent 都是独立进程的插件，用任何语言都能写。官方提供 Go 和 TypeScript SDK。
@@ -53,6 +53,19 @@ make app                                 # 生成 bin/Cat.app，插件已打包�
 
 接入了聊天平台和 Agent 之后，「规则」页会出现「消息 → Agent → 回复」按钮，一键生成最常用的规则。
 
+## 订阅 RSSHub / RSS
+
+「接入」→ 添加 **RSSHub / RSS**，在「订阅源」里每行填一个：
+
+```
+/github/issue/DIYgod/RSSHub          # RSSHub 路由，拼在「RSSHub 实例地址」后面
+https://go.dev/blog/feed.atom        # 普通 RSS / Atom 源，填完整地址
+```
+
+每个新条目是一个 `feed.item` 事件：`payload.text` 是「标题 + 摘要 + 链接」，可以直接转发；另有 `title`、`link`、`content`（纯文本全文）、`content_html`、`author`、`categories`、`images`、`published`。`conversation.id` 是订阅源本身，`conversation.name` 是它的标题，可以用来区分不同的源。
+
+新加入的订阅源只记录现有条目，之后出现的才会触发规则。公共实例 `rsshub.app` 经常被限流，建议填自建实例的地址。
+
 ## 规则怎么写
 
 条件是 [expr](https://expr-lang.org) 表达式，界面里可以用可视化条件构造器，也可以直接写：
@@ -75,6 +88,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 | Discord | Bot，Gateway |
 | QQ（OneBot） | OneBot 11。Windows 上可自动下载配置 NapCat；其他系统连接你自己运行的 OneBot 服务 |
 | 企业微信 | 自建应用的消息回调 |
+| RSSHub / RSS | 订阅 RSSHub 路由和普通 RSS / Atom 源，有新条目时发出 `feed.item` 事件 |
 | Claude Code / Codex / DeepSeek | Agent，按会话续接对话 |
 | 大模型对话 | 任意 OpenAI 兼容接口，纯对话 |
 

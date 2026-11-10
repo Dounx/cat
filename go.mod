@@ -18,6 +18,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/dounx/cat/sdk/go v0.0.0
 	github.com/expr-lang/expr v1.17.8
+	golang.org/x/text v0.41.0
 	modernc.org/sqlite v1.62.0
 )
 
