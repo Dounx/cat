@@ -239,7 +239,7 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 			"type": "object", "x-order": []string{"cwd", "sandbox", "allowed_actors", "allow_anyone"},
 			"properties": map[string]any{
 				"cwd":            map[string]any{"type": "string", "title": "工作目录", "description": "留空使用实例自己的空目录。"},
-				"sandbox":        map[string]any{"type": "string", "title": "沙箱", "enum": []string{"read-only", "workspace-write", "danger-full-access"}, "default": "read-only"},
+				"sandbox":        map[string]any{"type": "string", "title": "沙箱", "enum": []string{"read-only", "workspace-write", "danger-full-access"}, "x-enum-titles": []string{"只读（推荐）", "可以改工作目录里的文件", "不做任何限制（危险）"}, "default": "read-only"},
 				"allowed_actors": guardSchema["allowed_actors"],
 				"allow_anyone":   guardSchema["allow_anyone"],
 			},

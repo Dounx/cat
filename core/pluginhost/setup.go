@@ -287,7 +287,7 @@ func (h *Host) ensureDep(ctx context.Context, m *Manifest, name string, s *setup
 	consentKey := m.ID + "/" + dep.Name + "@" + dep.Version + "#" + art.SHA256
 	if _, ok := h.eng.Store.KVGet("deps-consent", consentKey); !ok {
 		if s == nil {
-			return "", fmt.Errorf("需要下载 %s %s，请在「接入」页重新运行该实例的接入向导以确认", title, dep.Version)
+			return "", fmt.Errorf("需要下载 %s %s，请在「接入」页重新运行它的接入向导以确认", title, dep.Version)
 		}
 		desc := fmt.Sprintf("%s 需要 %s（版本 %s）。\n\n将从以下地址下载并校验 SHA-256：\n%s", m.Name, title, dep.Version, art.URL)
 		if dep.Notice != "" {

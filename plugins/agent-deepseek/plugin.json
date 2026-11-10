@@ -26,7 +26,7 @@
         "type": "string",
         "title": "API Key",
         "format": "password",
-        "description": "api 和 claude-code 方式必填。harness 方式下，如果 DeepSeek Harness 自己已经配置了密钥可以留空。"
+        "description": "只调用 API 和驱动 Claude Code 时必填。用 DeepSeek Harness 时，如果 DeepSeek Harness 自己已经配置了密钥可以留空。"
       },
       "mode": {
         "type": "string",
@@ -35,9 +35,9 @@
           "harness",
           "api",
           "claude-code"
-        ],
+        ], "x-enum-titles": ["本机的 DeepSeek Harness", "只调用 API（纯对话，不带工具）", "用 DeepSeek 模型驱动本机的 Claude Code"],
         "default": "harness",
-        "description": "harness：本机的 DeepSeek Harness（需已安装）。api：只调用 API，纯对话不带工具。claude-code：用 DeepSeek 模型驱动本机的 Claude Code。"
+        "description": "DeepSeek Harness 和 Claude Code 需要已经装在这台机器上。"
       },
       "model": {
         "type": "string",
@@ -51,29 +51,30 @@
       },
       "cwd": {
         "type": "string",
-        "title": "工作目录（harness / claude-code）",
-        "description": "留空使用实例自己的空目录。"
+        "title": "工作目录（Harness / Claude Code 方式）",
+        "description": "留空使用 Cat 为它准备的空目录。"
       },
       "permission_mode": {
         "type": "string",
-        "title": "权限模式（仅 claude-code）",
+        "title": "权限模式（仅 Claude Code 方式）",
         "enum": [
           "dontAsk",
           "acceptEdits",
           "auto",
           "bypassPermissions"
-        ],
+        ], "x-enum-titles": ["只用下面允许的工具（推荐）", "可以改文件", "由 Claude Code 自动判断", "不做任何限制（危险）"],
         "default": "dontAsk"
       },
       "allowed_tools": {
         "type": "string",
-        "title": "允许的工具（仅 claude-code）",
+        "title": "允许的工具（仅 Claude Code 方式）",
         "default": "Read,Glob,Grep"
       },
       "allowed_actors": {
         "type": "string",
-        "title": "允许的发送者 ID",
-        "description": "逗号分隔。只有这些人发的聊天消息能触发。发送者 ID 可在「事件」页的事件详情里看到。"
+        "title": "允许谁来触发",
+        "x-pick": "actor",
+        "description": "只有这些人发的聊天消息能触发。从最近发过消息的人里选，或直接写发送者 ID，逗号分隔。"
       },
       "allow_anyone": {
         "type": "boolean",

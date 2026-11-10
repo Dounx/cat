@@ -40,7 +40,7 @@
       "params": {
         "type": "object", "required": ["to_user", "text"], "x-order": ["to_user", "text"],
         "properties": {
-          "to_user": { "type": "string", "title": "成员 UserID", "description": "多个用 | 分隔；@all 表示全部。" },
+          "to_user": { "type": "string", "title": "发给谁", "x-pick": "conversation", "description": "从最近发过消息的成员里选，或直接写成员 UserID。多个用 | 分隔；@all 表示全部。" },
           "text": { "type": "string", "title": "内容", "format": "textarea" }
         }
       }

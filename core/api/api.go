@@ -160,6 +160,22 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, 200, map[string]any{"matched": ok})
 	})
 
+	mux.HandleFunc("POST /api/rules/try", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Rule    rules.Rule `json:"rule"`
+			EventID string     `json:"event_id"`
+		}
+		if !readJSON(w, r, &body) {
+			return
+		}
+		run, err := e.TryRule(body.Rule, body.EventID)
+		if err != nil {
+			writeJSON(w, 200, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"run": run})
+	})
+
 	mux.HandleFunc("GET /api/runs", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		limit, _ := strconv.Atoi(q.Get("limit"))

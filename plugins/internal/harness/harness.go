@@ -92,13 +92,13 @@ func (g Guard) Check(actx cat.ActionContext) error {
 	if g.Allowed[id] {
 		return nil
 	}
-	return fmt.Errorf("发送者 %s（%s）不在白名单中。要允许，请把这个 ID 加到该实例的「允许的发送者」", id, actx.Event.Actor.Name)
+	return fmt.Errorf("发送者 %s（%s）不在白名单中。要允许，请在「接入」里把这个人加进「允许谁来触发」", id, actx.Event.Actor.Name)
 }
 
 // GuardSchema is the config_schema fragment for the allow-list.
 func GuardSchema() map[string]any {
 	return map[string]any{
-		"allowed_actors": map[string]any{"type": "string", "title": "允许的发送者 ID", "description": "逗号分隔。只有这些人发的消息能触发。发送者 ID 可在「事件」页的事件详情里看到。"},
+		"allowed_actors": map[string]any{"type": "string", "title": "允许谁来触发", "x-pick": "actor", "description": "只有这些人发的聊天消息能触发。从最近发过消息的人里选，或直接写发送者 ID，逗号分隔。"},
 		"allow_anyone":   map[string]any{"type": "boolean", "title": "允许任何人触发（有风险：任何能给机器人发消息的人都能驱动它）"},
 	}
 }

@@ -20,7 +20,7 @@
       "cwd": {
         "type": "string",
         "title": "工作目录",
-        "description": "Codex 在这个目录里工作。留空使用实例自己的空目录。"
+        "description": "Codex 在这个目录里工作。留空使用 Cat 为它准备的空目录。"
       },
       "sandbox": {
         "type": "string",
@@ -29,9 +29,9 @@
           "read-only",
           "workspace-write",
           "danger-full-access"
-        ],
+        ], "x-enum-titles": ["只读（推荐）", "可以改工作目录里的文件", "不做任何限制（危险）"],
         "default": "read-only",
-        "description": "read-only：只读（推荐）。workspace-write：可改工作目录内的文件。danger-full-access：不做限制，仅在你完全信任触发来源时使用。"
+        "description": "「不做任何限制」只在你完全信任能触发它的人时使用。"
       },
       "model": {
         "type": "string",
@@ -45,8 +45,9 @@
       },
       "allowed_actors": {
         "type": "string",
-        "title": "允许的发送者 ID",
-        "description": "逗号分隔。只有这些人发的聊天消息能触发。发送者 ID 可在「事件」页的事件详情里看到。"
+        "title": "允许谁来触发",
+        "x-pick": "actor",
+        "description": "只有这些人发的聊天消息能触发。从最近发过消息的人里选，或直接写发送者 ID，逗号分隔。"
       },
       "allow_anyone": {
         "type": "boolean",

@@ -21,7 +21,7 @@
       "cwd": {
         "type": "string",
         "title": "工作目录",
-        "description": "Claude Code 在这个目录里工作。留空使用实例自己的空目录。"
+        "description": "Claude Code 在这个目录里工作。留空使用 Cat 为它准备的空目录。"
       },
       "permission_mode": {
         "type": "string",
@@ -31,9 +31,9 @@
           "acceptEdits",
           "auto",
           "bypassPermissions"
-        ],
+        ], "x-enum-titles": ["只用下面允许的工具（推荐）", "可以改文件", "由 Claude Code 自动判断", "不做任何限制（危险）"],
         "default": "dontAsk",
-        "description": "dontAsk：只能用下面允许的工具，其余一律拒绝（推荐）。acceptEdits：可改文件。auto：由 Claude Code 自动判断。bypassPermissions：不做任何限制，仅在你完全信任触发来源时使用。"
+        "description": "「不做任何限制」只在你完全信任能触发它的人时使用。"
       },
       "allowed_tools": {
         "type": "string",
@@ -52,8 +52,9 @@
       },
       "allowed_actors": {
         "type": "string",
-        "title": "允许的发送者 ID",
-        "description": "逗号分隔。只有这些人发的聊天消息能触发。发送者 ID 可在「事件」页的事件详情里看到。"
+        "title": "允许谁来触发",
+        "x-pick": "actor",
+        "description": "只有这些人发的聊天消息能触发。从最近发过消息的人里选，或直接写发送者 ID，逗号分隔。"
       },
       "allow_anyone": {
         "type": "boolean",

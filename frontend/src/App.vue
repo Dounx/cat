@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Activity, ListChecks, Plug, Workflow } from 'lucide-vue-next'
+import { Activity, Plug, Workflow } from 'lucide-vue-next'
 import { useHub } from './hub'
 import { get, post } from './api'
 
@@ -31,10 +31,9 @@ watch(
 onBeforeUnmount(() => window.removeEventListener('resize', placeThumb))
 
 const nav = [
-  { to: '/events', label: '事件', icon: Activity },
   { to: '/rules', label: '规则', icon: Workflow },
-  { to: '/runs', label: '运行记录', icon: ListChecks },
   { to: '/connections', label: '接入', icon: Plug },
+  { to: '/activity', label: '记录', icon: Activity },
 ]
 
 async function login() {
@@ -68,7 +67,7 @@ onMounted(async () => {
 <template>
   <div class="flex h-full flex-col">
     <header class="gutter grid h-13 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-4">
-      <RouterLink to="/events" class="flex items-center gap-2 justify-self-start">
+      <RouterLink to="/rules" class="flex items-center gap-2 justify-self-start">
         <img src="/cat.svg" class="h-6 w-6 transition-transform duration-300 ease-glide hover:-rotate-8" alt="" />
         <span class="text-[15px] font-semibold tracking-tight">Cat</span>
       </RouterLink>
@@ -84,7 +83,7 @@ onMounted(async () => {
       </nav>
       <div
         class="flex items-center gap-2 justify-self-end text-xs text-mute"
-        :title="hub.connected ? '事件和运行记录会实时出现' : '正在尝试重新连接'"
+        :title="hub.connected ? '收到的事件和规则的执行结果会实时出现' : '正在尝试重新连接'"
       >
         <span class="dot" :class="hub.connected ? 'ok live' : 'bad'" />
         {{ hub.connected ? '实时连接中' : '连接已断开' }}

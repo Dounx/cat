@@ -61,7 +61,7 @@
 
 - `channel`（渠道，默认）：和外部世界的双向连接，消息从这里来、回复和通知发到这里去。例如 Telegram、QQ、Webhook。
 - `monitor`（监控）：盯着某样东西，有变化时发出事件，自己没有地方可以“发消息”。例如 RSS 订阅、网页变动、接口变动。要把变化通知给人，由规则把事件交给某个渠道的动作。
-- `processor`（处理器）：收到事件后负责处理并给出结果。例如 Claude Code、大模型对话，也可以是关键词自动回复、转人工这类不涉及 AI 的实现。
+- `processor`（界面上叫「Agent」）：收到事件后负责处理并给出结果。例如 Claude Code、大模型对话，也可以是关键词自动回复、转人工这类不涉及 AI 的实现。
 
 填其它值插件会加载失败。
 
@@ -72,6 +72,11 @@
 - 插件的 `description` 显示在添加动作时的选择列表里。
 
 表单渲染支持的 Schema 子集：`type` 为 `string` / `number` / `integer` / `boolean` / `object`，以及 `title`、`description`、`default`、`enum`、`required`；`format: "password"` 和 `format: "textarea"`；`x-order` 数组指定字段顺序（JSON 对象本身无序）。
+
+两个让表单更好填的扩展：
+
+- `"x-enum-titles": ["只读（推荐）", "不做任何限制（危险）"]`：和 `enum` 等长、同序，是每个选项显示给人看的名字。存下来的仍是 `enum` 里的值。请总是给出，不要让用户面对 `read-only` 这样的内部值。
+- `"x-pick": "conversation"` 或 `"actor"`：这个字段要填的是会话 ID 或发送者 ID。界面会在旁边提供「从最近的里选」，列出最近事件里出现过的会话（`conversation.id`，限这个动作所属的接入）或发送者（`actor.id`，多选时用逗号连接）。用在动作参数和配置里都可以。
 
 ## 传输
 

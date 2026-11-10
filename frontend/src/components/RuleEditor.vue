@@ -11,6 +11,7 @@ import {
   Copy,
   CopyPlus,
   Filter,
+  FlaskConical,
   LayoutGrid,
   Play,
   Radar,
@@ -31,7 +32,9 @@ import {
 } from 'lucide-vue-next'
 import { useHub, clock, summarize, timeAgo } from '../hub'
 import { del, post, put } from '../api'
-import type { ActionSpec, Instance, Plugin, Rule } from '../types'
+import type { ActionSpec, Plugin, Rule, Run } from '../types'
+import { eventTitle, fieldLabel } from '../labels'
+import { picksFor } from '../picks'
 import { commonFields, operators } from '../condition'
 import {
   NODE_H,
@@ -54,7 +57,8 @@ import Drawer from './Drawer.vue'
 import ContextMenu, { type MenuItem } from './ContextMenu.vue'
 import FlowCanvas, { type CanvasNode, type Point } from './FlowCanvas.vue'
 import SchemaForm from './SchemaForm.vue'
-import SetupWizard from './SetupWizard.vue'
+import ConnectDialog from './ConnectDialog.vue'
+import JsonView from './JsonView.vue'
 import type { VarGroup } from './VarPicker.vue'
 
 const props = defineProps<{ rule: Rule }>()
@@ -111,15 +115,31 @@ function offered(t: ENode) {
     last: hub.events.find((e) => e.type === r.type && ids.has(e.source)),
   }))
 }
+// A trigger takes everything until told to take only some. Having switched
+// to "only some" with nothing ticked yet is a state of the panel alone.
+const narrowed = reactive(new Set<string>())
+const anySource = (t: ENode) => !t.sources.length && !narrowed.has(t.id + ':from')
+const anyType = (t: ENode) => !typesOf(t).length && !narrowed.has(t.id + ':type')
+function widen(t: ENode, what: 'from' | 'type') {
+  narrowed.delete(t.id + ':' + what)
+  if (what === 'from') t.sources = []
+  else Object.assign(t, { pickedTypes: [], otherTypes: '' })
+}
+const limitKeys = [
+  { value: '', label: '所有事件合在一起算' },
+  { value: 'actor.id', label: '每个发送者分别算' },
+  { value: 'conversation.id', label: '每个会话分别算' },
+]
 function toggle(list: string[], value: string) {
   const i = list.indexOf(value)
   if (i >= 0) list.splice(i, 1)
   else list.push(value)
 }
-const triggerTitle = (t: ENode) => (t.sources.length ? t.sources.map(hub.instanceName).join('、') : '任意来源')
+const triggerTitle = (t: ENode) => (t.sources.length ? t.sources.map(hub.instanceName).join('、') : '所有接入')
 const triggerSummary = (t: ENode) => {
   const types = typesOf(t)
-  return types.length ? types.map((x) => typeTitle(x) || x).join('、') : '所有事件'
+  const what = types.length ? types.map((x) => typeTitle(x) || x).join('、') : '任何事件'
+  return Number(t.limit) > 0 ? `${what} · ${t.limit} 秒内一次` : what
 }
 
 // ---- conditions ----
@@ -142,9 +162,20 @@ function conditionTitle(n: ENode): string {
   return rows
     .map((r) => {
       const op = operators.find((o) => o.id === r.op)
-      return [r.field, op?.label, op?.noValue ? '' : r.value].filter(Boolean).join(' ')
+      return [fieldLabel(r.field), op?.label, op?.noValue ? '' : r.value].filter(Boolean).join(' ')
     })
     .join(n.builder.join === 'and' ? ' 且 ' : ' 或 ')
+}
+// A row's field is chosen by name; one not on the list is typed as it is
+// written in the data.
+const OTHER = '__other__'
+const typedRows = reactive(new Set<object>())
+const typedField = (row: { field: string }) => typedRows.has(row) || !fieldHints.value.includes(row.field)
+function chooseField(row: { field: string }, value: string) {
+  if (value === OTHER) {
+    typedRows.add(row)
+    row.field = ''
+  } else row.field = value
 }
 // Switching to the expression editor keeps what the builder had compiled.
 function showExpression(n: ENode) {
@@ -267,8 +298,7 @@ function choose(c: Choice) {
   const then = picker.value!.then
   picker.value = null
   if (c.instance) return then(c.instance)
-  const plugin = c.plugin!
-  connecting.value = { plugin, then, name: plugin.name, config: {}, before: hub.instances.map((i) => i.id) }
+  connecting.value = { plugin: c.plugin!, then }
 }
 // Change what a node uses.
 function retarget(n: ENode) {
@@ -278,30 +308,11 @@ function retarget(n: ENode) {
   })
 }
 
-const connecting = ref<null | {
-  plugin: Plugin
-  then: (instance: string) => void
-  name: string
-  config: Record<string, any>
-  before: string[] // the instances there were, to tell which one a wizard made
-}>(null)
-async function createInstance() {
-  const c = connecting.value!
-  const made = await hub.run(
-    () => post<Instance>('/instances', { plugin: c.plugin.id, name: c.name, enabled: true, config: c.config }),
-    `已接入 ${c.name}`,
-  )
-  if (made) connected(made.id)
-}
-// Go on with the instance just made (a wizard does not say which, so it is
-// the one of this plugin that was not there before).
-async function connected(id?: string) {
-  const c = connecting.value
-  if (!c) return
+const connecting = ref<null | { plugin: Plugin; then: (instance: string) => void }>(null)
+function connected(id: string) {
+  const then = connecting.value!.then
   connecting.value = null
-  await hub.reloadInstances()
-  id ||= hub.instances.find((i) => i.plugin === c.plugin.id && !c.before.includes(i.id))?.id
-  if (id) c.then(id)
+  then(id)
 }
 
 function onTarget(n: ENode) {
@@ -321,25 +332,66 @@ function variablesFor(n: ENode): VarGroup[] {
   const groups: VarGroup[] = [
     {
       title: '事件',
-      items: fieldHints.value.map((f) => ({ expr: f, sample: brief(dig(sampleEvent.value, f)) })),
+      // with an event to go by, only what such an event actually carries
+      items: fieldHints.value
+        .filter((f) => !sampleEvent.value || f === 'payload.text' || dig(sampleEvent.value, f) !== undefined)
+        .map((f) => ({ expr: f, label: fieldLabel(f), sample: brief(dig(sampleEvent.value, f)) })),
     },
   ]
   for (const prev of upstreamActions(doc, n.id)) {
-    let output: Record<string, unknown> | undefined
-    for (const run of hub.runs) {
+    // what it gave in the trial run, else in the latest run of the same action
+    let output = trial.value?.run?.steps.find((s) => s.id === prev.id)?.output
+    for (const run of output ? [] : hub.runs) {
       output = run.steps?.find((s) => s.action === prev.action && s.output)?.output
       if (output) break
     }
     const keys = Object.keys(output || {})
+    const who = targetName(prev)
     groups.push({
-      title: `${prev.id} · ${targetName(prev)} · ${actionTitle(prev)}`,
+      title: `${who} · ${actionTitle(prev)}`,
       items: keys.length
-        ? keys.map((k) => ({ expr: `steps.${prev.id}.${k}`, sample: brief(output![k]) }))
-        : [{ expr: `steps.${prev.id}`, sample: '整个输出（运行一次后可选具体字段）' }],
+        ? keys.map((k) => ({
+            expr: `steps.${prev.id}.${k}`,
+            label: k === 'text' ? `${who} 的输出` : `${who} 的 ${k}`,
+            sample: brief(output![k]),
+          }))
+        : [{ expr: `steps.${prev.id}`, label: `${who} 的全部输出`, sample: '试运行一次后可以选具体的值' }],
     })
   }
   return groups
 }
+
+// ---- trying the rule out ----
+// Run the rule as it stands, saved or not, for one event that came in, and
+// show on each action what became of it.
+const trying = ref(false)
+const tryBusy = ref(false)
+const trial = ref<null | { run: Run | null; error?: string }>(null)
+async function tryOut() {
+  const id = testEventId.value || scopedEvents.value[0]?.id
+  if (!id) return hub.notify('还没有收到过可以用来试的事件', true)
+  settle()
+  tryBusy.value = true
+  const out = await hub.run(() =>
+    post<{ run: Run | null; error?: string }>('/rules/try', { rule: toRule(doc, props.rule), event_id: id }),
+  )
+  tryBusy.value = false
+  if (!out) return
+  trying.value = false
+  trial.value = out
+  sel.value = null
+}
+const trialStep = (id: string) => trial.value?.run?.steps.find((s) => s.id === id)
+const trialText = computed(() => {
+  const t = trial.value
+  if (!t) return ''
+  if (t.error) return '规则有问题：' + t.error
+  if (!t.run) return '这个事件不会触发这条规则：触发节点不接收它，或者条件没通过'
+  const failed = t.run.steps.filter((s) => s.error).length
+  return failed
+    ? `试运行完成：${t.run.steps.length} 个动作里有 ${failed} 个失败，点红色的节点看原因`
+    : `试运行成功：执行了 ${t.run.steps.length} 个动作，点节点看结果`
+})
 
 // ---- the graph on the canvas ----
 const nodes = computed<CanvasNode[]>(() =>
@@ -361,7 +413,8 @@ const nodes = computed<CanvasNode[]>(() =>
       label: targetName(n),
       title: actionTitle(n),
       sub: actionSummary(n),
-      bad: !specOf(n),
+      bad: !specOf(n) || !!trialStep(n.id)?.error,
+      state: trialStep(n.id) ? (trialStep(n.id)!.error ? 'bad' : 'ok') : undefined,
     }
   }),
 )
@@ -520,15 +573,22 @@ function nextItems(from: string, branch: string, at?: Point): MenuItem[] {
   return makers(
     (name) => `${lead}→ ${name}`,
     (kind, instance) => addNode(kind, where, { id: from, branch }, instance),
+    false,
   )
 }
 // One menu entry for each kind of node that can be put after another. An
 // action first asks what is to carry it out.
-function makers(label: (name: string) => string, make: (kind: ENode['kind'], instance?: string) => void): MenuItem[] {
+// A throttle of its own is the rarer need (a trigger has a rate limit built
+// in), so it is offered only in the fuller menus.
+function makers(
+  label: (name: string) => string,
+  make: (kind: ENode['kind'], instance?: string) => void,
+  full = true,
+): MenuItem[] {
   return [
     { label: label('动作…'), icon: Play, run: () => pickAction('添加动作：用什么来执行', (i) => make('action', i)) },
     { label: label('条件'), icon: Filter, run: () => make('condition') },
-    { label: label('节流'), icon: Timer, run: () => make('throttle') },
+    ...(full ? [{ label: label('节流'), icon: Timer, run: () => make('throttle') }] : []),
   ]
 }
 function onSpawn(from: string, branch: string, at: Point, e: MouseEvent) {
@@ -586,7 +646,7 @@ function onMenu(target: { node?: string; edge?: string } | null, at: Point, e: M
 
 // ---- keyboard ----
 function onKey(e: KeyboardEvent) {
-  if (connecting.value || picker.value) return
+  if (connecting.value || picker.value || trying.value) return
   const cmd = e.metaKey || e.ctrlKey
   const key = e.key.toLowerCase()
   if (cmd && key === 's') {
@@ -608,10 +668,11 @@ function onKey(e: KeyboardEvent) {
 // Escape first lets go of what is picked; only with nothing picked does it
 // reach the drawer and close the editor.
 function onEscape(e: KeyboardEvent) {
-  if (e.key === 'Escape' && (connecting.value || picker.value)) {
+  if (e.key === 'Escape' && (connecting.value || picker.value || trying.value)) {
     // the dialog on top takes it; a wizard is left by its own buttons
     e.stopPropagation()
     picker.value = null
+    trying.value = false
     if (!connecting.value?.plugin.setup) connecting.value = null
     return
   }
@@ -687,11 +748,12 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
           </button>
           <i />
           <button title="添加一个条件节点" @click="addNode('condition')"><Filter :size="14" />条件</button>
-          <button title="添加一个节流节点：一段时间内只放行一次" @click="addNode('throttle')">
-            <Timer :size="14" />节流
-          </button>
           <i />
           <button title="自动排列所有节点" @click="tidy"><LayoutGrid :size="14" />整理</button>
+          <i />
+          <button title="不用保存，拿一个收到过的事件把这条规则跑一遍" @click="trying = true">
+            <FlaskConical :size="14" />试运行
+          </button>
         </div>
 
         <div class="flex flex-1 items-center justify-end gap-2">
@@ -725,7 +787,14 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
       @spawn="onSpawn"
       @menu="onMenu"
     />
-    <p v-if="!panel" class="hint">
+    <p v-if="trial && !panel" class="hint trial" :class="{ bad: trial.error || trial.run?.status === 'error' }">
+      <span class="dot" :class="trial.error || trial.run?.status === 'error' ? 'bad' : trial.run ? 'ok' : ''" />
+      {{ trialText }}
+      <button class="ml-1 cursor-pointer text-mute hover:text-ink" aria-label="清除试运行结果" @click="trial = null">
+        <X :size="13" />
+      </button>
+    </p>
+    <p v-else-if="!panel" class="hint">
       拖动节点右侧的圆点连线，点一下圆点添加下一步 · 右键查看更多操作 · 滚轮平移，{{ mod === '⌘' ? '⌘' : 'Ctrl' }} +
       滚轮缩放
     </p>
@@ -768,27 +837,45 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
             </div>
           </section>
         </div>
-        <SetupWizard v-else-if="connecting?.plugin.setup" :plugin="connecting.plugin" @close="connected()" />
-        <div
+        <ConnectDialog
           v-else-if="connecting"
+          :plugin="connecting.plugin"
+          :picks="picksFor(hub.events)"
+          ok-text="接入并选用"
+          @done="connected"
+          @close="connecting = null"
+        />
+        <div
+          v-else-if="trying"
           class="scrim fixed inset-0 z-50 flex items-center justify-center p-4"
-          @click.self="connecting = null"
+          @click.self="trying = false"
         >
-          <section class="pop flex max-h-full w-full max-w-md flex-col overflow-hidden">
+          <section class="pop w-full max-w-md overflow-hidden">
             <header class="flex items-center justify-between border-b border-line px-5 py-3">
-              <h2 class="text-[15px] font-semibold">接入 {{ connecting.plugin.name }}</h2>
-              <button class="btn btn-ghost px-1.5" aria-label="关闭" @click="connecting = null">
-                <X :size="16" />
-              </button>
+              <h2 class="text-[15px] font-semibold">试运行</h2>
+              <button class="btn btn-ghost px-1.5" aria-label="关闭" @click="trying = false"><X :size="16" /></button>
             </header>
-            <div class="flex-1 space-y-3 overflow-y-auto p-5">
-              <p v-if="connecting.plugin.description" class="text-sm text-mute">{{ connecting.plugin.description }}</p>
-              <div><label class="label">名称</label><input v-model="connecting.name" class="input" /></div>
-              <SchemaForm v-model="connecting.config" :schema="connecting.plugin.config_schema" />
+            <div class="space-y-3 p-5">
+              <p class="text-sm text-mute">拿一个收到过的事件，把这条规则现在的样子跑一遍，不用先保存。</p>
+              <div>
+                <label class="label">用哪个事件</label>
+                <select v-if="scopedEvents.length" v-model="testEventId" class="input">
+                  <option value="">最近的一个</option>
+                  <option v-for="e in scopedEvents" :key="e.id" :value="e.id">
+                    {{ clock(e.time) }} · {{ eventTitle(hub.plugins, e) }} · {{ summarize(e).slice(0, 50) }}
+                  </option>
+                </select>
+                <p v-else class="text-sm text-mute">触发节点选的接入还没有收到过事件。先让它来一个，比如发一条消息。</p>
+              </div>
+              <p class="rounded-lg bg-warn/10 px-3 py-2 text-xs text-warn">
+                动作会真的执行：消息会发出去，Agent 会被调用，请求会发出。
+              </p>
             </div>
             <footer class="flex justify-end gap-2 border-t border-line px-5 py-3">
-              <button class="btn" @click="connecting = null">取消</button>
-              <button class="btn btn-primary" @click="createInstance">接入并选用</button>
+              <button class="btn" @click="trying = false">取消</button>
+              <button class="btn btn-primary" :disabled="tryBusy || !scopedEvents.length" @click="tryOut">
+                {{ tryBusy ? '运行中…' : '运行' }}
+              </button>
             </footer>
           </section>
         </div>
@@ -818,74 +905,103 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
           </button>
         </div>
         <label class="label">从哪里来</label>
-        <div v-if="sourceInstances.length" class="list">
-          <label
-            v-for="s in sourceInstances"
-            :key="s.id"
-            class="row link flex cursor-pointer items-center gap-3 px-3 py-2"
-          >
-            <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium">{{ s.name }}</div>
-              <div class="truncate text-xs text-mute">
-                会发出：{{
-                  eventsOf(s.plugin)
-                    .map((e) => e.title)
-                    .join('、') || '（未声明）'
-                }}
-              </div>
-            </div>
-            <input type="checkbox" :checked="node.sources.includes(s.id)" @change="toggle(node.sources, s.id)" />
-          </label>
+        <div class="seg mb-2">
+          <button :class="{ on: anySource(node) }" @click="widen(node, 'from')">所有接入</button>
+          <button :class="{ on: !anySource(node) }" @click="narrowed.add(node.id + ':from')">只听指定的</button>
         </div>
-        <p v-else class="text-xs text-mute">还没有事件来源，请先到「接入」添加渠道或监控。</p>
-        <p class="mt-1 text-xs text-mute">
-          {{ node.sources.length ? '只听上面打开的来源。' : '一个都不打开，表示所有来源都听。' }}
+        <template v-if="!anySource(node)">
+          <div v-if="sourceInstances.length" class="list">
+            <label
+              v-for="s in sourceInstances"
+              :key="s.id"
+              class="row link flex cursor-pointer items-center gap-3 px-3 py-2"
+            >
+              <div class="min-w-0 flex-1">
+                <div class="text-sm font-medium">{{ s.name }}</div>
+                <div class="truncate text-xs text-mute">
+                  会发出：{{
+                    eventsOf(s.plugin)
+                      .map((e) => e.title)
+                      .join('、') || '（未声明）'
+                  }}
+                </div>
+              </div>
+              <input type="checkbox" :checked="node.sources.includes(s.id)" @change="toggle(node.sources, s.id)" />
+            </label>
+          </div>
+          <p v-if="!node.sources.length" class="mt-1 text-xs text-warn">还没有选。一个都不选时，按「所有接入」处理。</p>
+        </template>
+        <p v-if="!sourceInstances.length" class="text-xs text-mute">
+          还没有能发出事件的接入，请先到「接入」添加渠道或监控。
         </p>
 
         <label class="label mt-5">发生什么事时触发</label>
-        <div v-if="offered(node).length" class="list">
-          <label
-            v-for="e in offered(node)"
-            :key="e.type"
-            class="row link flex cursor-pointer items-center gap-3 px-3 py-2"
-          >
-            <div class="min-w-0 flex-1">
-              <div class="flex items-baseline gap-2">
-                <span class="text-sm font-medium">{{ e.title }}</span>
-                <code class="chip">{{ e.type }}</code>
-              </div>
-              <div v-if="e.stray" class="truncate text-xs text-warn">当前所听的来源不会发出这个事件</div>
-              <template v-else>
-                <div class="truncate text-xs text-mute">来自 {{ e.from.join('、') }}</div>
-                <div class="truncate text-xs text-mute">
-                  <template v-if="e.last"
-                    >最近一次（{{ timeAgo(e.last.time) }}）：{{
-                      summarize(e.last).slice(0, 80) || '（无内容）'
-                    }}</template
-                  >
-                  <template v-else>还没收到过</template>
-                </div>
-              </template>
-            </div>
-            <input
-              type="checkbox"
-              :checked="node.pickedTypes.includes(e.type)"
-              @change="toggle(node.pickedTypes, e.type)"
-            />
-          </label>
+        <div class="seg mb-2">
+          <button :class="{ on: anyType(node) }" @click="widen(node, 'type')">任何事件</button>
+          <button :class="{ on: !anyType(node) }" @click="narrowed.add(node.id + ':type')">只在指定的事发生时</button>
         </div>
-        <p class="mt-1 text-xs text-mute">
-          {{ typesOf(node).length ? '只有上面打开的事件会触发。' : '一个都不打开，表示任何事件都触发。' }}
-        </p>
-        <details class="mt-3 text-xs text-mute" :open="!!node.otherTypes">
-          <summary>高级：按类型名匹配</summary>
+        <template v-if="!anyType(node)">
+          <div v-if="offered(node).length" class="list">
+            <label
+              v-for="e in offered(node)"
+              :key="e.type"
+              class="row link flex cursor-pointer items-center gap-3 px-3 py-2"
+              :title="e.type"
+            >
+              <div class="min-w-0 flex-1">
+                <div class="text-sm font-medium">{{ e.title }}</div>
+                <div v-if="e.stray" class="truncate text-xs text-warn">上面选的接入不会发出这个事件</div>
+                <template v-else>
+                  <div class="truncate text-xs text-mute">来自 {{ e.from.join('、') }}</div>
+                  <div class="truncate text-xs text-mute">
+                    <template v-if="e.last"
+                      >最近一次（{{ timeAgo(e.last.time) }}）：{{
+                        summarize(e.last).slice(0, 80) || '（无内容）'
+                      }}</template
+                    >
+                    <template v-else>还没收到过</template>
+                  </div>
+                </template>
+              </div>
+              <input
+                type="checkbox"
+                :checked="node.pickedTypes.includes(e.type)"
+                @change="toggle(node.pickedTypes, e.type)"
+              />
+            </label>
+          </div>
+          <p v-if="!typesOf(node).length" class="mt-1 text-xs text-warn">
+            还没有选。一个都不选时，按「任何事件」处理。
+          </p>
+          <details class="mt-3 text-xs text-mute" :open="!!node.otherTypes">
+            <summary class="cursor-pointer">高级：按类型名匹配</summary>
+            <input
+              v-model="node.otherTypes"
+              class="input mt-2 font-mono text-xs"
+              placeholder="例如 message.*，多个用逗号分隔"
+            />
+            <p class="mt-1">用来匹配上面没列出的事件，支持 * 通配。</p>
+          </details>
+        </template>
+
+        <label class="label mt-5">触发得太频繁时</label>
+        <label class="flex cursor-pointer items-center gap-2 text-sm">
           <input
-            v-model="node.otherTypes"
-            class="input mt-2 font-mono text-xs"
-            placeholder="例如 message.*，多个用逗号分隔"
+            type="checkbox"
+            :checked="Number(node.limit) > 0"
+            @change="node.limit = ($event.target as HTMLInputElement).checked ? 60 : 0"
           />
-          <p class="mt-1">用来匹配上面没列出的事件，支持 * 通配。</p>
-        </details>
+          限制频率：一段时间内只触发一次
+        </label>
+        <div v-if="Number(node.limit) > 0" class="mt-2 flex items-center gap-2 text-sm">
+          <input v-model.number="node.limit" type="number" min="1" class="input w-24" />秒内只触发一次，
+          <select v-model="node.limitKey" class="input min-w-0 flex-1">
+            <option v-for="k in limitKeys" :key="k.value" :value="k.value">{{ k.label }}</option>
+            <option v-if="!limitKeys.some((k) => k.value === node!.limitKey)" :value="node.limitKey">
+              按 {{ fieldLabel(node.limitKey) }} 分别算
+            </option>
+          </select>
+        </div>
       </template>
 
       <template v-else-if="node?.kind === 'condition'">
@@ -934,11 +1050,20 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
               i === 0 ? '当' : node.builder.join === 'and' ? '且' : '或'
             }}</span>
             <input
+              v-if="typedField(row)"
               v-model="row.field"
-              class="input flex-1 font-mono text-xs"
-              list="field-hints"
-              placeholder="payload.text"
+              class="input min-w-0 flex-1 font-mono text-xs"
+              placeholder="payload.字段名"
             />
+            <select
+              v-else
+              class="input min-w-0 flex-1"
+              :value="row.field"
+              @change="chooseField(row, ($event.target as HTMLSelectElement).value)"
+            >
+              <option v-for="f in fieldHints" :key="f" :value="f" :title="f">{{ fieldLabel(f) }}</option>
+              <option :value="OTHER">其他字段…</option>
+            </select>
             <select v-model="row.op" class="input w-24">
               <option v-for="o in operators" :key="o.id" :value="o.id">{{ o.label }}</option>
             </select>
@@ -952,7 +1077,6 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
               <Trash2 :size="14" />
             </button>
           </div>
-          <datalist id="field-hints"><option v-for="f in fieldHints" :key="f" :value="f" /></datalist>
           <div class="flex items-center gap-3">
             <button class="btn" @click="node.builder.rows.push({ field: 'payload.text', op: 'contains', value: '' })">
               <Plus :size="14" />添加一行
@@ -963,7 +1087,6 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
             </select>
             <span v-if="!node.builder.rows.length" class="text-xs text-mute">一行都没有时总是成立。</span>
           </div>
-          <p v-if="conditionOf(node)" class="mt-2 font-mono text-[11px] break-all text-mute">{{ conditionOf(node) }}</p>
         </template>
         <template v-else>
           <textarea
@@ -982,7 +1105,7 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
           <select v-model="testEventId" class="input min-w-0 flex-1 text-xs">
             <option value="">用最近一个事件测试</option>
             <option v-for="e in scopedEvents" :key="e.id" :value="e.id">
-              {{ clock(e.time) }} · {{ e.type }} · {{ summarize(e).slice(0, 60) }}
+              {{ clock(e.time) }} · {{ eventTitle(hub.plugins, e) }} · {{ summarize(e).slice(0, 60) }}
             </option>
           </select>
           <button class="btn" @click="test(node)">测试</button>
@@ -1070,6 +1193,7 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
           :model-value="node.params || {}"
           :schema="specOf(node)?.params"
           :variables="variablesFor(node)"
+          :picks="picksFor(hub.events, node.instance)"
           templated
           @update:model-value="node.params = $event"
         />
@@ -1085,10 +1209,14 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
             </p>
           </div>
         </details>
-        <p class="mt-3 text-xs text-mute">
-          参数里用「插入变量」引用事件和前面动作的输出，也可以直接写
-          <code class="chip" v-text="'{{ payload.text }}'" />。
-        </p>
+        <p class="mt-3 text-xs text-mute">用「插入变量」把事件的内容、前面动作的结果放进参数里。</p>
+        <template v-if="trialStep(node.id)">
+          <h4 class="label mt-4">试运行结果</h4>
+          <p v-if="trialStep(node.id)!.error" class="mb-2 rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">
+            {{ trialStep(node.id)!.error }}
+          </p>
+          <JsonView v-else :value="trialStep(node.id)!.output ?? null" />
+        </template>
       </template>
     </aside>
   </Drawer>
@@ -1192,6 +1320,19 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
   color: var(--color-accent);
 }
 
+.hint.trial {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  background: var(--color-surface);
+  box-shadow: var(--card-edge);
+  font-size: 12.5px;
+  color: var(--color-ink);
+  pointer-events: auto;
+}
 .hint {
   position: absolute;
   bottom: 14px;

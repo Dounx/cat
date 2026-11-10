@@ -443,3 +443,41 @@ func TestGraphThrottleNode(t *testing.T) {
 		t.Fatalf("replay matched %d, err %v", n, err)
 	}
 }
+
+func TestTryRuleRunsUnsavedRule(t *testing.T) {
+	e := newEngine(t)
+	hook, _ := e.SaveInstance(store.Instance{Plugin: "webhook", Enabled: true})
+	waitRunning(t, e, hook.ID)
+	waitRunning(t, e, "shell")
+	post(t, e, hook.ID, `{"text":"hi"}`, nil)
+	var eventID string
+	waitFor(t, "event", func() bool {
+		list, _ := e.Store.ListEvents(store.EventFilter{Limit: 1})
+		if len(list) == 1 {
+			eventID = list[0].ID
+		}
+		return eventID != ""
+	})
+	rule := rules.Rule{Graph: &rules.Graph{
+		Nodes: []rules.Node{
+			{Step: rules.Step{ID: "t1"}, Kind: "trigger", Sources: []string{hook.ID}},
+			{Step: rules.Step{ID: "s1", Instance: "shell", Action: "run", Params: map[string]any{"command": "echo {{ payload.text }}"}}, Kind: "action"},
+		},
+		Edges: []rules.Edge{{From: "t1", To: "s1"}},
+	}}
+	run, err := e.TryRule(rule, eventID)
+	if err != nil || run == nil {
+		t.Fatalf("run %v, err %v", run, err)
+	}
+	if run.Status != "ok" || !run.Replay || len(run.Steps) != 1 || run.Steps[0].ID != "s1" {
+		t.Fatalf("unexpected run: %+v", run)
+	}
+	if saved, _ := e.Rules(); len(saved) != 0 {
+		t.Fatalf("trying a rule must not save it, got %d", len(saved))
+	}
+	// an event no trigger takes starts nothing
+	rule.Graph.Nodes[0].Sources = []string{"someone-else"}
+	if run, err := e.TryRule(rule, eventID); err != nil || run != nil {
+		t.Fatalf("want no run, got %v, err %v", run, err)
+	}
+}

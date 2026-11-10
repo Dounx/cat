@@ -28,9 +28,11 @@ export const operators: { id: string; label: string; noValue?: boolean }[] = [
 
 export const commonFields = [
   'payload.text',
+  'payload.mentioned',
   'actor.id',
   'actor.name',
   'conversation.id',
+  'conversation.name',
   'conversation.kind',
   'type',
   'source',

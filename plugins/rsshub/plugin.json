@@ -22,13 +22,13 @@
       "mode": {
         "type": "string",
         "title": "方式",
-        "enum": ["external", "docker", "local"],
+        "enum": ["external", "docker", "local"], "x-enum-titles": ["用已有的 RSSHub", "由 Cat 在 Docker 里运行", "由 Cat 用本机的 Node.js 运行"],
         "default": "external",
-        "description": "external：使用已有的 RSSHub 实例。docker：由 Cat 在 Docker 容器里运行 RSSHub。local：由 Cat 用本机的 Node.js 从源码构建并运行 RSSHub。后两种通过接入向导配置。"
+        "description": "由 Cat 运行的两种方式通过接入向导配置。"
       },
       "base_url": {
         "type": "string",
-        "title": "实例地址（external 方式）",
+        "title": "RSSHub 地址（用已有的 RSSHub 时）",
         "default": "https://rsshub.app",
         "description": "路由会拼在这个地址后面。公共实例经常被限流，建议填自建实例，或改用 docker、local 方式。"
       },
@@ -36,7 +36,7 @@
         "type": "string",
         "title": "访问密钥（可选）",
         "format": "password",
-        "description": "external 方式：自建实例设置了 ACCESS_KEY 时填写。docker、local 方式由接入向导生成。"
+        "description": "用已有的 RSSHub 时：自建实例设置了 ACCESS_KEY 时填写。由 Cat 运行时由接入向导生成。"
       },
       "port": {
         "type": "integer",

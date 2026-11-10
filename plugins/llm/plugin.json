@@ -47,8 +47,9 @@
       },
       "allowed_actors": {
         "type": "string",
-        "title": "允许的发送者 ID",
-        "description": "逗号分隔。只有这些人发的聊天消息能触发。发送者 ID 可在「事件」页的事件详情里看到。"
+        "title": "允许谁来触发",
+        "x-pick": "actor",
+        "description": "只有这些人发的聊天消息能触发。从最近发过消息的人里选，或直接写发送者 ID，逗号分隔。"
       }
     }
   },

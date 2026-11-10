@@ -17,7 +17,7 @@ func webhookEntry() Entry {
 	return Entry{
 		Manifest: plugin.Manifest{
 			ID: "webhook", Name: "Webhook", Version: "1.0.0", Builtin: true, Ingress: true, Icon: "webhook",
-			Description:  "为每个实例生成一个接收地址，任何 HTTP 请求都会变成一个事件。",
+			Description:  "每个 Webhook 有自己的接收地址，发到这个地址的任何 HTTP 请求都会变成一个事件。",
 			Capabilities: []string{plugin.CapSource},
 			Events:       []plugin.EventSpec{{Type: "webhook.received", Title: "收到请求"}},
 			ConfigSchema: map[string]any{

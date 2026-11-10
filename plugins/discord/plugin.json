@@ -43,7 +43,7 @@
         "required": ["channel_id", "text"],
         "x-order": ["channel_id", "text"],
         "properties": {
-          "channel_id": { "type": "string", "title": "频道 ID" },
+          "channel_id": { "type": "string", "title": "发到哪个频道", "x-pick": "conversation", "description": "从最近的频道里选，或直接写频道 ID。" },
           "text": { "type": "string", "title": "内容", "format": "textarea" }
         }
       }

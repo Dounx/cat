@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { Check, ChevronRight, Copy, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useHub } from '../hub'
 import { del, get, post, put } from '../api'
@@ -8,8 +9,10 @@ import PageHeader from '../components/PageHeader.vue'
 import Drawer from '../components/Drawer.vue'
 import SchemaForm from '../components/SchemaForm.vue'
 import SetupWizard from '../components/SetupWizard.vue'
+import { picksFor } from '../picks'
 
 const hub = useHub()
+const router = useRouter()
 const editing = ref<null | {
   plugin: Plugin
   id?: string
@@ -29,14 +32,14 @@ const categories: { id: Category; title: string; hint: string; empty: string }[]
   {
     id: 'monitor',
     title: '监控',
-    hint: '盯着外面的变化或时间，有动静、到点时发出事件',
+    hint: '盯着外面的变化或时间，有动静、到点时触发规则',
     empty: '还没有添加监控',
   },
   {
     id: 'processor',
-    title: '处理器',
-    hint: '收到事件后由谁来处理并给出结果',
-    empty: '还没有添加处理器',
+    title: 'Agent',
+    hint: '把事情交给谁去想、去做，再把结果拿回来',
+    empty: '还没有接入 Agent',
   },
 ]
 // The page shows what is set up; what could be added waits behind each
@@ -131,6 +134,13 @@ function closeWizard() {
   wizard.value = null
   hub.reloadInstances()
 }
+async function wizardToRule() {
+  wizard.value = null
+  await hub.reloadInstances()
+  router.push({ path: '/rules', query: { new: '' } })
+}
+// Something is connected and nothing uses it yet: say what comes next.
+const idle = computed(() => !hub.rules.length && hub.instances.some((i) => !hub.pluginOf(i.plugin)?.singleton))
 
 function add(p: Plugin) {
   picking.value = null
@@ -165,7 +175,7 @@ async function restart(i: Instance) {
   restarting.value = ''
 }
 async function remove(i: Instance) {
-  if (!confirm(`删除「${i.name}」？引用它的规则将无法执行对应步骤。`)) return
+  if (!confirm(`删除「${i.name}」？用到它的规则将无法执行对应的动作。`)) return
   await hub.run(() => del(`/instances/${i.id}`), '已删除')
   hub.reloadInstances()
 }
@@ -173,7 +183,7 @@ async function remove(i: Instance) {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="接入" hint="渠道负责收发，监控负责发现变化，处理器负责处理">
+    <PageHeader title="接入" hint="把聊天软件、要盯的东西和 Agent 接进来，规则才有东西可用">
       <div class="seg">
         <button :class="{ on: tab === 'instances' }" @click="tab = 'instances'">已接入</button>
         <button :class="{ on: tab === 'market' }" @click="tab = 'market'">插件市场</button>
@@ -181,6 +191,17 @@ async function remove(i: Instance) {
     </PageHeader>
 
     <div v-if="tab === 'instances'" class="gutter flex-1 space-y-8 overflow-y-auto pb-8">
+      <RouterLink
+        v-if="idle"
+        :to="{ path: '/rules', query: { new: '' } }"
+        class="card card-link flex items-center gap-3 px-4 py-3 text-sm"
+      >
+        <span class="min-w-0 flex-1">
+          接好了，但还没有规则用到它们。<span class="text-mute">接入只负责连上，要它做事得建一条规则。</span>
+        </span>
+        <span class="shrink-0 text-accent">建一条规则</span>
+        <ChevronRight :size="15" class="shrink-0 text-faint" />
+      </RouterLink>
       <section v-for="g in groups" :key="g.id">
         <div class="mb-2.5 flex items-end justify-between gap-4">
           <div class="min-w-0">
@@ -306,7 +327,7 @@ async function remove(i: Instance) {
         <p class="mb-4 text-sm text-mute">{{ editing.plugin.description }}</p>
         <div class="space-y-3">
           <div><label class="label">名称</label><input v-model="editing.name" class="input" /></div>
-          <SchemaForm v-model="editing.config" :schema="editing.plugin.config_schema" />
+          <SchemaForm v-model="editing.config" :schema="editing.plugin.config_schema" :picks="picksFor(hub.events)" />
         </div>
         <template #footer>
           <button v-if="editing.id && editing.plugin.setup" class="btn mr-auto" @click="rerunSetup">
@@ -319,7 +340,13 @@ async function remove(i: Instance) {
     </Transition>
 
     <Transition name="modal">
-      <SetupWizard v-if="wizard" :plugin="wizard.plugin" :instance-id="wizard.instanceId" @close="closeWizard" />
+      <SetupWizard
+        v-if="wizard"
+        :plugin="wizard.plugin"
+        :instance-id="wizard.instanceId"
+        @close="closeWizard"
+        @rule="wizardToRule"
+      />
     </Transition>
   </div>
 </template>

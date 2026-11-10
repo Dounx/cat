@@ -1,15 +1,20 @@
 <script setup lang="ts">
-// A small menu of the values a templated field can refer to. Picking one
-// hands its expression to the field, which inserts it at the cursor.
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+// A small menu of values to put in a field: what a templated field can refer
+// to, or values seen in recent events. Picking one hands its expression to
+// the field.
+import { onBeforeUnmount, onMounted, ref, type Component } from 'vue'
 import { Braces } from 'lucide-vue-next'
 
 export interface VarGroup {
   title: string
-  items: { expr: string; sample?: string }[]
+  // `label` is what people read, `expr` what is inserted
+  items: { expr: string; label?: string; sample?: string }[]
 }
 
-defineProps<{ groups: VarGroup[] }>()
+withDefaults(defineProps<{ groups: VarGroup[]; text?: string; icon?: Component; empty?: string }>(), {
+  text: '插入变量',
+  empty: '还没有可引用的值。',
+})
 const emit = defineEmits<{ pick: [expr: string] }>()
 
 const open = ref(false)
@@ -49,7 +54,7 @@ function pick(expr: string) {
       @mousedown.prevent
       @click="open = !open"
     >
-      <Braces :size="11" />插入变量
+      <component :is="icon || Braces" :size="11" />{{ text }}
     </button>
     <div
       v-if="open"
@@ -58,19 +63,22 @@ function pick(expr: string) {
       @mousedown.prevent
     >
       <template v-for="g in groups" :key="g.title">
-        <div class="px-2 pt-1.5 pb-1 text-[11px] font-medium text-mute">{{ g.title }}</div>
-        <button
-          v-for="v in g.items"
-          :key="v.expr"
-          type="button"
-          class="flex w-full cursor-pointer items-baseline gap-2 rounded-md px-2 py-1 text-left hover:bg-sunken"
-          @click="pick(v.expr)"
-        >
-          <span class="shrink-0 font-mono text-xs">{{ v.expr }}</span>
-          <span class="truncate text-[11px] text-mute">{{ v.sample }}</span>
-        </button>
+        <template v-if="g.items.length">
+          <div class="px-2 pt-1.5 pb-1 text-[11px] font-medium text-mute">{{ g.title }}</div>
+          <button
+            v-for="v in g.items"
+            :key="v.expr"
+            type="button"
+            class="flex w-full cursor-pointer items-baseline gap-2 rounded-md px-2 py-1 text-left hover:bg-sunken"
+            :title="v.expr"
+            @click="pick(v.expr)"
+          >
+            <span class="shrink-0 text-xs" :class="{ 'font-mono': !v.label }">{{ v.label || v.expr }}</span>
+            <span class="truncate text-[11px] text-mute">{{ v.sample }}</span>
+          </button>
+        </template>
       </template>
-      <p v-if="!groups.length" class="px-2 py-2 text-xs text-mute">还没有可引用的值。</p>
+      <p v-if="!groups.some((g) => g.items.length)" class="px-2 py-2 text-xs text-mute">{{ empty }}</p>
     </div>
   </span>
 </template>

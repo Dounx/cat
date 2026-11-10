@@ -4,6 +4,10 @@ export interface Schema {
   description?: string
   format?: string
   enum?: string[]
+  // what to show for each enum value, in the same order
+  'x-enum-titles'?: string[]
+  // offer values seen in recent events: a conversation, or senders
+  'x-pick'?: 'conversation' | 'actor'
   default?: unknown
   required?: string[]
   'x-order'?: string[]

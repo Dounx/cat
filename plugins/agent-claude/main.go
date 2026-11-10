@@ -131,7 +131,7 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 			"type": "object", "x-order": []string{"cwd", "permission_mode", "allowed_tools", "allowed_actors", "allow_anyone"},
 			"properties": map[string]any{
 				"cwd":             map[string]any{"type": "string", "title": "工作目录", "description": "留空使用实例自己的空目录。"},
-				"permission_mode": map[string]any{"type": "string", "title": "权限模式", "enum": []string{"dontAsk", "acceptEdits", "auto", "bypassPermissions"}, "default": "dontAsk", "description": "dontAsk：只能用下面允许的工具（推荐）。"},
+				"permission_mode": map[string]any{"type": "string", "title": "权限模式", "enum": []string{"dontAsk", "acceptEdits", "auto", "bypassPermissions"}, "x-enum-titles": []string{"只用下面允许的工具（推荐）", "可以改文件", "由 Claude Code 自动判断", "不做任何限制（危险）"}, "default": "dontAsk", "description": "「不做任何限制」只在你完全信任能触发它的人时使用。"},
 				"allowed_tools":   map[string]any{"type": "string", "title": "允许的工具", "description": "逗号分隔。"},
 				"allowed_actors":  guardSchema["allowed_actors"],
 				"allow_anyone":    guardSchema["allow_anyone"],

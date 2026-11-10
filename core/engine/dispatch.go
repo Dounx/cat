@@ -243,7 +243,7 @@ func (e *Engine) TestCondition(condition, eventID string) (bool, error) {
 
 // ---- pipeline ----
 
-func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) {
+func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store.Run {
 	run := &store.Run{
 		ID: id.New(), RuleID: r.ID, RuleName: r.Name, EventID: ev.ID,
 		Status: "running", StartedAt: time.Now(), Steps: []store.StepResult{}, Replay: replay,
@@ -296,7 +296,7 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) {
 		}
 	}
 	if !recorded {
-		return
+		return nil
 	}
 	now := time.Now()
 	run.FinishedAt = &now
@@ -305,6 +305,31 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) {
 		run.Status = "error"
 	}
 	e.saveRun(run)
+	return run
+}
+
+// TryRule runs a rule, saved or not, for a stored event and waits for the
+// outcome. The actions are really carried out; throttles are skipped, as in a
+// replay. It returns nil when the event starts nothing in the rule: no trigger
+// takes it, or every path ends before an action.
+func (e *Engine) TryRule(r rules.Rule, eventID string) (*store.Run, error) {
+	ev, err := e.Store.GetEvent(eventID)
+	if err != nil {
+		return nil, err
+	}
+	if r.Name == "" {
+		r.Name = "未命名规则"
+	}
+	c, err := rules.Compile(r)
+	if err != nil {
+		return nil, err
+	}
+	if c.Graph == nil {
+		if ok, err := c.Match(ev); err != nil || !ok {
+			return nil, err
+		}
+	}
+	return e.execute(c, ev, true), nil
 }
 
 func (e *Engine) saveRun(run *store.Run) {

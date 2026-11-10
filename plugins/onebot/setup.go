@@ -37,10 +37,10 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 	}
 	out, err := s.Ask(ctx, cat.Step{
 		Kind: cat.StepForm, Title: "怎样连接 QQ",
-		Description: "managed：由 Cat 下载、配置并启动 NapCat，你只需要扫码登录（目前支持 Windows，需要已安装 QQ）。\ndocker：由 Cat 在 Docker 容器里启动 NapCat，你只需要扫码登录（Windows、macOS、Linux 均可，需要已安装 Docker）。\nexternal：连接你已经在运行的 OneBot 11 服务（NapCat、LLOneBot 等）。",
+		Description: "由 Cat 启动并管理 NapCat：Cat 下载、配置并启动它，你只需要扫码登录（目前支持 Windows，需要已安装 QQ）。\n由 Cat 在 Docker 里运行 NapCat：你只需要扫码登录（Windows、macOS、Linux 均可，需要已安装 Docker）。\n连接已有的 OneBot 服务：你已经在运行的 OneBot 11 服务（NapCat、LLOneBot 等）。",
 		Values:      map[string]any{"mode": mode},
 		Schema: map[string]any{"type": "object", "properties": map[string]any{
-			"mode": map[string]any{"type": "string", "title": "方式", "enum": []string{"managed", "docker", "external"}},
+			"mode": map[string]any{"type": "string", "title": "方式", "enum": []string{"managed", "docker", "external"}, "x-enum-titles": []string{"由 Cat 启动并管理 NapCat", "由 Cat 在 Docker 里运行 NapCat", "连接已有的 OneBot 服务"}},
 		}},
 	})
 	if err != nil {

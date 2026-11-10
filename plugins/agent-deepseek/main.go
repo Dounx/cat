@@ -96,7 +96,7 @@ func parseDsh(stdout []byte) (res dshResult, failure string) {
 			if ev.Reason.Kind == "error" {
 				failure = ev.Reason.Error.Message
 				if ev.Reason.Error.Code == "MISSING_CREDENTIAL" {
-					failure = "DeepSeek Harness 没有可用的 API Key。请在该实例的配置里填写 API Key，或先在 DeepSeek Harness 里配置好模型"
+					failure = "DeepSeek Harness 没有可用的 API Key。请在这个接入的配置里填写 API Key，或先在 DeepSeek Harness 里配置好模型"
 				}
 				if failure == "" {
 					failure = "运行出错"
@@ -215,7 +215,7 @@ func New() cat.Plugin {
 			case "claude-code":
 				bin, err := harness.FindBin("claude", harness.Str(h.Config, "bin"))
 				if err != nil {
-					return errors.New(err.Error() + "。claude-code 方式需要先安装 Claude Code：https://claude.com/claude-code")
+					return errors.New(err.Error() + "。这种方式需要先安装 Claude Code：https://claude.com/claude-code")
 				}
 				cwd, err := harness.EnsureDir(harness.Str(h.Config, "cwd"), h.DataDir)
 				if err != nil {
@@ -310,13 +310,13 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 				mode = "api"
 			}
 		}
-		desc := "harness：使用本机的 DeepSeek Harness，能用工具。"
+		desc := "本机的 DeepSeek Harness：能用工具。"
 		if dshErr != nil {
 			desc += "（本机没有找到它）"
 		} else {
 			desc += "（已在本机找到）"
 		}
-		desc += "\napi：只调用 API，纯对话。\nclaude-code：用 DeepSeek 模型驱动 Claude Code。\n\nAPI Key 在 DeepSeek 开放平台创建；harness 方式下如果它自己已配置密钥可以留空。"
+		desc += "\n\nAPI Key 在 DeepSeek 开放平台创建；用 DeepSeek Harness 时，如果它自己已配置密钥可以留空。"
 		if problem != "" {
 			desc = "⚠ " + problem + "\n\n" + desc
 		}
@@ -327,9 +327,9 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 			Schema: map[string]any{
 				"type": "object", "x-order": []string{"mode", "api_key", "cwd", "allowed_actors", "allow_anyone"},
 				"properties": map[string]any{
-					"mode":           map[string]any{"type": "string", "title": "方式", "enum": []string{"harness", "api", "claude-code"}},
+					"mode":           map[string]any{"type": "string", "title": "方式", "enum": []string{"harness", "api", "claude-code"}, "x-enum-titles": []string{"本机的 DeepSeek Harness", "只调用 API（纯对话，不带工具）", "用 DeepSeek 模型驱动本机的 Claude Code"}},
 					"api_key":        map[string]any{"type": "string", "title": "API Key", "format": "password"},
-					"cwd":            map[string]any{"type": "string", "title": "工作目录（harness / claude-code）", "description": "留空使用实例自己的空目录。"},
+					"cwd":            map[string]any{"type": "string", "title": "工作目录（Harness / Claude Code 方式）", "description": "留空使用 Cat 为它准备的空目录。"},
 					"allowed_actors": guardSchema["allowed_actors"],
 					"allow_anyone":   guardSchema["allow_anyone"],
 				},

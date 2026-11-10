@@ -18,6 +18,8 @@ export interface CanvasNode {
   title: string
   sub?: string
   bad?: boolean
+  // how the node fared in a trial run
+  state?: 'ok' | 'bad'
 }
 export interface Point {
   x: number
@@ -278,6 +280,7 @@ defineExpose({ fit, zoom, center })
         @contextmenu.prevent.stop="emit('menu', { node: n.id }, point($event), $event)"
       >
         <span v-if="n.kind !== 'trigger'" class="inlet" />
+        <span v-if="n.state" class="ran" :class="n.state" />
         <span class="glyph" :class="n.kind"><component :is="n.icon" :size="15" /></span>
         <span class="min-w-0 flex-1">
           <span class="block text-[10.5px] leading-tight text-mute">{{ n.label }}</span>
@@ -411,6 +414,19 @@ defineExpose({ fit, zoom, center })
 .glyph.condition {
   background: color-mix(in srgb, var(--color-ok) 16%, transparent);
   color: var(--color-ok);
+}
+.ran {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--color-surface);
+  border-radius: 50%;
+  background: var(--color-ok);
+}
+.ran.bad {
+  background: var(--color-bad);
 }
 .node.bad .glyph {
   background: color-mix(in srgb, var(--color-bad) 14%, transparent);

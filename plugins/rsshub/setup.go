@@ -46,10 +46,10 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 	}
 	out, err := s.Ask(ctx, cat.Step{
 		Kind: cat.StepForm, Title: "用哪个 RSSHub 实例",
-		Description: "external：使用已有的实例——你自建的，或公共实例 rsshub.app（经常被限流）。\ndocker：由 Cat 在 Docker 容器里运行一个 RSSHub（需要已安装 Docker）。\nlocal：由 Cat 下载 RSSHub 源码，用本机的 Node.js 构建并运行（需要已安装 Node.js）。\n\n后两种方式的实例只在本机可以访问，随这个接入启动和停止。",
+		Description: "用已有的 RSSHub：你自建的，或公共的 rsshub.app（经常被限流）。\n由 Cat 在 Docker 里运行：需要已安装 Docker。\n由 Cat 用本机的 Node.js 运行：Cat 下载 RSSHub 源码并构建，需要已安装 Node.js。\n\n由 Cat 运行的 RSSHub 只在本机可以访问，随这个接入启动和停止。",
 		Values:      map[string]any{"mode": mode},
 		Schema: map[string]any{"type": "object", "properties": map[string]any{
-			"mode": map[string]any{"type": "string", "title": "方式", "enum": []string{"external", "docker", "local"}},
+			"mode": map[string]any{"type": "string", "title": "方式", "enum": []string{"external", "docker", "local"}, "x-enum-titles": []string{"用已有的 RSSHub", "由 Cat 在 Docker 里运行", "由 Cat 用本机的 Node.js 运行"}},
 		}},
 	})
 	if err != nil {

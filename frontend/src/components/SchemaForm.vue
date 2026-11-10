@@ -1,17 +1,26 @@
 <script setup lang="ts">
 // Renders a form from a JSON Schema object. With `templated`, every field
 // accepts {{ expression }} placeholders, so numbers are edited as text.
-import { computed, nextTick } from 'vue'
+import { computed } from 'vue'
+import { History } from 'lucide-vue-next'
 import type { Schema } from '../types'
 import VarPicker, { type VarGroup } from './VarPicker.vue'
+import TemplateInput from './TemplateInput.vue'
 
 // `variables` lists what a templated text field may refer to; when given,
-// those fields offer a menu that inserts the placeholder at the cursor.
+// those fields show placeholders as named tags and offer a menu that inserts
+// one at the cursor. `picks` gives, for the kinds of value a field may ask
+// for with "x-pick", the ones seen in recent events.
+export interface Picks {
+  conversation?: VarGroup[]
+  actor?: VarGroup[]
+}
 const props = defineProps<{
   schema?: Schema
   modelValue: Record<string, any>
   templated?: boolean
   variables?: VarGroup[]
+  picks?: Picks
 }>()
 const emit = defineEmits<{ 'update:modelValue': [value: Record<string, any>] }>()
 
@@ -58,25 +67,33 @@ function setText(key: string, s: Schema, raw: string) {
   set(key, raw)
 }
 
-type TextField = HTMLInputElement | HTMLTextAreaElement
-const els: Record<string, TextField> = {}
+type Field = InstanceType<typeof TemplateInput>
+const els: Record<string, Field> = {}
 const bind = (key: string) => (el: unknown) => {
-  if (el) els[key] = el as TextField
+  if (el) els[key] = el as Field
   else delete els[key]
 }
 const pickable = (s: Schema) => !!props.variables && (kind(s) === 'text' || kind(s) === 'textarea')
 
-function insert(key: string, s: Schema, expr: string) {
-  const el = els[key]
+// The name a placeholder goes by, when the variables on offer include it.
+const names = computed(() => {
+  const m = new Map<string, string>()
+  for (const g of props.variables || []) for (const v of g.items) if (v.label) m.set(v.expr, v.label)
+  return m
+})
+const labelOf = (expr: string) => names.value.get(expr.trim())
+
+const enumTitle = (s: Schema, i: number) => s['x-enum-titles']?.[i] || s.enum![i]
+
+// Values from recent events for a field that asks for them.
+const picksFor = (s: Schema) => (s['x-pick'] && props.picks?.[s['x-pick']]) || undefined
+function pick(key: string, s: Schema, value: string) {
+  // senders add up to a list; a conversation replaces what was there
   const cur = show(key, s)
-  const start = el?.selectionStart ?? cur.length
-  const end = el?.selectionEnd ?? start
-  const text = `{{ ${expr} }}`
-  setText(key, s, cur.slice(0, start) + text + cur.slice(end))
-  nextTick(() => {
-    el?.focus()
-    el?.setSelectionRange(start + text.length, start + text.length)
-  })
+  const list = cur.split(/[,，\s]+/).filter(Boolean)
+  const next = s['x-pick'] === 'actor' ? (list.includes(value) ? list : [...list, value]).join(',') : value
+  if (els[key]) els[key].replace(next)
+  else set(key, next)
 }
 
 function setJSON(key: string, raw: string) {
@@ -96,7 +113,17 @@ function setJSON(key: string, raw: string) {
         <label class="label !mb-0">
           {{ s.title || key }}<span v-if="required.has(key)" class="text-bad"> *</span>
         </label>
-        <VarPicker v-if="pickable(s)" :groups="variables!" @pick="insert(key, s, $event)" />
+        <span class="flex items-center">
+          <VarPicker
+            v-if="picksFor(s)"
+            :groups="picksFor(s)!"
+            :icon="History"
+            text="从最近的里选"
+            empty="还没有收到过消息。先在那边发一条，这里就能选了。"
+            @pick="pick(key, s, $event)"
+          />
+          <VarPicker v-if="pickable(s)" :groups="variables!" @pick="els[key]?.insert($event)" />
+        </span>
       </div>
       <select
         v-if="kind(s) === 'enum'"
@@ -105,7 +132,7 @@ function setJSON(key: string, raw: string) {
         @change="set(key, ($event.target as HTMLSelectElement).value)"
       >
         <option v-if="!required.has(key) && s.default === undefined" value="">（默认）</option>
-        <option v-for="o in s.enum" :key="o" :value="o">{{ o }}</option>
+        <option v-for="(o, i) in s.enum" :key="o" :value="o">{{ enumTitle(s, i) }}</option>
       </select>
       <label v-else-if="kind(s) === 'boolean'" class="flex cursor-pointer items-center gap-2 text-sm">
         <input
@@ -138,9 +165,17 @@ function setJSON(key: string, raw: string) {
         placeholder="{ }"
         @change="setJSON(key, ($event.target as HTMLTextAreaElement).value)"
       />
+      <TemplateInput
+        v-else-if="pickable(s)"
+        :ref="bind(key)"
+        :model-value="show(key, s)"
+        :multiline="kind(s) === 'textarea'"
+        :placeholder="String(s.default ?? '')"
+        :label-of="labelOf"
+        @update:model-value="setText(key, s, $event)"
+      />
       <textarea
         v-else-if="kind(s) === 'textarea'"
-        :ref="bind(key)"
         class="input font-mono text-xs"
         rows="3"
         :value="show(key, s)"
@@ -148,7 +183,6 @@ function setJSON(key: string, raw: string) {
       />
       <input
         v-else
-        :ref="bind(key)"
         class="input"
         :type="kind(s) === 'password' ? 'password' : 'text'"
         :value="show(key, s)"

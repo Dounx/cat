@@ -31,7 +31,8 @@ interface Session {
 }
 
 const props = defineProps<{ plugin: Plugin; instanceId?: string }>()
-const emit = defineEmits<{ close: [] }>()
+// `rule` asks to go on and build a rule with what was just connected.
+const emit = defineEmits<{ close: []; rule: [] }>()
 const hub = useHub()
 
 const session = ref<Session | null>(null)
@@ -125,7 +126,7 @@ async function cancel() {
               </h3>
               <p v-if="step?.kind === 'info'" class="mb-1 text-sm font-medium">{{ step.title }}</p>
               <p class="text-sm whitespace-pre-line text-mute">
-                {{ step?.kind === 'info' ? step.description : '实例已保存并启动。' }}
+                {{ step?.kind === 'info' ? step.description : '已保存并启动。接下来建一条规则，告诉 Cat 用它做什么。' }}
               </p>
             </template>
 
@@ -178,6 +179,10 @@ async function cancel() {
           >
             确认
           </button>
+        </template>
+        <template v-else-if="session?.state === 'done' && !instanceId">
+          <button class="btn" @click="emit('close')">完成</button>
+          <button class="btn btn-primary" @click="emit('rule')">用它建一条规则</button>
         </template>
         <button v-else-if="finished || startError" class="btn btn-primary" @click="emit('close')">完成</button>
         <button v-else class="btn" @click="cancel">取消接入</button>

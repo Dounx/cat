@@ -44,7 +44,7 @@
         "required": ["chat_id", "text"],
         "x-order": ["chat_id", "text", "markdown"],
         "properties": {
-          "chat_id": { "type": "string", "title": "会话 ID" },
+          "chat_id": { "type": "string", "title": "发到哪个会话", "x-pick": "conversation", "description": "从最近的会话里选，或直接写会话 ID。" },
           "text": { "type": "string", "title": "内容", "format": "textarea" },
           "markdown": { "type": "boolean", "title": "按 Markdown 渲染（失败时退回纯文本）" }
         }
