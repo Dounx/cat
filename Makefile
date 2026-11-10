@@ -4,7 +4,7 @@ EXE := $(if $(filter windows,$(GOOS)),.exe,)
 GO_PLUGINS := telegram onebot wecom rss webwatch apiwatch schedule agent-claude agent-codex agent-deepseek llm
 NODE_PLUGINS := discord
 
-.PHONY: all frontend plugins catd desktop app test run dev clean
+.PHONY: all frontend plugins catd desktop app test fmt fmt-check run dev clean
 
 all: frontend plugins catd
 
@@ -44,6 +44,23 @@ test:
 	cd desktop && go vet ./...
 	cd sdk/node && npx tsc -p .
 	cd plugins/discord && npx tsc -p .
+
+# Go: gofmt works per file, so one pass over the tracked files covers every Go
+# module in the repository (the hub, sdk/go and desktop).
+# TypeScript and Vue: Prettier is a dev dependency of the frontend and reads
+# .prettierrc.json at the repository root, so it needs `pnpm install` there.
+PRETTIER_PATHS := src vite.config.ts ../sdk/node/src ../plugins/discord/src
+
+fmt:
+	gofmt -w $$(git ls-files '*.go')
+	cd frontend && pnpm exec prettier --write $(PRETTIER_PATHS)
+
+# What CI runs: lists the files a formatter would change, and fails if there
+# are any.
+fmt-check:
+	@out=$$(gofmt -l $$(git ls-files '*.go')); \
+	if [ -n "$$out" ]; then echo "Not gofmt-formatted (run 'make fmt'):"; echo "$$out"; exit 1; fi
+	cd frontend && pnpm exec prettier --check $(PRETTIER_PATHS)
 
 # Build everything, then start the hub with the plugins in this source tree.
 # Extra flags go through ARGS, e.g. `make run ARGS="--addr 127.0.0.1:8080"`.

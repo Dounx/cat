@@ -48,9 +48,13 @@ onMounted(async () => {
         <span class="text-[15px] font-semibold">Cat</span>
       </div>
       <nav class="flex-1 space-y-0.5 px-2">
-        <RouterLink v-for="n in nav" :key="n.to" :to="n.to"
+        <RouterLink
+          v-for="n in nav"
+          :key="n.to"
+          :to="n.to"
           class="flex items-center gap-2 rounded-md px-2.5 py-2 text-mute hover:bg-sunken hover:text-ink"
-          active-class="!bg-accent-soft !text-accent font-medium">
+          active-class="!bg-accent-soft !text-accent font-medium"
+        >
           <component :is="n.icon" :size="16" />{{ n.label }}
         </RouterLink>
       </nav>
@@ -64,8 +68,13 @@ onMounted(async () => {
       <RouterView v-if="hub.loaded" />
     </main>
 
-    <div v-if="hub.toast" class="fixed bottom-5 left-1/2 z-50 max-w-[80vw] -translate-x-1/2 rounded-md px-4 py-2 text-sm text-white shadow-lg"
-      :class="hub.toast.bad ? 'bg-bad' : 'bg-ink !text-bg'">{{ hub.toast.text }}</div>
+    <div
+      v-if="hub.toast"
+      class="fixed bottom-5 left-1/2 z-50 max-w-[80vw] -translate-x-1/2 rounded-md px-4 py-2 text-sm text-white shadow-lg"
+      :class="hub.toast.bad ? 'bg-bad' : 'bg-ink !text-bg'"
+    >
+      {{ hub.toast.text }}
+    </div>
 
     <div v-if="hub.needAuth" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <form class="card w-80 p-5" @submit.prevent="login">

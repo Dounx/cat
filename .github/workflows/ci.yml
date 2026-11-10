@@ -30,6 +30,13 @@ jobs:
           node-version: lts/*
       - uses: oven-sh/setup-bun@v2
 
+      # First, so a formatting slip fails in seconds rather than after the
+      # builds. Prettier comes from the frontend's dev dependencies.
+      - name: Check formatting
+        run: |
+          (cd frontend && pnpm install --frozen-lockfile)
+          make fmt-check
+
       # vue-tsc type-checks the UI as part of the build.
       - name: Build the web UI
         run: make frontend

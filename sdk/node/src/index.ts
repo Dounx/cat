@@ -8,8 +8,16 @@ import { createInterface } from 'node:readline'
 
 export const PROTOCOL_VERSION = 1
 
-export interface Conversation { id: string; kind?: 'private' | 'group' | 'channel'; name?: string }
-export interface Actor { id: string; name?: string; is_bot?: boolean }
+export interface Conversation {
+  id: string
+  kind?: 'private' | 'group' | 'channel'
+  name?: string
+}
+export interface Actor {
+  id: string
+  name?: string
+  is_bot?: boolean
+}
 
 /**
  * What a plugin emits. For chat messages use type "message.created" with the
@@ -28,7 +36,11 @@ export interface CatEvent {
   raw?: unknown
 }
 
-export interface ActionContext { event?: CatEvent; rule_id?: string; run_id?: string }
+export interface ActionContext {
+  event?: CatEvent
+  rule_id?: string
+  run_id?: string
+}
 
 export interface IngressRequest {
   method: string
@@ -37,7 +49,11 @@ export interface IngressRequest {
   headers?: Record<string, string>
   body: Uint8Array
 }
-export interface IngressResponse { status: number; headers?: Record<string, string>; body?: Uint8Array | string }
+export interface IngressResponse {
+  status: number
+  headers?: Record<string, string>
+  body?: Uint8Array | string
+}
 
 export type StepKind = 'info' | 'progress' | 'qrcode' | 'link' | 'form' | 'confirm'
 /** One screen of the onboarding wizard, rendered by Cat's own UI. */
@@ -60,11 +76,19 @@ export interface Step {
 
 /** Thrown by setup helpers when the user closes the wizard. */
 export class CancelledError extends Error {
-  constructor() { super('cancelled by user') }
+  constructor() {
+    super('cancelled by user')
+  }
 }
 
 export class RpcError extends Error {
-  constructor(public code: number, message: string, public data?: unknown) { super(message) }
+  constructor(
+    public code: number,
+    message: string,
+    public data?: unknown,
+  ) {
+    super(message)
+  }
 }
 
 const CODE_METHOD_NOT_FOUND = -32601
@@ -81,9 +105,14 @@ class Conn {
   closed = false
   onClose = () => {}
 
-  constructor(input: NodeJS.ReadableStream, private output: NodeJS.WritableStream) {
+  constructor(
+    input: NodeJS.ReadableStream,
+    private output: NodeJS.WritableStream,
+  ) {
     const rl = createInterface({ input, crlfDelay: Infinity })
-    rl.on('line', (line) => { if (line.trim()) this.dispatch(line) })
+    rl.on('line', (line) => {
+      if (line.trim()) this.dispatch(line)
+    })
     rl.on('close', () => {
       this.closed = true
       for (const c of this.inflight.values()) c.abort()
@@ -92,7 +121,9 @@ class Conn {
     })
   }
 
-  handle(method: string, h: Handler) { this.handlers.set(method, h) }
+  handle(method: string, h: Handler) {
+    this.handlers.set(method, h)
+  }
 
   private write(msg: Record<string, unknown>) {
     if (!this.closed) this.output.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n')
@@ -100,7 +131,11 @@ class Conn {
 
   private async dispatch(line: string) {
     let m: any
-    try { m = JSON.parse(line) } catch { return }
+    try {
+      m = JSON.parse(line)
+    } catch {
+      return
+    }
     if (!m.method) {
       const p = this.pending.get(m.id)
       if (!p) return
@@ -116,7 +151,8 @@ class Conn {
     const h = this.handlers.get(m.method)
     const isRequest = m.id !== undefined && m.id !== null
     if (!h) {
-      if (isRequest) this.write({ id: m.id, error: { code: CODE_METHOD_NOT_FOUND, message: 'method not found: ' + m.method } })
+      if (isRequest)
+        this.write({ id: m.id, error: { code: CODE_METHOD_NOT_FOUND, message: 'method not found: ' + m.method } })
       return
     }
     const key = JSON.stringify(m.id)
@@ -127,9 +163,10 @@ class Conn {
       if (isRequest) this.write({ id: m.id, result: result ?? null })
     } catch (e: any) {
       if (!isRequest) return
-      const error = e instanceof RpcError
-        ? { code: e.code, message: e.message, data: e.data }
-        : { code: CODE_INTERNAL, message: e?.message ?? String(e), data: e?.output }
+      const error =
+        e instanceof RpcError
+          ? { code: e.code, message: e.message, data: e.data }
+          : { code: CODE_INTERNAL, message: e?.message ?? String(e), data: e?.output }
       this.write({ id: m.id, error })
     } finally {
       this.inflight.delete(key)
@@ -141,16 +178,22 @@ class Conn {
     const id = ++this.nextId
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve, reject })
-      signal?.addEventListener('abort', () => {
-        if (!this.pending.delete(id)) return
-        this.notify('$/cancel', { id })
-        reject(new Error('aborted'))
-      }, { once: true })
+      signal?.addEventListener(
+        'abort',
+        () => {
+          if (!this.pending.delete(id)) return
+          this.notify('$/cancel', { id })
+          reject(new Error('aborted'))
+        },
+        { once: true },
+      )
       this.write({ id, method, params })
     })
   }
 
-  notify(method: string, params?: unknown) { this.write({ method, params }) }
+  notify(method: string, params?: unknown) {
+    this.write({ method, params })
+  }
 }
 
 /** The plugin's handle on Cat. */
@@ -168,15 +211,21 @@ export class Host {
   async emit(event: CatEvent): Promise<string> {
     return (await this.conn.call<{ id: string }>('event.emit', event)).id
   }
-  log(level: 'debug' | 'info' | 'warn' | 'error', message: string) { this.conn.notify('log', { level, message }) }
+  log(level: 'debug' | 'info' | 'warn' | 'error', message: string) {
+    this.conn.notify('log', { level, message })
+  }
   /** Reports connection health after start() has resolved. */
-  setStatus(status: 'running' | 'error', message = '') { this.conn.notify('status', { status, message }) }
+  setStatus(status: 'running' | 'error', message = '') {
+    this.conn.notify('status', { status, message })
+  }
   /** Reads a value persisted with stateSet (survives restarts). */
   async stateGet(key: string): Promise<string | undefined> {
     const out = await this.conn.call<{ value: string; found: boolean }>('state.get', { key })
     return out.found ? out.value : undefined
   }
-  async stateSet(key: string, value: string): Promise<void> { await this.conn.call('state.set', { key, value }) }
+  async stateSet(key: string, value: string): Promise<void> {
+    await this.conn.call('state.set', { key, value })
+  }
   /**
    * Asks Cat to make a dependency declared in plugin.json available
    * (downloading and verifying it if needed); resolves to its directory.
@@ -189,10 +238,17 @@ export class Host {
 /** Drives the onboarding wizard. */
 export class Setup {
   /** @internal */
-  constructor(readonly host: Host, private conn: Conn, readonly existing: Record<string, any>, private signal: AbortSignal) {}
+  constructor(
+    readonly host: Host,
+    private conn: Conn,
+    readonly existing: Record<string, any>,
+    private signal: AbortSignal,
+  ) {}
 
   /** Displays a step and returns immediately. */
-  async show(step: Step): Promise<void> { await this.conn.call('setup.show', step) }
+  async show(step: Step): Promise<void> {
+    await this.conn.call('setup.show', step)
+  }
   /** Displays a form or confirm step and waits for the user's answer. */
   async ask(step: Step): Promise<Record<string, any>> {
     try {
@@ -202,7 +258,9 @@ export class Setup {
       throw e
     }
   }
-  progress(title: string, fraction = -1) { return this.show({ kind: 'progress', title, progress: fraction }) }
+  progress(title: string, fraction = -1) {
+    return this.show({ kind: 'progress', title, progress: fraction })
+  }
   async confirm(title: string, description?: string): Promise<boolean> {
     return (await this.ask({ kind: 'confirm', title, description })).confirmed === true
   }
@@ -210,10 +268,20 @@ export class Setup {
 
 /** Throw from an action to fail the step while still reporting partial output. */
 export class ActionError extends Error {
-  constructor(message: string, public output?: Record<string, unknown>) { super(message) }
+  constructor(
+    message: string,
+    public output?: Record<string, unknown>,
+  ) {
+    super(message)
+  }
 }
 
-export type Action = (params: Record<string, any>, ctx: ActionContext, host: Host, signal: AbortSignal) => unknown | Promise<unknown>
+export type Action = (
+  params: Record<string, any>,
+  ctx: ActionContext,
+  host: Host,
+  signal: AbortSignal,
+) => unknown | Promise<unknown>
 
 /** What a plugin implements. Every member is optional. */
 export interface Plugin {
@@ -232,7 +300,13 @@ export interface Plugin {
 }
 
 /** Serves the plugin over stdin/stdout until Cat closes the connection. */
-export function run(plugin: Plugin, io: { input: NodeJS.ReadableStream; output: NodeJS.WritableStream } = { input: process.stdin, output: process.stdout }) {
+export function run(
+  plugin: Plugin,
+  io: { input: NodeJS.ReadableStream; output: NodeJS.WritableStream } = {
+    input: process.stdin,
+    output: process.stdout,
+  },
+) {
   const conn = new Conn(io.input, io.output)
   const host = new Host(conn)
   const life = new AbortController()
@@ -273,5 +347,7 @@ export function run(plugin: Plugin, io: { input: NodeJS.ReadableStream; output: 
     }
   })
 
-  conn.onClose = () => { stop().finally(() => process.exit(0)) }
+  conn.onClose = () => {
+    stop().finally(() => process.exit(0))
+  }
 }

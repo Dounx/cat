@@ -1,7 +1,15 @@
 // The visual condition builder: rows of (field, operator, value) joined by
 // and/or, compiled to an expr-lang expression the engine evaluates.
-export interface Row { field: string; op: string; value: string }
-export interface Builder { mode: 'builder' | 'expr'; join: 'and' | 'or'; rows: Row[] }
+export interface Row {
+  field: string
+  op: string
+  value: string
+}
+export interface Builder {
+  mode: 'builder' | 'expr'
+  join: 'and' | 'or'
+  rows: Row[]
+}
 
 export const operators: { id: string; label: string; noValue?: boolean }[] = [
   { id: 'contains', label: '包含' },
@@ -18,7 +26,15 @@ export const operators: { id: string; label: string; noValue?: boolean }[] = [
   { id: 'not_exists', label: '不存在', noValue: true },
 ]
 
-export const commonFields = ['payload.text', 'actor.id', 'actor.name', 'conversation.id', 'conversation.kind', 'type', 'source']
+export const commonFields = [
+  'payload.text',
+  'actor.id',
+  'actor.name',
+  'conversation.id',
+  'conversation.kind',
+  'type',
+  'source',
+]
 
 // a.b.c -> a?.b?.c so a missing parent yields nil instead of an error.
 const safe = (field: string) => field.trim().replace(/\./g, '?.')
@@ -33,18 +49,39 @@ export function compileRow(r: Row): string {
   const f = safe(r.field)
   const text = `(${f} ?? "")`
   switch (r.op) {
-    case 'contains': return `${text} contains ${q(r.value)}`
-    case 'not_contains': return `not (${text} contains ${q(r.value)})`
-    case 'eq': return same(f, r.value)
-    case 'ne': return `not (${same(f, r.value)})`
-    case 'starts': return `${text} startsWith ${q(r.value)}`
-    case 'ends': return `${text} endsWith ${q(r.value)}`
-    case 'matches': return `${text} matches ${q(r.value)}`
-    case 'in': return '(' + r.value.split(/[,，]/).map((v) => v.trim()).filter(Boolean).map((v) => same(f, v)).join(' or ') + ')'
-    case 'gt': return `${f} > ${Number(r.value) || 0}`
-    case 'lt': return `${f} < ${Number(r.value) || 0}`
-    case 'exists': return `${f} != nil`
-    case 'not_exists': return `${f} == nil`
+    case 'contains':
+      return `${text} contains ${q(r.value)}`
+    case 'not_contains':
+      return `not (${text} contains ${q(r.value)})`
+    case 'eq':
+      return same(f, r.value)
+    case 'ne':
+      return `not (${same(f, r.value)})`
+    case 'starts':
+      return `${text} startsWith ${q(r.value)}`
+    case 'ends':
+      return `${text} endsWith ${q(r.value)}`
+    case 'matches':
+      return `${text} matches ${q(r.value)}`
+    case 'in':
+      return (
+        '(' +
+        r.value
+          .split(/[,，]/)
+          .map((v) => v.trim())
+          .filter(Boolean)
+          .map((v) => same(f, v))
+          .join(' or ') +
+        ')'
+      )
+    case 'gt':
+      return `${f} > ${Number(r.value) || 0}`
+    case 'lt':
+      return `${f} < ${Number(r.value) || 0}`
+    case 'exists':
+      return `${f} != nil`
+    case 'not_exists':
+      return `${f} == nil`
   }
   return 'true'
 }

@@ -25,26 +25,43 @@ export const useHub = defineStore('hub', {
   },
   actions: {
     async init() {
-      auth.onUnauthorized = () => { this.needAuth = true }
+      auth.onUnauthorized = () => {
+        this.needAuth = true
+      }
       await this.reload()
       this.listen()
     },
     async reload() {
       try {
         const [plugins, instances, rules, events, runs] = await Promise.all([
-          get<Plugin[]>('/plugins'), get<Instance[]>('/instances'), get<Rule[]>('/rules'),
-          get<HubEvent[]>('/events?limit=200'), get<Run[]>('/runs?limit=200'),
+          get<Plugin[]>('/plugins'),
+          get<Instance[]>('/instances'),
+          get<Rule[]>('/rules'),
+          get<HubEvent[]>('/events?limit=200'),
+          get<Run[]>('/runs?limit=200'),
         ])
         Object.assign(this, { plugins, instances, rules, events, runs, loaded: true, needAuth: false })
-      } catch { /* 401 is surfaced through needAuth */ }
+      } catch {
+        /* 401 is surfaced through needAuth */
+      }
     },
-    async reloadRules() { this.rules = await get<Rule[]>('/rules') },
-    async reloadPlugins() { this.plugins = await get<Plugin[]>('/plugins') },
-    async reloadInstances() { this.instances = await get<Instance[]>('/instances') },
+    async reloadRules() {
+      this.rules = await get<Rule[]>('/rules')
+    },
+    async reloadPlugins() {
+      this.plugins = await get<Plugin[]>('/plugins')
+    },
+    async reloadInstances() {
+      this.instances = await get<Instance[]>('/instances')
+    },
     listen() {
       const es = new EventSource('/api/stream')
-      es.onopen = () => { this.connected = true }
-      es.onerror = () => { this.connected = false }
+      es.onopen = () => {
+        this.connected = true
+      }
+      es.onerror = () => {
+        this.connected = false
+      }
       es.addEventListener('event', (m) => {
         this.events.unshift(JSON.parse((m as MessageEvent).data))
         if (this.events.length > MAX_EVENTS) this.events.length = MAX_EVENTS
@@ -64,12 +81,19 @@ export const useHub = defineStore('hub', {
       })
       // Other kinds (setup, download, ...) are exposed as the latest payload per kind.
       for (const kind of ['setup', 'download', 'plugins']) {
-        es.addEventListener(kind, (m) => { this.signals[kind] = JSON.parse((m as MessageEvent).data) })
+        es.addEventListener(kind, (m) => {
+          this.signals[kind] = JSON.parse((m as MessageEvent).data)
+        })
       }
     },
     notify(text: string, bad = false) {
       this.toast = { text, bad }
-      setTimeout(() => { if (this.toast?.text === text) this.toast = null }, bad ? 6000 : 2500)
+      setTimeout(
+        () => {
+          if (this.toast?.text === text) this.toast = null
+        },
+        bad ? 6000 : 2500,
+      )
     },
     async run<T>(fn: () => Promise<T>, okText?: string): Promise<T | undefined> {
       try {

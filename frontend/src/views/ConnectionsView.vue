@@ -10,35 +10,74 @@ import SchemaForm from '../components/SchemaForm.vue'
 import SetupWizard from '../components/SetupWizard.vue'
 
 const hub = useHub()
-const editing = ref<null | { plugin: Plugin; id?: string; name: string; enabled: boolean; config: Record<string, any> }>(null)
+const editing = ref<null | {
+  plugin: Plugin
+  id?: string
+  name: string
+  enabled: boolean
+  config: Record<string, any>
+}>(null)
 
 type Category = Plugin['category']
 const categories: { id: Category; title: string; hint: string; empty: string }[] = [
-  { id: 'channel', title: '渠道', hint: '消息从哪里来，回复和通知发到哪里去', empty: '还没有接入任何渠道，从下面选一个开始。' },
-  { id: 'monitor', title: '监控', hint: '盯着外面的变化或时间，有动静、到点时发出事件；通知由规则交给渠道发出', empty: '还没有添加监控，从下面选一个开始。' },
-  { id: 'processor', title: '处理器', hint: '收到事件后由谁来处理并给出结果', empty: '还没有添加处理器，从下面选一个开始。' },
+  {
+    id: 'channel',
+    title: '渠道',
+    hint: '消息从哪里来，回复和通知发到哪里去',
+    empty: '还没有接入任何渠道，从下面选一个开始。',
+  },
+  {
+    id: 'monitor',
+    title: '监控',
+    hint: '盯着外面的变化或时间，有动静、到点时发出事件；通知由规则交给渠道发出',
+    empty: '还没有添加监控，从下面选一个开始。',
+  },
+  {
+    id: 'processor',
+    title: '处理器',
+    hint: '收到事件后由谁来处理并给出结果',
+    empty: '还没有添加处理器，从下面选一个开始。',
+  },
 ]
-function categoryOf(i: Instance): Category { return hub.pluginOf(i.plugin)?.category ?? 'channel' }
-const groups = computed(() => categories.map((c) => ({
-  ...c,
-  addable: hub.plugins.filter((p) => !p.singleton && p.category === c.id),
-  configured: hub.instances.filter((i) => !hub.pluginOf(i.plugin)?.singleton && categoryOf(i) === c.id),
-  builtins: hub.instances.filter((i) => hub.pluginOf(i.plugin)?.singleton && categoryOf(i) === c.id),
-  market: market.value.plugins.filter((p) => p.category === c.id),
-})))
+function categoryOf(i: Instance): Category {
+  return hub.pluginOf(i.plugin)?.category ?? 'channel'
+}
+const groups = computed(() =>
+  categories.map((c) => ({
+    ...c,
+    addable: hub.plugins.filter((p) => !p.singleton && p.category === c.id),
+    configured: hub.instances.filter((i) => !hub.pluginOf(i.plugin)?.singleton && categoryOf(i) === c.id),
+    builtins: hub.instances.filter((i) => hub.pluginOf(i.plugin)?.singleton && categoryOf(i) === c.id),
+    market: market.value.plugins.filter((p) => p.category === c.id),
+  })),
+)
 
 const statusText: Record<string, string> = { running: '运行中', starting: '启动中', stopped: '已停用', error: '出错' }
-const statusColor: Record<string, string> = { running: 'bg-ok', starting: 'bg-warn', stopped: 'bg-mute', error: 'bg-bad' }
+const statusColor: Record<string, string> = {
+  running: 'bg-ok',
+  starting: 'bg-warn',
+  stopped: 'bg-mute',
+  error: 'bg-bad',
+}
 
-function ingressURL(i: Instance) { return `${location.origin}/ingress/${i.id}` }
+function ingressURL(i: Instance) {
+  return `${location.origin}/ingress/${i.id}`
+}
 async function copy(text: string) {
   await navigator.clipboard.writeText(text)
   hub.notify('已复制')
 }
 
 interface MarketPlugin {
-  id: string; name: string; version: string; description?: string; homepage?: string; category: Category
-  supported: boolean; installed_version: string; bundled: boolean
+  id: string
+  name: string
+  version: string
+  description?: string
+  homepage?: string
+  category: Category
+  supported: boolean
+  installed_version: string
+  bundled: boolean
 }
 const market = ref<{ configured: boolean; error?: string; plugins: MarketPlugin[] }>({ configured: false, plugins: [] })
 const installing = ref('')
@@ -47,13 +86,26 @@ const progress = computed(() => {
   if (!d || d.plugin !== installing.value) return ''
   return d.total > 0 ? `${Math.round((d.done / d.total) * 100)}%` : `${(d.done / 1e6).toFixed(1)} MB`
 })
-async function loadMarket() { market.value = await get('/market').catch(() => market.value) }
+async function loadMarket() {
+  market.value = await get('/market').catch(() => market.value)
+}
 onMounted(loadMarket)
-watch(() => hub.signals.plugins, () => { hub.reloadPlugins(); loadMarket() })
+watch(
+  () => hub.signals.plugins,
+  () => {
+    hub.reloadPlugins()
+    loadMarket()
+  },
+)
 
 async function install(p: MarketPlugin) {
   const verb = p.installed_version ? '更新' : '安装'
-  if (!confirm(`${verb}插件「${p.name}」${p.version}？\n\n插件以你的用户身份运行，没有沙箱，能做你能做的任何事。请只安装你信任的插件。`)) return
+  if (
+    !confirm(
+      `${verb}插件「${p.name}」${p.version}？\n\n插件以你的用户身份运行，没有沙箱，能做你能做的任何事。请只安装你信任的插件。`,
+    )
+  )
+    return
   installing.value = p.id
   await hub.run(() => post(`/market/${p.id}/install`), `已${verb} ${p.name}`)
   installing.value = ''
@@ -66,6 +118,11 @@ async function uninstall(p: MarketPlugin) {
 }
 
 const wizard = ref<null | { plugin: Plugin; instanceId?: string }>(null)
+
+function closeWizard() {
+  wizard.value = null
+  hub.reloadInstances()
+}
 
 function add(p: Plugin) {
   if (p.setup) wizard.value = { plugin: p }
@@ -84,7 +141,10 @@ async function save() {
   const e = editing.value!
   const body = { plugin: e.plugin.id, name: e.name, enabled: e.enabled, config: e.config }
   const ok = await hub.run(() => (e.id ? put(`/instances/${e.id}`, body) : post('/instances', body)), '已保存')
-  if (ok) { editing.value = null; hub.reloadInstances() }
+  if (ok) {
+    editing.value = null
+    hub.reloadInstances()
+  }
 }
 async function toggle(i: Instance) {
   await hub.run(() => put(`/instances/${i.id}`, { name: i.name, enabled: !i.enabled, config: i.config }))
@@ -107,28 +167,49 @@ async function remove(i: Instance) {
       <section v-for="g in groups" :key="g.id">
         <h2 class="text-sm font-semibold">{{ g.title }}</h2>
         <p class="mb-3 text-xs text-mute">{{ g.hint }}</p>
-        <p v-if="!g.configured.length" class="card p-6 text-center text-sm text-mute">{{ g.addable.length ? g.empty : '还没有这一类插件，可以在下面的插件市场安装。' }}</p>
+        <p v-if="!g.configured.length" class="card p-6 text-center text-sm text-mute">
+          {{ g.addable.length ? g.empty : '还没有这一类插件，可以在下面的插件市场安装。' }}
+        </p>
         <div v-for="i in g.configured" :key="i.id" class="card mb-2 flex items-center gap-4 px-4 py-3">
-          <span class="h-2.5 w-2.5 shrink-0 rounded-full" :class="statusColor[i.status]" :title="statusText[i.status]" />
+          <span
+            class="h-2.5 w-2.5 shrink-0 rounded-full"
+            :class="statusColor[i.status]"
+            :title="statusText[i.status]"
+          />
           <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2 text-sm font-medium">{{ i.name }}<span class="chip">{{ hub.pluginOf(i.plugin)?.name || i.plugin }}</span>
-              <span class="text-xs font-normal text-mute">{{ statusText[i.status] }}</span></div>
+            <div class="flex items-center gap-2 text-sm font-medium">
+              {{ i.name }}<span class="chip">{{ hub.pluginOf(i.plugin)?.name || i.plugin }}</span>
+              <span class="text-xs font-normal text-mute">{{ statusText[i.status] }}</span>
+            </div>
             <p v-if="i.error" class="mt-0.5 truncate text-xs text-bad" :title="i.error">{{ i.error }}</p>
-            <button v-else-if="hub.pluginOf(i.plugin)?.ingress" class="mt-0.5 flex items-center gap-1 font-mono text-xs text-mute hover:text-accent" @click="copy(ingressURL(i))">
+            <button
+              v-else-if="hub.pluginOf(i.plugin)?.ingress"
+              class="mt-0.5 flex items-center gap-1 font-mono text-xs text-mute hover:text-accent"
+              @click="copy(ingressURL(i))"
+            >
               {{ ingressURL(i) }}<Copy :size="12" />
             </button>
           </div>
           <button class="btn btn-ghost px-2" title="编辑" @click="edit(i)"><Pencil :size="15" /></button>
           <button class="btn btn-ghost px-2" title="重启" @click="restart(i)"><RefreshCw :size="15" /></button>
-          <button class="btn btn-ghost px-2" :title="i.enabled ? '停用' : '启用'" @click="toggle(i)"><Power :size="15" :class="i.enabled ? 'text-ok' : 'text-mute'" /></button>
+          <button class="btn btn-ghost px-2" :title="i.enabled ? '停用' : '启用'" @click="toggle(i)">
+            <Power :size="15" :class="i.enabled ? 'text-ok' : 'text-mute'" />
+          </button>
           <button class="btn btn-ghost btn-danger px-2" title="删除" @click="remove(i)"><Trash2 :size="15" /></button>
         </div>
 
         <template v-if="g.addable.length">
           <h3 class="mb-2 mt-4 text-xs font-medium text-mute">添加</h3>
           <div class="grid grid-cols-[repeat(auto-fill,minmax(15rem,1fr))] gap-3">
-            <button v-for="p in g.addable" :key="p.id" class="card flex flex-col items-start p-4 text-left transition hover:border-accent" @click="add(p)">
-              <div class="mb-1 flex w-full items-center justify-between text-sm font-medium">{{ p.name }}<Plus :size="16" class="text-mute" /></div>
+            <button
+              v-for="p in g.addable"
+              :key="p.id"
+              class="card flex flex-col items-start p-4 text-left transition hover:border-accent"
+              @click="add(p)"
+            >
+              <div class="mb-1 flex w-full items-center justify-between text-sm font-medium">
+                {{ p.name }}<Plus :size="16" class="text-mute" />
+              </div>
               <p class="mb-2 line-clamp-2 text-xs text-mute">{{ p.description }}</p>
               <div class="mt-auto flex gap-1">
                 <span v-if="p.capabilities.includes('source')" class="chip">事件来源</span>
@@ -158,9 +239,12 @@ async function remove(i: Instance) {
           <h3 v-if="g.market.length" class="mb-2 mt-4 text-xs font-medium text-mute">{{ g.title }}</h3>
           <div v-for="p in g.market" :key="p.id" class="card mb-2 flex items-center gap-4 px-4 py-3">
             <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-2 text-sm font-medium">{{ p.name }}<span class="chip">{{ p.version }}</span>
+              <div class="flex items-center gap-2 text-sm font-medium">
+                {{ p.name }}<span class="chip">{{ p.version }}</span>
                 <span v-if="p.bundled" class="text-xs font-normal text-mute">随应用提供</span>
-                <span v-else-if="p.installed_version" class="text-xs font-normal text-ok">已安装 {{ p.installed_version }}</span>
+                <span v-else-if="p.installed_version" class="text-xs font-normal text-ok"
+                  >已安装 {{ p.installed_version }}</span
+                >
               </div>
               <p class="truncate text-xs text-mute">{{ p.description }}</p>
             </div>
@@ -169,7 +253,9 @@ async function remove(i: Instance) {
               <span v-if="!p.supported" class="text-xs text-mute">不支持当前系统</span>
               <button v-else-if="!p.installed_version" class="btn" @click="install(p)">安装</button>
               <template v-else>
-                <button v-if="p.installed_version !== p.version" class="btn btn-primary" @click="install(p)">更新</button>
+                <button v-if="p.installed_version !== p.version" class="btn btn-primary" @click="install(p)">
+                  更新
+                </button>
                 <button class="btn btn-ghost btn-danger" @click="uninstall(p)">卸载</button>
               </template>
             </template>
@@ -185,12 +271,14 @@ async function remove(i: Instance) {
         <SchemaForm v-model="editing.config" :schema="editing.plugin.config_schema" />
       </div>
       <template #footer>
-        <button v-if="editing.id && editing.plugin.setup" class="btn mr-auto" @click="rerunSetup">重新运行接入向导</button>
+        <button v-if="editing.id && editing.plugin.setup" class="btn mr-auto" @click="rerunSetup">
+          重新运行接入向导
+        </button>
         <button class="btn" @click="editing = null">取消</button>
         <button class="btn btn-primary" @click="save">保存</button>
       </template>
     </Drawer>
 
-    <SetupWizard v-if="wizard" :plugin="wizard.plugin" :instance-id="wizard.instanceId" @close="wizard = null; hub.reloadInstances()" />
+    <SetupWizard v-if="wizard" :plugin="wizard.plugin" :instance-id="wizard.instanceId" @close="closeWizard" />
   </div>
 </template>

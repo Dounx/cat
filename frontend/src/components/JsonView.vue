@@ -5,5 +5,7 @@ const text = computed(() => (typeof props.value === 'string' ? props.value : JSO
 </script>
 
 <template>
-  <pre class="max-h-96 overflow-auto rounded-md border border-line bg-sunken p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all">{{ text }}</pre>
+  <pre
+    class="max-h-96 overflow-auto rounded-md border border-line bg-sunken p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all"
+    >{{ text }}</pre>
 </template>

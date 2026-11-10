@@ -1,8 +1,8 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 @theme {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   --color-bg: #f6f5f2;
   --color-surface: #ffffff;
   --color-sunken: #efede8;
@@ -32,16 +32,42 @@
   }
 }
 
-html, body, #app { height: 100%; }
-body { background: var(--color-bg); color: var(--color-ink); font-family: var(--font-sans); font-size: 14px; -webkit-font-smoothing: antialiased; }
+html,
+body,
+#app {
+  height: 100%;
+}
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
 
 @layer components {
-  .input { @apply w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm text-ink outline-none placeholder:text-mute/60 focus:border-accent; }
-  .btn { @apply inline-flex items-center justify-center gap-1.5 rounded-md border border-line bg-surface px-3 py-1.5 text-sm text-ink transition hover:bg-sunken disabled:opacity-50 disabled:pointer-events-none cursor-pointer whitespace-nowrap; }
-  .btn-primary { @apply border-accent bg-accent text-white hover:bg-accent hover:opacity-90; }
-  .btn-danger { @apply text-bad hover:bg-bad/10; }
-  .btn-ghost { @apply border-transparent bg-transparent; }
-  .card { @apply rounded-lg border border-line bg-surface; }
-  .label { @apply mb-1 block text-xs font-medium text-mute; }
-  .chip { @apply inline-flex items-center rounded border border-line bg-sunken px-1.5 py-0.5 font-mono text-[11px] text-mute; }
+  .input {
+    @apply w-full rounded-md border border-line bg-surface px-2.5 py-1.5 text-sm text-ink outline-none placeholder:text-mute/60 focus:border-accent;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md border border-line bg-surface px-3 py-1.5 text-sm text-ink transition hover:bg-sunken disabled:opacity-50 disabled:pointer-events-none cursor-pointer whitespace-nowrap;
+  }
+  .btn-primary {
+    @apply border-accent bg-accent text-white hover:bg-accent hover:opacity-90;
+  }
+  .btn-danger {
+    @apply text-bad hover:bg-bad/10;
+  }
+  .btn-ghost {
+    @apply border-transparent bg-transparent;
+  }
+  .card {
+    @apply rounded-lg border border-line bg-surface;
+  }
+  .label {
+    @apply mb-1 block text-xs font-medium text-mute;
+  }
+  .chip {
+    @apply inline-flex items-center rounded border border-line bg-sunken px-1.5 py-0.5 font-mono text-[11px] text-mute;
+  }
 }

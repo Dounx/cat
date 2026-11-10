@@ -36,7 +36,11 @@ function kind(s: Schema): string {
 function show(key: string, s: Schema): string {
   const v = props.modelValue[key]
   if (v === undefined || v === null) return ''
-  return typeof v === 'string' ? v : kind(s) === 'json' || typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v)
+  return typeof v === 'string'
+    ? v
+    : kind(s) === 'json' || typeof v === 'object'
+      ? JSON.stringify(v, null, 2)
+      : String(v)
 }
 
 function setText(key: string, s: Schema, raw: string) {
@@ -48,7 +52,11 @@ function setText(key: string, s: Schema, raw: string) {
 
 function setJSON(key: string, raw: string) {
   if (raw.trim() === '') return set(key, undefined)
-  try { set(key, JSON.parse(raw)) } catch { set(key, raw) }
+  try {
+    set(key, JSON.parse(raw))
+  } catch {
+    set(key, raw)
+  }
 }
 </script>
 
@@ -58,20 +66,62 @@ function setJSON(key: string, raw: string) {
       <label v-if="kind(s) !== 'boolean'" class="label">
         {{ s.title || key }}<span v-if="required.has(key)" class="text-bad"> *</span>
       </label>
-      <select v-if="kind(s) === 'enum'" class="input" :value="modelValue[key] ?? s.default ?? ''" @change="set(key, ($event.target as HTMLSelectElement).value)">
+      <select
+        v-if="kind(s) === 'enum'"
+        class="input"
+        :value="modelValue[key] ?? s.default ?? ''"
+        @change="set(key, ($event.target as HTMLSelectElement).value)"
+      >
         <option v-if="!required.has(key) && s.default === undefined" value="">（默认）</option>
         <option v-for="o in s.enum" :key="o" :value="o">{{ o }}</option>
       </select>
       <label v-else-if="kind(s) === 'boolean'" class="flex items-center gap-2 text-sm">
-        <input type="checkbox" :checked="modelValue[key] ?? s.default ?? false" @change="set(key, ($event.target as HTMLInputElement).checked)" />
+        <input
+          type="checkbox"
+          :checked="modelValue[key] ?? s.default ?? false"
+          @change="set(key, ($event.target as HTMLInputElement).checked)"
+        />
         {{ s.title || key }}
       </label>
-      <input v-else-if="kind(s) === 'number'" type="number" class="input" :value="modelValue[key] ?? ''" :placeholder="String(s.default ?? '')"
-        @input="set(key, ($event.target as HTMLInputElement).value === '' ? undefined : Number(($event.target as HTMLInputElement).value))" />
-      <textarea v-else-if="kind(s) === 'json'" class="input font-mono text-xs" rows="3" :value="show(key, s)" placeholder="{ }" @change="setJSON(key, ($event.target as HTMLTextAreaElement).value)" />
-      <textarea v-else-if="kind(s) === 'textarea'" class="input font-mono text-xs" rows="3" :value="show(key, s)" @input="setText(key, s, ($event.target as HTMLTextAreaElement).value)" />
-      <input v-else class="input" :type="kind(s) === 'password' ? 'password' : 'text'" :value="show(key, s)" :placeholder="String(s.default ?? '')" autocomplete="off"
-        @input="setText(key, s, ($event.target as HTMLInputElement).value)" />
+      <input
+        v-else-if="kind(s) === 'number'"
+        type="number"
+        class="input"
+        :value="modelValue[key] ?? ''"
+        :placeholder="String(s.default ?? '')"
+        @input="
+          set(
+            key,
+            ($event.target as HTMLInputElement).value === ''
+              ? undefined
+              : Number(($event.target as HTMLInputElement).value),
+          )
+        "
+      />
+      <textarea
+        v-else-if="kind(s) === 'json'"
+        class="input font-mono text-xs"
+        rows="3"
+        :value="show(key, s)"
+        placeholder="{ }"
+        @change="setJSON(key, ($event.target as HTMLTextAreaElement).value)"
+      />
+      <textarea
+        v-else-if="kind(s) === 'textarea'"
+        class="input font-mono text-xs"
+        rows="3"
+        :value="show(key, s)"
+        @input="setText(key, s, ($event.target as HTMLTextAreaElement).value)"
+      />
+      <input
+        v-else
+        class="input"
+        :type="kind(s) === 'password' ? 'password' : 'text'"
+        :value="show(key, s)"
+        :placeholder="String(s.default ?? '')"
+        autocomplete="off"
+        @input="setText(key, s, ($event.target as HTMLInputElement).value)"
+      />
       <p v-if="s.description" class="mt-1 text-xs text-mute">{{ s.description }}</p>
     </div>
     <p v-if="!fields.length" class="text-xs text-mute">无需配置。</p>

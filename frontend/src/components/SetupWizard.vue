@@ -10,10 +10,25 @@ import type { Plugin, Schema } from '../types'
 import SchemaForm from './SchemaForm.vue'
 
 interface Step {
-  kind: string; title: string; description?: string; text?: string; image?: string
-  url?: string; progress?: number; schema?: Schema; values?: Record<string, any>; danger?: boolean
+  kind: string
+  title: string
+  description?: string
+  text?: string
+  image?: string
+  url?: string
+  progress?: number
+  schema?: Schema
+  values?: Record<string, any>
+  danger?: boolean
 }
-interface Session { id: string; plugin: string; instance_id: string; state: string; step?: Step; error?: string }
+interface Session {
+  id: string
+  plugin: string
+  instance_id: string
+  state: string
+  step?: Step
+  error?: string
+}
 
 const props = defineProps<{ plugin: Plugin; instanceId?: string }>()
 const emit = defineEmits<{ close: [] }>()
@@ -38,10 +53,17 @@ function apply(s: Session) {
   if (s.state === 'cancelled') emit('close')
 }
 
-watch(() => hub.signals.setup, (s) => s && apply(s as Session))
-watch(step, async (s) => {
-  qr.value = s?.kind === 'qrcode' && s.text ? await QRCode.toDataURL(s.text, { margin: 2, width: 240 }) : ''
-}, { immediate: true })
+watch(
+  () => hub.signals.setup,
+  (s) => s && apply(s as Session),
+)
+watch(
+  step,
+  async (s) => {
+    qr.value = s?.kind === 'qrcode' && s.text ? await QRCode.toDataURL(s.text, { margin: 2, width: 240 }) : ''
+  },
+  { immediate: true },
+)
 
 onMounted(async () => {
   try {
@@ -54,7 +76,8 @@ onMounted(async () => {
   // The live stream normally delivers updates; polling covers any that
   // arrived before the session id was known, or were dropped.
   const refresh = async () => {
-    if (session.value && !finished.value) apply(await get<Session>(`/setup/${session.value.id}`).catch(() => session.value!))
+    if (session.value && !finished.value)
+      apply(await get<Session>(`/setup/${session.value.id}`).catch(() => session.value!))
   }
   refresh()
   timer = setInterval(refresh, 1500)
@@ -67,7 +90,8 @@ async function answer(v: Record<string, any>) {
   busy.value = false
 }
 async function cancel() {
-  if (session.value && !finished.value) await post(`/setup/${session.value.id}/answer`, { cancel: true }).catch(() => {})
+  if (session.value && !finished.value)
+    await post(`/setup/${session.value.id}/answer`, { cancel: true }).catch(() => {})
   emit('close')
 }
 </script>
@@ -86,7 +110,9 @@ async function cancel() {
         <template v-else-if="session?.state === 'done'">
           <h3 class="mb-1 text-base font-semibold text-ok">接入完成</h3>
           <p v-if="step?.kind === 'info'" class="mb-1 text-sm font-medium">{{ step.title }}</p>
-          <p class="text-sm whitespace-pre-line text-mute">{{ step?.kind === 'info' ? step.description : '实例已保存并启动。' }}</p>
+          <p class="text-sm whitespace-pre-line text-mute">
+            {{ step?.kind === 'info' ? step.description : '实例已保存并启动。' }}
+          </p>
         </template>
 
         <template v-else-if="session?.state === 'error'">
@@ -97,10 +123,16 @@ async function cancel() {
         <template v-else-if="step">
           <h3 class="mb-1 text-base font-semibold">{{ step.title }}</h3>
           <p v-if="step.description" class="mb-3 text-sm whitespace-pre-line text-mute">{{ step.description }}</p>
-          <a v-if="step.url" :href="step.url" target="_blank" rel="noopener" class="btn mb-3"><ExternalLink :size="14" />打开链接</a>
+          <a v-if="step.url" :href="step.url" target="_blank" rel="noopener" class="btn mb-3"
+            ><ExternalLink :size="14" />打开链接</a
+          >
 
           <div v-if="step.kind === 'progress'" class="h-2 overflow-hidden rounded-full bg-sunken">
-            <div v-if="(step.progress ?? -1) >= 0" class="h-full rounded-full bg-accent transition-all" :style="{ width: Math.round((step.progress || 0) * 100) + '%' }" />
+            <div
+              v-if="(step.progress ?? -1) >= 0"
+              class="h-full rounded-full bg-accent transition-all"
+              :style="{ width: Math.round((step.progress || 0) * 100) + '%' }"
+            />
             <div v-else class="h-full w-1/3 animate-pulse rounded-full bg-accent" />
           </div>
           <div v-else-if="step.kind === 'qrcode'" class="flex justify-center">
@@ -118,7 +150,14 @@ async function cancel() {
       <footer class="flex justify-end gap-2 border-t border-line px-5 py-3">
         <template v-if="step?.kind === 'confirm' && waiting">
           <button class="btn" :disabled="busy" @click="answer({ confirmed: false })">取消</button>
-          <button class="btn btn-primary" :class="{ '!border-bad !bg-bad': step.danger }" :disabled="busy" @click="answer({ confirmed: true })">确认</button>
+          <button
+            class="btn btn-primary"
+            :class="{ '!border-bad !bg-bad': step.danger }"
+            :disabled="busy"
+            @click="answer({ confirmed: true })"
+          >
+            确认
+          </button>
         </template>
         <button v-else-if="finished || startError" class="btn btn-primary" @click="emit('close')">完成</button>
         <button v-else class="btn" @click="cancel">取消接入</button>

@@ -18,17 +18,26 @@ const FATAL_CLOSE: Record<number, string> = {
 
 class Api {
   readonly base: string
-  constructor(readonly token: string, base?: string) {
+  constructor(
+    readonly token: string,
+    base?: string,
+  ) {
     this.base = (base || DEFAULT_API).replace(/\/+$/, '')
   }
   async call<T = any>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       const res = await fetch(this.base + path, {
-        method, signal,
-        headers: { Authorization: 'Bot ' + this.token, 'Content-Type': 'application/json', 'User-Agent': 'DiscordBot (cat-event-hub, 0.1)' },
+        method,
+        signal,
+        headers: {
+          Authorization: 'Bot ' + this.token,
+          'Content-Type': 'application/json',
+          'User-Agent': 'DiscordBot (cat-event-hub, 0.1)',
+        },
         body: body === undefined ? undefined : JSON.stringify(body),
       })
-      if (res.status === 429 && attempt < 3) { // rate limited: wait as told, then retry
+      if (res.status === 429 && attempt < 3) {
+        // rate limited: wait as told, then retry
         const info: any = await res.json().catch(() => ({}))
         await new Promise((r) => setTimeout(r, Math.min(Number(info.retry_after ?? 1), 10) * 1000))
         continue
@@ -50,7 +59,10 @@ export function split(text: string, max: number): string[] {
   while (chars.length > max) {
     let cut = max
     for (let i = max; i > max / 2; i--) {
-      if (chars[i - 1] === '\n') { cut = i; break }
+      if (chars[i - 1] === '\n') {
+        cut = i
+        break
+      }
     }
     out.push(chars.splice(0, cut).join(''))
   }
@@ -70,7 +82,10 @@ class Bot {
   private backoff = 1000
   private healthy = false
 
-  constructor(private host: Host, private signal: AbortSignal) {
+  constructor(
+    private host: Host,
+    private signal: AbortSignal,
+  ) {
     this.api = new Api(String(host.config.token ?? '').trim(), host.config.api_base)
   }
 
@@ -81,14 +96,27 @@ class Bot {
     this.signal.addEventListener('abort', () => this.close())
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('连接 Discord Gateway 超时')), 30_000)
-      this.connect(() => { clearTimeout(timer); resolve() }, (e) => { clearTimeout(timer); reject(e) })
+      this.connect(
+        () => {
+          clearTimeout(timer)
+          resolve()
+        },
+        (e) => {
+          clearTimeout(timer)
+          reject(e)
+        },
+      )
     })
     this.host.log('info', `已连接 ${this.me.username}`)
   }
 
   private close() {
     clearInterval(this.heartbeat)
-    try { this.ws?.close(1000) } catch { /* already closed */ }
+    try {
+      this.ws?.close(1000)
+    } catch {
+      /* already closed */
+    }
   }
 
   // connect opens the Gateway socket. onReady / onFatal are only supplied for
@@ -104,26 +132,49 @@ class Bot {
       const msg = JSON.parse(String(m.data))
       if (msg.s != null) this.seq = msg.s
       switch (msg.op) {
-        case 10: { // Hello
+        case 10: {
+          // Hello
           clearInterval(this.heartbeat)
           this.heartbeat = setInterval(() => {
             if (!acked) return ws.close(4000) // zombied connection: reconnect
             acked = false
             ws.send(JSON.stringify({ op: 1, d: this.seq }))
           }, msg.d.heartbeat_interval)
-          ws.send(JSON.stringify(resuming
-            ? { op: 6, d: { token: this.api.token, session_id: this.sessionId, seq: this.seq } }
-            : { op: 2, d: { token: this.api.token, intents: INTENTS, properties: { os: process.platform, browser: 'cat', device: 'cat' } } }))
+          ws.send(
+            JSON.stringify(
+              resuming
+                ? { op: 6, d: { token: this.api.token, session_id: this.sessionId, seq: this.seq } }
+                : {
+                    op: 2,
+                    d: {
+                      token: this.api.token,
+                      intents: INTENTS,
+                      properties: { os: process.platform, browser: 'cat', device: 'cat' },
+                    },
+                  },
+            ),
+          )
           break
         }
-        case 11: acked = true; break
-        case 1: ws.send(JSON.stringify({ op: 1, d: this.seq })); break
-        case 7: ws.close(4000); break // server asks us to reconnect
+        case 11:
+          acked = true
+          break
+        case 1:
+          ws.send(JSON.stringify({ op: 1, d: this.seq }))
+          break
+        case 7:
+          ws.close(4000)
+          break // server asks us to reconnect
         case 9: // invalid session
-          if (!msg.d) { this.sessionId = ''; this.seq = null }
+          if (!msg.d) {
+            this.sessionId = ''
+            this.seq = null
+          }
           ws.close(4000)
           break
-        case 0: this.dispatch(msg.t, msg.d, onReady); break
+        case 0:
+          this.dispatch(msg.t, msg.d, onReady)
+          break
       }
     }
     ws.onclose = (ev) => {
@@ -142,14 +193,22 @@ class Bot {
       setTimeout(() => this.connect(onReady, onFatal), this.backoff)
       this.backoff = Math.min(this.backoff * 2, 60_000)
     }
-    ws.onerror = () => { /* onclose follows */ }
+    ws.onerror = () => {
+      /* onclose follows */
+    }
   }
 
   private dispatch(type: string, d: any, onReady?: () => void) {
     if (type === 'READY' || type === 'RESUMED') {
-      if (type === 'READY') { this.sessionId = d.session_id; this.resumeUrl = d.resume_gateway_url ?? '' }
+      if (type === 'READY') {
+        this.sessionId = d.session_id
+        this.resumeUrl = d.resume_gateway_url ?? ''
+      }
       this.backoff = 1000
-      if (!this.healthy) { this.healthy = true; this.host.setStatus('running') }
+      if (!this.healthy) {
+        this.healthy = true
+        this.host.setStatus('running')
+      }
       onReady?.()
       return
     }
@@ -168,7 +227,9 @@ class Bot {
         username: d.author.username,
         ...(d.guild_id ? { guild_id: d.guild_id } : {}),
         ...(d.referenced_message ? { reply_to_message_id: d.referenced_message.id } : {}),
-        ...(d.attachments?.length ? { attachments: d.attachments.map((a: any) => ({ kind: 'file', url: a.url, name: a.filename })) } : {}),
+        ...(d.attachments?.length
+          ? { attachments: d.attachments.map((a: any) => ({ kind: 'file', url: a.url, name: a.filename })) }
+          : {}),
       },
       raw: d,
     }
@@ -180,10 +241,15 @@ class Bot {
     if (!body.trim()) throw new Error('消息内容为空')
     const ids: string[] = []
     for (const [i, part] of split(body, MAX_TEXT).entries()) {
-      const sent = await this.api.call<{ id: string }>('POST', `/channels/${channelId}/messages`, {
-        content: part,
-        ...(replyTo && i === 0 ? { message_reference: { message_id: replyTo, fail_if_not_exists: false } } : {}),
-      }, signal)
+      const sent = await this.api.call<{ id: string }>(
+        'POST',
+        `/channels/${channelId}/messages`,
+        {
+          content: part,
+          ...(replyTo && i === 0 ? { message_reference: { message_id: replyTo, fail_if_not_exists: false } } : {}),
+        },
+        signal,
+      )
       ids.push(sent.id)
     }
     return { message_id: ids[ids.length - 1], message_ids: ids, channel_id: channelId }
@@ -204,11 +270,18 @@ async function setup(s: Setup): Promise<Record<string, unknown>> {
   const config: Record<string, unknown> = { ...s.existing }
   let problem = ''
   for (;;) {
-    const steps = '1. 打开 Discord 开发者后台，新建一个 Application。\n2. 进入 Bot 页面，点 Reset Token 并复制。\n3. 在同一页的 Privileged Gateway Intents 里打开 Message Content Intent。\n4. 把 Token 粘贴到下面。'
+    const steps =
+      '1. 打开 Discord 开发者后台，新建一个 Application。\n2. 进入 Bot 页面，点 Reset Token 并复制。\n3. 在同一页的 Privileged Gateway Intents 里打开 Message Content Intent。\n4. 把 Token 粘贴到下面。'
     const out = await s.ask({
-      kind: 'form', title: '连接 Discord Bot', url: 'https://discord.com/developers/applications',
+      kind: 'form',
+      title: '连接 Discord Bot',
+      url: 'https://discord.com/developers/applications',
       description: problem ? `⚠ ${problem}\n\n${steps}` : steps,
-      schema: { type: 'object', required: ['token'], properties: { token: { type: 'string', title: 'Bot Token', format: 'password' } } },
+      schema: {
+        type: 'object',
+        required: ['token'],
+        properties: { token: { type: 'string', title: 'Bot Token', format: 'password' } },
+      },
     })
     config.token = out.token
     await s.progress('正在验证 Token…')
@@ -218,7 +291,9 @@ async function setup(s: Setup): Promise<Record<string, unknown>> {
       const app = await api.call<{ id: string }>('GET', '/oauth2/applications/@me').catch(() => ({ id: me.id }))
       const invite = `https://discord.com/oauth2/authorize?client_id=${app.id}&scope=bot&permissions=${INVITE_PERMISSIONS}`
       await s.ask({
-        kind: 'confirm', title: `已验证 ${me.username}，把它邀请进服务器`, url: invite,
+        kind: 'confirm',
+        title: `已验证 ${me.username}，把它邀请进服务器`,
+        url: invite,
         description: '打开邀请链接，选择要加入的服务器并授权。完成后点确认。\n\n只用私信的话可以直接确认。',
       })
       return config
@@ -237,12 +312,21 @@ run({
     await bot.start()
   },
   actions: {
-    reply: (p, ctx, _h, signal) => bot!.send(conversationOf(ctx, '回复'), p.text, p.quote === false ? undefined : (ctx.event?.payload?.message_id as string), signal),
+    reply: (p, ctx, _h, signal) =>
+      bot!.send(
+        conversationOf(ctx, '回复'),
+        p.text,
+        p.quote === false ? undefined : (ctx.event?.payload?.message_id as string),
+        signal,
+      ),
     send: (p, _ctx, _h, signal) => {
       if (!p.channel_id) throw new Error('缺少频道 ID')
       return bot!.send(String(p.channel_id), p.text, undefined, signal)
     },
-    typing: async (_p, ctx, _h, signal) => { await bot!.typing(conversationOf(ctx, '正在输入'), signal); return {} },
+    typing: async (_p, ctx, _h, signal) => {
+      await bot!.typing(conversationOf(ctx, '正在输入'), signal)
+      return {}
+    },
   },
   setup,
 })
