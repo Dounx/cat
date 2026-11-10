@@ -175,8 +175,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 
 ```bash
 make test                                # 全部测试
-go run ./cmd/catd --plugins ./plugins    # 后端
-cd frontend && pnpm dev                  # 界面热更新（代理到 7788）
+make dev                                 # 热重载：界面走 Vite（打开它输出的地址），Go / 插件改动后自动重新构建并重启后端
 ```
 
 ### 发布

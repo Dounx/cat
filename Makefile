@@ -62,14 +62,19 @@ fmt-check:
 	if [ -n "$$out" ]; then echo "Not gofmt-formatted (run 'make fmt'):"; echo "$$out"; exit 1; fi
 	cd frontend && pnpm exec prettier --check $(PRETTIER_PATHS)
 
-# Build everything, then start the hub with the plugins in this source tree.
-# Extra flags go through ARGS, e.g. `make run ARGS="--addr 127.0.0.1:8080"`.
+# Build everything, then start the hub with the plugins in this source tree,
+# serving the UI that was just built. Nothing is rebuilt while it runs; use
+# `make dev` for that. Extra flags go through ARGS, e.g.
+# `make run ARGS="--addr 127.0.0.1:8080"`.
 run: all
 	./bin/catd$(EXE) --plugins ./plugins $(ARGS)
 
-# Headless hub using the plugins in this source tree.
-dev: plugins
-	go run ./cmd/catd --plugins ./plugins
+# Development loop: the hub, rebuilt and restarted when Go or plugin sources
+# change, plus the Vite dev server with hot reload for the UI (open the URL
+# Vite prints). ARGS is passed to catd as in `run`.
+dev:
+	@mkdir -p frontend/dist
+	@EXE=$(EXE) MAKE=$(MAKE) sh scripts/dev.sh $(ARGS)
 
 clean:
 	rm -rf bin frontend/dist/assets
