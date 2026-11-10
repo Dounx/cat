@@ -40,7 +40,9 @@ const categories: { id: Category; title: string; hint: string; empty: string }[]
   },
 ]
 // The page shows what is set up; what could be added waits behind each
-// section's 添加 button, and the market behind its own tab.
+// section's 添加 button, and the market behind its own tab. Singleton built-ins
+// (HTTP 请求, 运行脚本) are plain actions with nothing to set up, so they only
+// appear where they are used: in the rule editor.
 const tab = ref<'instances' | 'market'>('instances')
 const picking = ref<Category | null>(null)
 const pickingGroup = computed(() => groups.value.find((g) => g.id === picking.value))
@@ -53,7 +55,6 @@ const groups = computed(() =>
     ...c,
     addable: hub.plugins.filter((p) => !p.singleton && p.category === c.id),
     configured: hub.instances.filter((i) => !hub.pluginOf(i.plugin)?.singleton && categoryOf(i) === c.id),
-    builtins: hub.instances.filter((i) => hub.pluginOf(i.plugin)?.singleton && categoryOf(i) === c.id),
     market: market.value.plugins.filter((p) => p.category === c.id),
   })),
 )
@@ -190,7 +191,7 @@ async function remove(i: Instance) {
         </div>
 
         <button
-          v-if="!g.configured.length && !g.builtins.length"
+          v-if="!g.configured.length"
           class="card card-link w-full border-dashed px-6 py-5 text-center text-sm text-mute"
           @click="picking = g.id"
         >
@@ -231,17 +232,6 @@ async function remove(i: Instance) {
               </button>
             </div>
             <input type="checkbox" :checked="i.enabled" :title="i.enabled ? '停用' : '启用'" @change="toggle(i)" />
-          </div>
-          <!-- Built-ins are always there: nothing to edit, switch off or remove. -->
-          <div v-for="i in g.builtins" :key="i.id" class="row flex items-center gap-3 px-4 py-3">
-            <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium">{{ i.name }}</div>
-              <div class="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-mute">
-                <span class="dot" :class="statusDot[i.status]" />
-                <span class="truncate">{{ hub.pluginOf(i.plugin)?.description }}</span>
-              </div>
-            </div>
-            <span class="shrink-0 text-xs text-mute">内置</span>
           </div>
         </TransitionGroup>
       </section>
