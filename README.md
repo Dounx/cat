@@ -152,6 +152,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 | 插件 | 说明 |
 |---|---|
 | Webhook（内置） | 任意 HTTP 请求变成事件，支持密钥和 HMAC 签名 |
+| Websocket（内置） | 连接到一个 WebSocket 地址，收到的消息变成 `websocket.message` 事件，可向它发送消息，断线自动重连 |
 | HTTP 请求、运行脚本（内置） | 动作 |
 | Telegram | Bot，长轮询 |
 | Discord | Bot，Gateway |

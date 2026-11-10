@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/dounx/cat/core/builtin"
 	"github.com/dounx/cat/core/engine"
 	"github.com/dounx/cat/core/plugin"
@@ -264,4 +266,85 @@ func TestSecretsStayOutOfDatabaseAndAPI(t *testing.T) {
 	if _, ok := secrets[hook.ID+"/secret"]; ok {
 		t.Fatal("cleared secret still stored")
 	}
+}
+
+func TestWebsocketReceiveSendReconnect(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	var auth string
+	drop := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		mu.Lock()
+		auth = r.Header.Get("Authorization")
+		mu.Unlock()
+		ctx := r.Context()
+		_ = c.Write(ctx, websocket.MessageText, []byte(`{"text":"hello"}`))
+		go func() {
+			select {
+			case <-drop:
+				c.CloseNow()
+			case <-ctx.Done():
+			}
+		}()
+		for {
+			_, data, err := c.Read(ctx)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			got = append(got, string(data))
+			mu.Unlock()
+		}
+	}))
+	defer srv.Close()
+
+	e := newEngine(t)
+	ws, err := e.SaveInstance(store.Instance{Plugin: "websocket", Enabled: true, Config: map[string]any{
+		"url": "ws" + strings.TrimPrefix(srv.URL, "http"), "token": "t0k",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, e, ws.ID)
+	countEvents := func() int {
+		events, _ := e.Store.ListEvents(store.EventFilter{})
+		return len(events)
+	}
+	waitFor(t, "first event", func() bool { return countEvents() == 1 })
+	events, _ := e.Store.ListEvents(store.EventFilter{})
+	if events[0].Type != "websocket.message" || events[0].Payload["text"] != "hello" {
+		t.Errorf("event: %+v", events[0])
+	}
+	mu.Lock()
+	if auth != "Bearer t0k" {
+		t.Errorf("authorization header: %q", auth)
+	}
+	mu.Unlock()
+
+	if _, err := e.Invoke(context.Background(), ws.ID, "send", map[string]any{"message": map[string]any{"a": 1}}, plugin.InvokeContext{}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "sent message", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(got) == 1 && got[0] == `{"a":1}`
+	})
+
+	drop <- struct{}{}
+	waitFor(t, "event after reconnect", func() bool { return countEvents() == 2 })
+	waitRunning(t, e, ws.ID)
+}
+
+func TestWebsocketRejectsBadURL(t *testing.T) {
+	e := newEngine(t)
+	ws, _ := e.SaveInstance(store.Instance{Plugin: "websocket", Enabled: true, Config: map[string]any{"url": "http://example.com"}})
+	waitFor(t, "error status", func() bool {
+		v, ok := e.Instance(ws.ID)
+		return ok && v.Status == engine.StatusError
+	})
 }

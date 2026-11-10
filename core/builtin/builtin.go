@@ -12,7 +12,7 @@ type Entry struct {
 
 // All returns every built-in plugin.
 func All() []Entry {
-	return []Entry{webhookEntry(), httpEntry(), shellEntry()}
+	return []Entry{webhookEntry(), websocketEntry(), httpEntry(), shellEntry()}
 }
 
 func str(m map[string]any, key string) string {
