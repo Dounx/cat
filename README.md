@@ -19,8 +19,7 @@ QQ / Discord / Telegram / 企业微信 / RSS / 网页变动 / 接口变动 / 定
 需要 Go 1.24+、Node + pnpm（构建界面）、Bun（构建 TypeScript 插件）。
 
 ```bash
-make all                                 # 界面、插件、bin/catd
-./bin/catd --plugins ./plugins           # 然后打开 http://127.0.0.1:7788
+make run                                 # 构建界面、插件、bin/catd 并启动，然后打开 http://127.0.0.1:7788
 ```
 
 桌面应用（macOS / Linux / Windows，在哪个系统上构建就打哪个系统的包，插件已打包在内）：

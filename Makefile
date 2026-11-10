@@ -4,7 +4,7 @@ EXE := $(if $(filter windows,$(GOOS)),.exe,)
 GO_PLUGINS := telegram onebot wecom rss webwatch apiwatch schedule agent-claude agent-codex agent-deepseek llm
 NODE_PLUGINS := discord
 
-.PHONY: all frontend plugins catd desktop app test dev clean
+.PHONY: all frontend plugins catd desktop app test run dev clean
 
 all: frontend plugins catd
 
@@ -44,6 +44,11 @@ test:
 	cd desktop && go vet ./...
 	cd sdk/node && npx tsc -p .
 	cd plugins/discord && npx tsc -p .
+
+# Build everything, then start the hub with the plugins in this source tree.
+# Extra flags go through ARGS, e.g. `make run ARGS="--addr 127.0.0.1:8080"`.
+run: all
+	./bin/catd$(EXE) --plugins ./plugins $(ARGS)
 
 # Headless hub using the plugins in this source tree.
 dev: plugins
