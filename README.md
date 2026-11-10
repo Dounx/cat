@@ -23,11 +23,19 @@ make all                                 # 界面、插件、bin/catd
 ./bin/catd --plugins ./plugins           # 然后打开 http://127.0.0.1:7788
 ```
 
-桌面应用（macOS）：
+桌面应用（macOS / Linux / Windows，在哪个系统上构建就打哪个系统的包，插件已打包在内）：
 
 ```bash
-make app                                 # 生成 bin/Cat.app，插件已打包在内
+make app
 ```
+
+| 系统 | 产物 | 构建前需要 |
+| --- | --- | --- |
+| macOS | `bin/Cat.app` | Xcode 命令行工具 |
+| Linux | `bin/Cat-linux/`，有 `dpkg-deb` 时还有 `bin/cat_<版本>_<架构>.deb` | `libgtk-4-dev`、`libwebkitgtk-6.0-dev`（Ubuntu 24.04+ / Debian 13+） |
+| Windows | `bin/Cat-windows/` | 在 Git Bash 里运行 `make`；运行时需要 WebView2（Windows 10/11 一般已自带） |
+
+`Cat-linux` 和 `Cat-windows` 是免安装目录，放到哪里都能直接运行；Linux 下执行目录里的 `install.sh` 可以把 Cat 加进应用菜单。
 
 `catd` 的主要参数：
 
@@ -183,7 +191,10 @@ git tag v0.2.0 && git push origin v0.2.0
 发布流程（`.github/workflows/release.yml`）先跑一遍 CI，再把这些放进 GitHub Release：
 
 - `cat-<版本>-<系统>-<架构>.tar.gz`（Windows 是 `.zip`）：`catd` 和全部官方插件，解压即可运行；`SHA256SUMS` 是它们的校验和。
-- `Cat-<版本>-macos-arm64.zip`：桌面应用。没有 Apple 开发者签名，首次打开需要在「系统设置 → 隐私与安全性」里放行。
+- 桌面应用，都没有代码签名：
+  - `Cat-<版本>-macos-arm64.zip`：首次打开需要在「系统设置 → 隐私与安全性」里放行。
+  - `Cat-<版本>-linux-<架构>.tar.gz`（免安装目录）和 `.deb`（装到 `/opt/cat`，依赖 GTK 4 与 WebKitGTK 6.0），有 amd64 和 arm64。
+  - `Cat-<版本>-windows-amd64.zip`：免安装目录，首次运行时 SmartScreen 可能提示，选「仍要运行」。
 - 插件市场：每个插件每个平台一个 zip，加上 `index.json`。把 `--market` 指向 `https://github.com/<用户>/<仓库>/releases/latest/download/index.json` 就能一直用最新一版的市场。
 
 在 Actions 页面手动运行 Release 只构建、不发布，产物留在这次运行的附件里，可以用来试跑。本地也能打同样的包：

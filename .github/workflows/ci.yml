@@ -55,18 +55,28 @@ jobs:
           cd sdk/node && npx tsc -p .
           cd ../../plugins/discord && npx tsc -p .
 
-  # The desktop shell needs CGO and the platform's webview, so it is checked
-  # on the platform it ships for.
+  # The desktop shell needs each platform's webview (and CGO everywhere but
+  # Windows), so it is checked on every platform it ships for.
   desktop:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: desktop/go.mod
           cache-dependency-path: desktop/go.sum
+      - name: Install the Linux webview libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
       - name: Vet and build the desktop shell
         run: |
           cd desktop
           go vet ./...
-          go build -o /dev/null .
+          go build -o "$RUNNER_TEMP/cat-desktop" .

@@ -2,7 +2,8 @@ name: Release
 
 # Pushing a tag like v0.2.0 tests, builds and publishes a GitHub release with:
 #   - catd plus the official plugins, one archive per platform
-#   - Cat.app for macOS
+#   - the desktop app: Cat.app for macOS, a tarball and a .deb for Linux, a zip
+#     for Windows
 #   - the plugin market: one zip per plugin and platform, and index.json
 #
 # Running it by hand (workflow_dispatch) builds everything and keeps it as
@@ -54,8 +55,16 @@ jobs:
             dist/market/*.zip
             dist/market/index.json
 
-  macos-app:
-    runs-on: macos-latest
+  # The desktop shell is built natively: it needs each platform's webview.
+  desktop-app:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, ubuntu-24.04-arm, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -72,25 +81,41 @@ jobs:
           node-version: lts/*
       - uses: oven-sh/setup-bun@v2
 
-      - name: Build Cat.app
+      - name: Install the Linux webview libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
+
+      - name: Build the app
         run: |
           # Tags are v1.2.3; a manual run on a branch keeps the default.
           case "$GITHUB_REF_NAME" in v[0-9]*) export CAT_VERSION="${GITHUB_REF_NAME#v}" ;; esac
           make app
 
-      # ditto keeps the bundle's signature and symlinks intact.
-      - name: Zip Cat.app
-        run: ditto -c -k --keepParent bin/Cat.app "Cat-${{ github.ref_name }}-macos-$(go env GOARCH).zip"
+      - name: Archive the app
+        run: |
+          name="Cat-${GITHUB_REF_NAME//\//-}-$(go env GOOS | sed s/darwin/macos/)-$(go env GOARCH)"
+          cd bin
+          case "$RUNNER_OS" in
+            # ditto keeps the bundle's signature and symlinks intact.
+            macOS) ditto -c -k --keepParent Cat.app "../$name.zip" ;;
+            Linux)
+              mv Cat-linux Cat && tar -czf "../$name.tar.gz" Cat
+              mv cat_*.deb "../$name.deb" ;;
+            Windows) mv Cat-windows Cat && 7z a -tzip "../$name.zip" Cat ;;
+          esac
 
       - uses: actions/upload-artifact@v7
         with:
-          name: macos-app
+          name: desktop-${{ matrix.os }}
           if-no-files-found: error
-          path: Cat-*.zip
+          path: |
+            Cat-*.zip
+            Cat-*.tar.gz
+            Cat-*.deb
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [ci, packages, macos-app]
+    needs: [ci, packages, desktop-app]
     runs-on: ubuntu-latest
     permissions:
       contents: write

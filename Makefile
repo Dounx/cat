@@ -1,5 +1,6 @@
 # Cat event hub — build entry points.
-EXE := $(if $(filter windows,$(shell go env GOOS)),.exe,)
+GOOS := $(shell go env GOOS)
+EXE := $(if $(filter windows,$(GOOS)),.exe,)
 GO_PLUGINS := telegram onebot wecom rss webwatch apiwatch schedule agent-claude agent-codex agent-deepseek llm
 NODE_PLUGINS := discord
 
@@ -23,14 +24,19 @@ plugins:
 catd:
 	go build -o bin/catd$(EXE) ./cmd/catd
 
-# The desktop shell is its own Go module (it needs CGO and the platform's
-# webview libraries, which the headless build does not).
+# The desktop shell is its own Go module (it needs the platform's webview
+# libraries, and CGO everywhere but Windows, which the headless build does
+# not). On Windows the icon and manifest are linked in from a generated .syso
+# and the executable is built without a console window.
 desktop: frontend
-	cd desktop && go build -tags production -ldflags "-s -w" -o ../bin/cat-desktop$(EXE) .
+	$(if $(filter windows,$(GOOS)),sh desktop/windows/syso.sh)
+	cd desktop && go build -tags production -ldflags "-s -w$(if $(filter windows,$(GOOS)), -H windowsgui)" -o ../bin/cat-desktop$(EXE) .
 
-# macOS: wrap the desktop binary and the plugins into Cat.app.
+# Wrap the desktop binary and the plugins into the platform's package:
+# bin/Cat.app on macOS, bin/Cat-linux (and a .deb) on Linux, bin/Cat-windows
+# on Windows.
 app: desktop plugins
-	sh desktop/package-macos.sh
+	sh desktop/package-$(patsubst darwin,macos,$(GOOS)).sh
 
 test:
 	go test ./...
@@ -45,4 +51,4 @@ dev: plugins
 
 clean:
 	rm -rf bin frontend/dist/assets
-	rm -f plugins/*/cat-plugin-*
+	rm -f plugins/*/cat-plugin-* desktop/*.syso
