@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -137,7 +138,7 @@ func setupManaged(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[st
 	if err != nil {
 		return nil, err
 	}
-	return login(ctx, s, cfg, "managed", func(wsPort int, token string) (*napcat, error) {
+	return login(ctx, s, cfg, "managed", false, func(wsPort int, token string) (*napcat, error) {
 		webuiPort, err := freePort()
 		if err != nil {
 			return nil, err
@@ -169,7 +170,7 @@ func setupDocker(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[str
 			return nil, err
 		}
 	}
-	return login(ctx, s, cfg, "docker", func(wsPort int, token string) (*napcat, error) {
+	return login(ctx, s, cfg, "docker", true, func(wsPort int, token string) (*napcat, error) {
 		// Inside the container NapCat listens on fixed ports; wsPort is
 		// where Docker publishes the OneBot one on this machine.
 		if err := writeNapCatConfig(dockerDataDir(s.DataDir), "0.0.0.0", containerWSPort, token, containerWebUIPort, randomToken()); err != nil {
@@ -180,8 +181,9 @@ func setupDocker(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[str
 }
 
 // login starts a freshly configured NapCat, walks the user through the QR
-// code login, and returns the instance config for that mode.
-func login(ctx context.Context, s *cat.Setup, cfg map[string]any, mode string, start func(wsPort int, token string) (*napcat, error)) (map[string]any, error) {
+// code login, and returns the instance config for that mode. With keep, a
+// NapCat that logged in is left running for the instance to take over.
+func login(ctx context.Context, s *cat.Setup, cfg map[string]any, mode string, keep bool, start func(wsPort int, token string) (*napcat, error)) (map[string]any, error) {
 	wsPort, err := freePort()
 	if err != nil {
 		return nil, err
@@ -190,23 +192,51 @@ func login(ctx context.Context, s *cat.Setup, cfg map[string]any, mode string, s
 	if token == "" || strings.HasPrefix(token, "•") {
 		token = randomToken()
 	}
-	s.Progress("正在启动 NapCat…", -1)
-	n, err := start(wsPort, token)
+	c := newClient("ws://127.0.0.1:"+strconv.Itoa(wsPort), token)
+	var (
+		n       *napcat
+		info    loginInfo
+		problem string // why the previous attempt failed
+	)
+	defer func() { n.stop() }()
+	for {
+		if problem == "" {
+			s.Progress("正在启动 NapCat…", -1)
+		} else {
+			s.Progress(problem+"。正在重新生成二维码…", -1)
+		}
+		if n, err = start(wsPort, token); err != nil {
+			return nil, err
+		}
+		lctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		var conn <-chan struct{}
+		info, conn, err = awaitLogin(lctx, lctx, n, c, nil, func(url string) {
+			desc := "打开手机 QQ →「扫一扫」，扫描后在手机上确认登录。确认时请勾选「下次登录无需手机确认」，否则以后每次启动都要重新扫码。二维码过期会自动刷新。"
+			if problem != "" {
+				desc = "⚠ " + problem + "\n\n这是新的二维码，可以处理后重新扫码，或换一个账号。\n\n" + desc
+			}
+			s.Show(cat.Step{Kind: cat.StepQRCode, Title: "用手机 QQ 扫码登录", Text: url, Description: desc})
+		}, nil)
+		if conn != nil { // the wizard only needed to know who logged in
+			c.close()
+			<-conn
+		}
+		cancel()
+		var failed *loginFailed
+		if !errors.As(err, &failed) {
+			break
+		}
+		// NapCat offers no new QR code after a failed login: start it afresh.
+		problem = failed.Error()
+		n.stop()
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer n.stop()
-	lctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-	c := newClient("ws://127.0.0.1:"+strconv.Itoa(wsPort), token)
-	info, err := awaitLogin(lctx, n, c, func(url string) {
-		s.Show(cat.Step{Kind: cat.StepQRCode, Title: "用手机 QQ 扫码登录", Text: url,
-			Description: "打开手机 QQ →「扫一扫」，扫描后在手机上确认登录。二维码过期会自动刷新。"})
-	}, nil)
-	if err != nil {
-		return nil, err
+	if keep {
+		n.release()
 	}
 	s.Show(cat.Step{Kind: cat.StepInfo, Title: "已登录 " + info.Nickname + "（" + info.UserID.String() + "）",
-		Description: "之后启动会自动用这个账号快速登录。登录状态失效时，重新运行接入向导扫码即可。"})
+		Description: "之后启动会自动用这个账号快速登录。登录状态失效，或 QQ 要求在手机上确认时，重新运行接入向导扫码即可。"})
 	return map[string]any{"mode": mode, "ws_port": wsPort, "token": token, "uin": info.UserID.String()}, nil
 }

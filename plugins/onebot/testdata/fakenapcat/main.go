@@ -11,13 +11,19 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 )
 
+var offline atomic.Bool
+
 func main() {
+	if os.Getenv("FAKE_NAPCAT_DETACH") != "" {
+		detach()
+	}
 	dir := filepath.Dir(os.Args[0])
 	if d := os.Getenv("FAKE_NAPCAT_DIR"); d != "" { // run "in a container": config is mounted from elsewhere
 		dir = d
@@ -45,6 +51,14 @@ func main() {
 	if len(os.Args) > 1 {
 		logf("quick-login " + os.Args[1])
 		fmt.Println("[info] 快速登录", os.Args[1])
+	} else if _, err := os.Stat(filepath.Join(dir, "refused")); os.Getenv("FAKE_NAPCAT_REFUSE_ONCE") != "" && err != nil {
+		// QQ turns the first login down; like the real thing, no new QR code follows.
+		_ = os.WriteFile(filepath.Join(dir, "refused"), nil, 0o644)
+		fmt.Println("[warn] 二维码解码URL: https://txz.qq.com/p?k=REFUSED&f=1")
+		time.Sleep(600 * time.Millisecond)
+		fmt.Println("[info] [Core] [Login] 二维码已被扫描，等待确认...")
+		fmt.Println(`[error] [Core] [Login] Login Error , ErrInfo:  [1,{"account":"10001","serverErrorCode":168,"title":"","message":"你的账号近期存在安全风险","additionalType":0}]`)
+		select {}
 	} else {
 		fmt.Println("[info] [NapCat] 请扫描下面的二维码")
 		fmt.Println("[warn] 二维码解码URL: https://txz.qq.com/p?k=FAKEQR&f=1")
@@ -63,7 +77,13 @@ func main() {
 		}
 		ctx := context.Background()
 		_ = wsjson.Write(ctx, c, map[string]any{"post_type": "meta_event", "meta_event_type": "lifecycle", "self_id": 10001})
+		// Like QQ handing over what was sent while the account was offline,
+		// the message goes to whoever is connected first, once.
+		first := offline.CompareAndSwap(false, true)
 		go func() {
+			if !first {
+				return
+			}
 			time.Sleep(300 * time.Millisecond)
 			_ = wsjson.Write(ctx, c, map[string]any{
 				"post_type": "message", "message_type": "group", "time": 1700000000, "self_id": 10001,

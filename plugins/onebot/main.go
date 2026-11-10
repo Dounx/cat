@@ -18,7 +18,7 @@ import (
 func main() { cat.Run(New()) }
 
 // pollInterval is how often a pending NapCat login is re-checked.
-var pollInterval = 2 * time.Second
+var pollInterval = 500 * time.Millisecond
 
 func timeAfter() <-chan time.Time { return time.After(pollInterval) }
 
@@ -41,24 +41,56 @@ func New() cat.Plugin {
 	)
 	return cat.Plugin{
 		Start: func(ctx context.Context, h *cat.Host) error {
+			onEvent := func(raw json.RawMessage) {
+				if ev, ok := convert(raw); ok {
+					if _, err := h.Emit(ev); err != nil {
+						h.Log("error", "emit: %v", err)
+					}
+				}
+			}
+			var (
+				info loginInfo
+				done <-chan struct{} // closes when the connection to the OneBot service ends
+			)
 			url := str(h.Config, "ws_url")
 			if mode := str(h.Config, "mode"); mode == "managed" || mode == "docker" {
 				url = managedURL(h.Config)
-				var err error
+				c = newClient(url, str(h.Config, "token"))
 				if mode == "docker" {
-					nc, err = startDocker(ctx, h)
-				} else {
-					nc, err = startManaged(ctx, h)
+					if nc = adoptDockerNapCat(ctx, h.DataDir, c, str(h.Config, "uin")); nc != nil {
+						h.Log("info", "接管接入向导留下的 NapCat 容器")
+					}
 				}
-				if err != nil {
-					return err
-				}
-				lctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-				_, err = awaitLogin(lctx, nc, newClient(url, str(h.Config, "token")), nil, func(l string) { h.Log("debug", "%s", l) })
-				cancel()
-				if err != nil {
-					nc.stop()
-					return errors.New("NapCat 没有完成登录（登录状态可能已失效，请重新运行接入向导扫码）：" + err.Error())
+				if nc == nil {
+					var err error
+					if mode == "docker" {
+						nc, err = startDocker(ctx, h)
+					} else {
+						nc, err = startManaged(ctx, h)
+					}
+					if err != nil {
+						return err
+					}
+					lctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+					expired, why := false, "" // a QR code means quick login was not possible
+					info, done, err = awaitLogin(lctx, ctx, nc, c, onEvent, func(string) { expired = true; cancel() }, func(l string) {
+						h.Log("debug", "%s", l)
+						if m := quickLoginErr.FindStringSubmatch(l); m != nil {
+							why = "（" + strings.TrimRight(m[1], "。") + "）"
+						}
+					})
+					cancel()
+					if err != nil {
+						nc.stop()
+						var failed *loginFailed
+						if errors.As(err, &failed) {
+							return errors.New("NapCat " + failed.Error())
+						}
+						if expired {
+							return errors.New("快速登录没有成功" + why + "，请重新运行接入向导扫码，并在手机上确认时勾选「下次登录无需手机确认」")
+						}
+						return errors.New("NapCat 没有完成登录（登录状态可能已失效，请重新运行接入向导扫码）：" + err.Error())
+					}
 				}
 				go func() { // keep NapCat's console from filling up
 					for l := range nc.lines {
@@ -69,21 +101,15 @@ func New() cat.Plugin {
 			if url == "" {
 				return errors.New("缺少 WebSocket 地址")
 			}
-			c = newClient(url, str(h.Config, "token"))
-			onEvent := func(raw json.RawMessage) {
-				if ev, ok := convert(raw); ok {
-					if _, err := h.Emit(ev); err != nil {
-						h.Log("error", "emit: %v", err)
-					}
+			if done == nil { // not already connected while waiting for NapCat to log in
+				c = newClient(url, str(h.Config, "token"))
+				var err error
+				if done, err = c.connect(ctx, onEvent); err != nil {
+					return err
 				}
-			}
-			done, err := c.connect(ctx, onEvent)
-			if err != nil {
-				return err
-			}
-			info, err := c.login(ctx)
-			if err != nil {
-				return err
+				if info, err = c.login(ctx); err != nil {
+					return err
+				}
 			}
 			h.Log("info", "已连接 QQ %s（%s）", info.Nickname, info.UserID)
 			go func() { // reconnect for as long as the instance runs
@@ -104,7 +130,8 @@ func New() cat.Plugin {
 						if backoff < 30*time.Second {
 							backoff *= 2
 						}
-						if done, err = c.connect(ctx, onEvent); err == nil {
+						if d, err := c.connect(ctx, onEvent); err == nil {
+							done = d
 							_, _ = c.login(ctx)
 							h.SetStatus("running", "")
 							backoff = time.Second
@@ -119,7 +146,7 @@ func New() cat.Plugin {
 			if c != nil {
 				c.close()
 			}
-			nc.stop()
+			stopAllNapCat() // the instance's, or one a wizard was still using
 		},
 		Actions: map[string]cat.ActionFunc{
 			"reply": func(ctx context.Context, _ *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {

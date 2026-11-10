@@ -2,12 +2,16 @@
 # A stand-in for the docker CLI used by the plugin's tests. "Containers" are
 # the fake NapCat next to this script, told where its config is mounted and
 # which port is published; every invocation is appended to docker.log.
+# <name>.pid holds a running container's process.
 state="$(dirname "$0")"
 echo "$*" >> "$state/docker.log"
 case "$1" in
 info) echo 0.0.0-fake ;;
 image) [ -f "$state/pulled" ] ;;
 pull) echo "Pulling $2"; touch "$state/pulled" ;;
+inspect) [ -f "$state/$4.pid" ] && kill -0 "$(cat "$state/$4.pid")" 2>/dev/null && echo true ;;
+logs) exec tail -f /dev/null ;; # nothing more is printed once logged in
+exec) [ -f "$state/$2.pid" ] && kill -TERM "$(cat "$state/$2.pid")" ;;
 rm)
 	if [ -f "$state/$3.pid" ]; then
 		kill -9 "$(cat "$state/$3.pid")" 2>/dev/null
@@ -24,7 +28,11 @@ run)
 		*) shift ;;
 		esac
 	done
-	echo $$ > "$state/$name.pid"
-	FAKE_NAPCAT_DIR="$(dirname "$cfg")" FAKE_NAPCAT_LISTEN="127.0.0.1:$port" exec "$state/fakenapcat" $account ;;
+	# Like a real container, it outlives this client: the fake NapCat moves
+	# to a session of its own and keeps going when nobody reads its output.
+	FAKE_NAPCAT_DETACH=1 FAKE_NAPCAT_DIR="$(dirname "$cfg")" FAKE_NAPCAT_LISTEN="127.0.0.1:$port" \
+		"$state/fakenapcat" $account &
+	echo $! > "$state/$name.pid"
+	wait $! ;;
 *) echo "fake docker: unsupported: $*" >&2; exit 1 ;;
 esac

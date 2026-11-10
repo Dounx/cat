@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // dockerImage is NapCat's official image (github.com/NapNeko/NapCat-Docker),
@@ -78,11 +79,24 @@ func dockerPull(ctx context.Context, image string, onLine func(string)) error {
 // containerName is stable per instance, so a container left behind by a
 // crash is found and replaced on the next start.
 func containerName(dataDir string) string {
+	sum := instanceHash(dataDir)
+	return "cat-napcat-" + hex.EncodeToString(sum[:6])
+}
+
+// containerMAC is a fixed, locally administered address for the instance's
+// container. QQ ties a login to the machine it was made on: with the random
+// address (and host name) Docker hands out on every run, each start looks
+// like a new device and the saved login is refused.
+func containerMAC(dataDir string) string {
+	sum := instanceHash(dataDir)
+	return fmt.Sprintf("02:42:%02x:%02x:%02x:%02x", sum[6], sum[7], sum[8], sum[9])
+}
+
+func instanceHash(dataDir string) [sha256.Size]byte {
 	if abs, err := filepath.Abs(dataDir); err == nil {
 		dataDir = abs
 	}
-	sum := sha256.Sum256([]byte(dataDir))
-	return "cat-napcat-" + hex.EncodeToString(sum[:6])
+	return sha256.Sum256([]byte(dataDir))
 }
 
 // dockerDataDir holds what the container keeps between runs: NapCat's config
@@ -104,6 +118,7 @@ func startDockerNapCat(dataDir string, wsPort int, uin string) (*napcat, error) 
 	name := containerName(dataDir)
 	_ = exec.Command("docker", "rm", "-f", name).Run() // left over from an unclean exit
 	args := []string{"run", "--rm", "--name", name,
+		"--hostname", "napcat", "--mac-address", containerMAC(dataDir),
 		"-p", "127.0.0.1:" + strconv.Itoa(wsPort) + ":" + strconv.Itoa(containerWSPort),
 		"-v", filepath.Join(dir, "config") + ":" + containerConfigDir,
 		"-v", qqDir + ":" + containerQQDir,
@@ -115,10 +130,34 @@ func startDockerNapCat(dataDir string, wsPort int, uin string) (*napcat, error) 
 	if uin != "" {
 		args = append(args, "-e", "ACCOUNT="+uin) // quick login for an account that logged in before
 	}
-	n, err := startProcess(exec.Command("docker", append(args, dockerImage)...))
-	if err != nil {
-		return nil, err
+	return startProcess(exec.Command("docker", append(args, dockerImage)...), name)
+}
+
+// adoptDockerNapCat takes over the container the setup wizard left running
+// and logged in, if there is one. Starting a new one instead would log in a
+// second time moments after the first, which QQ answers by asking for
+// confirmation on the phone.
+func adoptDockerNapCat(ctx context.Context, dataDir string, c *client, uin string) *napcat {
+	name := containerName(dataDir)
+	out, err := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", name).Output()
+	if err != nil || strings.TrimSpace(string(out)) != "true" {
+		return nil
 	}
-	n.container = name
-	return n, nil
+	actx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	done, err := c.connect(actx, nil)
+	if err != nil {
+		return nil
+	}
+	info, err := c.login(actx)
+	c.close()
+	<-done
+	if err != nil || uin == "" || info.UserID.String() != uin {
+		return nil
+	}
+	n, err := startProcess(exec.Command("docker", "logs", "-f", "--tail", "0", name), name)
+	if err != nil {
+		return nil
+	}
+	return n
 }
