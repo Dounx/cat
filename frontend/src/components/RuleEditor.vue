@@ -50,14 +50,24 @@ function actionsFor(step: Step): ActionSpec[] {
 }
 const specOf = (step: Step) => actionsFor(step).find((a) => a.name === step.action)
 
+// Start a step's parameters from the defaults its schema declares.
+function resetParams(step: Step) {
+  const params: Record<string, unknown> = {}
+  for (const [key, s] of Object.entries(specOf(step)?.params?.properties || {})) {
+    if (s.default !== undefined) params[key] = s.default
+  }
+  step.params = params
+}
 function addStep() {
   const first = actionInstances.value[0]
-  rule.steps.push({ id: `s${rule.steps.length + 1}`, instance: first?.id || '', action: hub.pluginOf(first?.plugin || '')?.actions?.[0]?.name || '', params: {} })
+  const step: Step = { id: `s${rule.steps.length + 1}`, instance: first?.id || '', action: hub.pluginOf(first?.plugin || '')?.actions?.[0]?.name || '', params: {} }
+  resetParams(step)
+  rule.steps.push(step)
 }
 function onTarget(step: Step) {
   const list = actionsFor(step)
   if (!list.some((a) => a.name === step.action)) step.action = list[0]?.name || ''
-  step.params = {}
+  resetParams(step)
 }
 function move(i: number, d: number) {
   const [s] = rule.steps.splice(i, 1)
@@ -165,7 +175,7 @@ async function remove() {
               <option value="$source">事件来源（原路回复）</option>
               <option v-for="a in actionInstances" :key="a.id" :value="a.id">{{ a.name }}</option>
             </select>
-            <select v-model="step.action" class="input flex-1" @change="step.params = {}">
+            <select v-model="step.action" class="input flex-1" @change="resetParams(step)">
               <option v-for="a in actionsFor(step)" :key="a.name" :value="a.name">{{ a.title }}</option>
             </select>
             <button class="btn btn-ghost px-1.5" :disabled="i === 0" aria-label="上移" @click="move(i, -1)"><ArrowUp :size="14" /></button>

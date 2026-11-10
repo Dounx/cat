@@ -1,0 +1,140 @@
+{
+  "id": "agent-deepseek",
+  "name": "DeepSeek",
+  "version": "0.1.0",
+  "setup": true,
+  "description": "用 DeepSeek 模型对话。可以只调用 API（纯对话），也可以驱动本机的 Claude Code 获得读写文件等工具能力。",
+  "config_schema": {
+    "type": "object",
+    "required": [
+      "api_key"
+    ],
+    "x-order": [
+      "api_key",
+      "mode",
+      "model",
+      "system_prompt",
+      "cwd",
+      "permission_mode",
+      "allowed_tools",
+      "allowed_actors",
+      "allow_anyone",
+      "api_base",
+      "bin"
+    ],
+    "properties": {
+      "api_key": {
+        "type": "string",
+        "title": "API Key",
+        "format": "password"
+      },
+      "mode": {
+        "type": "string",
+        "title": "方式",
+        "enum": [
+          "api",
+          "claude-code"
+        ],
+        "default": "api",
+        "description": "api：纯对话，不带工具。claude-code：用 DeepSeek 模型驱动本机的 Claude Code（需已安装）。"
+      },
+      "model": {
+        "type": "string",
+        "title": "模型",
+        "default": "deepseek-flash"
+      },
+      "system_prompt": {
+        "type": "string",
+        "title": "系统提示（可选）",
+        "format": "textarea"
+      },
+      "cwd": {
+        "type": "string",
+        "title": "工作目录（仅 claude-code）"
+      },
+      "permission_mode": {
+        "type": "string",
+        "title": "权限模式（仅 claude-code）",
+        "enum": [
+          "dontAsk",
+          "acceptEdits",
+          "auto",
+          "bypassPermissions"
+        ],
+        "default": "dontAsk"
+      },
+      "allowed_tools": {
+        "type": "string",
+        "title": "允许的工具（仅 claude-code）",
+        "default": "Read,Glob,Grep"
+      },
+      "allowed_actors": {
+        "type": "string",
+        "title": "允许的发送者 ID",
+        "description": "逗号分隔。只有这些人发的聊天消息能触发。发送者 ID 可在「事件」页的事件详情里看到。"
+      },
+      "allow_anyone": {
+        "type": "boolean",
+        "title": "允许任何人触发（有风险：任何能给机器人发消息的人都能驱动它）"
+      },
+      "api_base": {
+        "type": "string",
+        "title": "API 地址（可选）",
+        "default": "https://api.deepseek.com"
+      },
+      "bin": {
+        "type": "string",
+        "title": "claude 命令路径（可选）"
+      }
+    }
+  },
+  "actions": [
+    {
+      "name": "chat",
+      "title": "对话",
+      "description": "输出：text（回复）、session_id。",
+      "params": {
+        "type": "object",
+        "required": [
+          "prompt"
+        ],
+        "x-order": [
+          "prompt",
+          "session_key",
+          "system_prompt",
+          "new_session"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "title": "提示词",
+            "format": "textarea",
+            "default": "{{ payload.text }}",
+            "description": "通常填 {{ payload.text }}，也可以在前后加上固定的说明。"
+          },
+          "session_key": {
+            "type": "string",
+            "title": "会话标识（可选）",
+            "description": "相同标识续接同一段对话。留空则按消息所在的会话自动续接。"
+          },
+          "system_prompt": {
+            "type": "string",
+            "title": "附加系统提示（可选）",
+            "format": "textarea"
+          },
+          "new_session": {
+            "type": "boolean",
+            "title": "丢弃之前的对话，重新开始"
+          }
+        }
+      }
+    }
+  ],
+  "protocol": 1,
+  "command": [
+    "./cat-plugin-agent-deepseek"
+  ],
+  "capabilities": [
+    "action"
+  ]
+}

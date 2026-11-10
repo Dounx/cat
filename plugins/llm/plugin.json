@@ -1,0 +1,103 @@
+{
+  "id": "llm",
+  "name": "大模型对话",
+  "version": "0.1.0",
+  "description": "调用任意 OpenAI 兼容接口进行纯对话（不带工具），按会话保留上下文。",
+  "config_schema": {
+    "type": "object",
+    "required": [
+      "base_url",
+      "api_key",
+      "model"
+    ],
+    "x-order": [
+      "base_url",
+      "api_key",
+      "model",
+      "system_prompt",
+      "max_history",
+      "allowed_actors"
+    ],
+    "properties": {
+      "base_url": {
+        "type": "string",
+        "title": "接口地址",
+        "default": "https://api.openai.com/v1",
+        "description": "到 /chat/completions 之前的部分。"
+      },
+      "api_key": {
+        "type": "string",
+        "title": "API Key",
+        "format": "password"
+      },
+      "model": {
+        "type": "string",
+        "title": "模型"
+      },
+      "system_prompt": {
+        "type": "string",
+        "title": "系统提示（可选）",
+        "format": "textarea"
+      },
+      "max_history": {
+        "type": "integer",
+        "title": "保留的历史消息数",
+        "default": 40
+      },
+      "allowed_actors": {
+        "type": "string",
+        "title": "允许的发送者 ID",
+        "description": "逗号分隔。只有这些人发的聊天消息能触发。发送者 ID 可在「事件」页的事件详情里看到。"
+      }
+    }
+  },
+  "actions": [
+    {
+      "name": "chat",
+      "title": "对话",
+      "description": "输出：text（回复）、session_id。",
+      "params": {
+        "type": "object",
+        "required": [
+          "prompt"
+        ],
+        "x-order": [
+          "prompt",
+          "session_key",
+          "system_prompt",
+          "new_session"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "title": "提示词",
+            "format": "textarea",
+            "default": "{{ payload.text }}",
+            "description": "通常填 {{ payload.text }}，也可以在前后加上固定的说明。"
+          },
+          "session_key": {
+            "type": "string",
+            "title": "会话标识（可选）",
+            "description": "相同标识续接同一段对话。留空则按消息所在的会话自动续接。"
+          },
+          "system_prompt": {
+            "type": "string",
+            "title": "附加系统提示（可选）",
+            "format": "textarea"
+          },
+          "new_session": {
+            "type": "boolean",
+            "title": "丢弃之前的对话，重新开始"
+          }
+        }
+      }
+    }
+  ],
+  "protocol": 1,
+  "command": [
+    "./cat-plugin-llm"
+  ],
+  "capabilities": [
+    "action"
+  ]
+}

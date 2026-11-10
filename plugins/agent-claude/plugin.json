@@ -1,0 +1,117 @@
+{
+  "id": "agent-claude",
+  "name": "Claude Code",
+  "version": "0.1.0",
+  "setup": true,
+  "description": "把事件交给本机的 Claude Code 处理，可读写文件、运行命令（取决于权限设置），并按会话续接对话。",
+  "config_schema": {
+    "type": "object",
+    "x-order": [
+      "cwd",
+      "permission_mode",
+      "allowed_tools",
+      "model",
+      "system_prompt",
+      "allowed_actors",
+      "allow_anyone",
+      "bin"
+    ],
+    "properties": {
+      "cwd": {
+        "type": "string",
+        "title": "工作目录",
+        "description": "Claude Code 在这个目录里工作。留空使用实例自己的空目录。"
+      },
+      "permission_mode": {
+        "type": "string",
+        "title": "权限模式",
+        "enum": [
+          "dontAsk",
+          "acceptEdits",
+          "auto",
+          "bypassPermissions"
+        ],
+        "default": "dontAsk",
+        "description": "dontAsk：只能用下面允许的工具，其余一律拒绝（推荐）。acceptEdits：可改文件。auto：由 Claude Code 自动判断。bypassPermissions：不做任何限制，仅在你完全信任触发来源时使用。"
+      },
+      "allowed_tools": {
+        "type": "string",
+        "title": "允许的工具",
+        "default": "Read,Glob,Grep",
+        "description": "逗号分隔，如 Read,Glob,Grep,WebSearch,Edit,Bash(git status)。"
+      },
+      "model": {
+        "type": "string",
+        "title": "模型（可选）"
+      },
+      "system_prompt": {
+        "type": "string",
+        "title": "附加系统提示（可选）",
+        "format": "textarea"
+      },
+      "allowed_actors": {
+        "type": "string",
+        "title": "允许的发送者 ID",
+        "description": "逗号分隔。只有这些人发的聊天消息能触发。发送者 ID 可在「事件」页的事件详情里看到。"
+      },
+      "allow_anyone": {
+        "type": "boolean",
+        "title": "允许任何人触发（有风险：任何能给机器人发消息的人都能驱动它）"
+      },
+      "bin": {
+        "type": "string",
+        "title": "claude 命令路径（可选）",
+        "description": "留空自动查找。"
+      }
+    }
+  },
+  "actions": [
+    {
+      "name": "chat",
+      "title": "对话",
+      "description": "输出：text（回复）、session_id、cost_usd、turns。",
+      "params": {
+        "type": "object",
+        "required": [
+          "prompt"
+        ],
+        "x-order": [
+          "prompt",
+          "session_key",
+          "system_prompt",
+          "new_session"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "title": "提示词",
+            "format": "textarea",
+            "default": "{{ payload.text }}",
+            "description": "通常填 {{ payload.text }}，也可以在前后加上固定的说明。"
+          },
+          "session_key": {
+            "type": "string",
+            "title": "会话标识（可选）",
+            "description": "相同标识续接同一段对话。留空则按消息所在的会话自动续接。"
+          },
+          "system_prompt": {
+            "type": "string",
+            "title": "附加系统提示（可选）",
+            "format": "textarea"
+          },
+          "new_session": {
+            "type": "boolean",
+            "title": "丢弃之前的对话，重新开始"
+          }
+        }
+      }
+    }
+  ],
+  "protocol": 1,
+  "command": [
+    "./cat-plugin-agent-claude"
+  ],
+  "capabilities": [
+    "action"
+  ]
+}

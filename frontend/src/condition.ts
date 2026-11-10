@@ -25,7 +25,9 @@ const safe = (field: string) => field.trim().replace(/\./g, '?.')
 const q = (v: string) => JSON.stringify(v)
 const isNum = (v: string) => v.trim() !== '' && !isNaN(Number(v))
 // IDs arrive as strings but users type them bare, so a numeric value matches both forms.
-const same = (f: string, v: string) => (isNum(v) ? `(${f} == ${Number(v)} or ${f} == ${q(v.trim())})` : `${f} == ${q(v)}`)
+const isBool = (v: string) => v.trim() === 'true' || v.trim() === 'false'
+const same = (f: string, v: string) =>
+  isBool(v) ? `${f} == ${v.trim()}` : isNum(v) ? `(${f} == ${Number(v)} or ${f} == ${q(v.trim())})` : `${f} == ${q(v)}`
 
 export function compileRow(r: Row): string {
   const f = safe(r.field)
@@ -34,7 +36,7 @@ export function compileRow(r: Row): string {
     case 'contains': return `${text} contains ${q(r.value)}`
     case 'not_contains': return `not (${text} contains ${q(r.value)})`
     case 'eq': return same(f, r.value)
-    case 'ne': return `not ${isNum(r.value) ? same(f, r.value) : `(${same(f, r.value)})`}`
+    case 'ne': return `not (${same(f, r.value)})`
     case 'starts': return `${text} startsWith ${q(r.value)}`
     case 'ends': return `${text} endsWith ${q(r.value)}`
     case 'matches': return `${text} matches ${q(r.value)}`
