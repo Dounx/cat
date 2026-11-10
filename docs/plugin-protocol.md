@@ -57,13 +57,19 @@
 }
 ```
 
-`category` 说明插件在用户眼里扮演的角色，只影响界面上的分组，不限制它在规则里怎么用：
+`category` 说明插件在用户眼里扮演的角色，只影响界面上的分组和图标（「接入」页的分区、规则编辑器里选动作时的标签），不限制它在规则里怎么用：
 
 - `channel`（渠道，默认）：和外部世界的双向连接，消息从这里来、回复和通知发到这里去。例如 Telegram、QQ、Webhook。
 - `monitor`（监控）：盯着某样东西，有变化时发出事件，自己没有地方可以“发消息”。例如 RSS 订阅、网页变动、接口变动。要把变化通知给人，由规则把事件交给某个渠道的动作。
 - `processor`（处理器）：收到事件后负责处理并给出结果。例如 Claude Code、大模型对话，也可以是关键词自动回复、转人工这类不涉及 AI 的实现。
 
 填其它值插件会加载失败。
+
+这几项会直接显示在规则编辑器里，请写给用户看：
+
+- `events`：触发节点按来源列出它声明的事件，用 `title` 当名字让用户勾选。没声明的事件用户只能手写类型名去匹配，所以插件会发出的事件都应该列上。
+- `actions` 的 `title` 是动作节点上显示的操作名，`description` 显示在节点的配置面板里。
+- 插件的 `description` 显示在添加动作时的选择列表里。
 
 表单渲染支持的 Schema 子集：`type` 为 `string` / `number` / `integer` / `boolean` / `object`，以及 `title`、`description`、`default`、`enum`、`required`；`format: "password"` 和 `format: "textarea"`；`x-order` 数组指定字段顺序（JSON 对象本身无序）。
 
@@ -102,7 +108,7 @@ Cat                                   插件
 | `initialize` | `{ protocol, mode: "run" \| "setup", instance: { id }, config, data_dir }` | `{ protocol }` |
 | `start` | — | — |
 | `stop` | — | — |
-| `action.invoke` | `{ action, params, context: { event?, rule_id?, run_id? } }` | 一个对象，成为该步骤的输出 |
+| `action.invoke` | `{ action, params, context: { event?, rule_id?, run_id? } }` | 一个对象，成为该动作的输出 |
 | `ingress.request` | `{ method, path, query, headers, body }`（`body` 为 base64） | `{ status, headers?, body? }`（`body` 为 base64） |
 | `setup.run` | `{ existing }`（已有配置，新建时为空对象） | `{ config }` |
 
@@ -126,7 +132,7 @@ Cat                                   插件
 为了让一条规则能在不同平台间通用，聊天类插件应遵守：
 
 - 收到消息发出 `message.created`（编辑为 `message.edited`），`payload` 至少包含 `text` 和 `message_id`（字符串），并尽量提供 `mentioned`（布尔：私聊，或消息提到了机器人）。
-- 提供动作 `reply`，参数至少有 `text`：在 `context.event.conversation` 里回复。规则把步骤目标设为「事件来源」时调用的就是它。
+- 提供动作 `reply`，参数至少有 `text`：在 `context.event.conversation` 里回复。规则里的动作选「原路回复」时调用的就是它。
 - 提供动作 `send`，向指定会话主动发消息。
 - 可选动作 `typing`：显示「正在输入」。
 - 超过平台长度上限的文本由插件自己分段发送。
