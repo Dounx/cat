@@ -1,0 +1,70 @@
+{
+  "id": "apiwatch",
+  "name": "接口变动",
+  "version": "0.1.0",
+  "protocol": 1,
+  "description": "定时请求 HTTP 接口，返回的数据有变化时发出事件，并指出是哪些字段变了。可以只盯返回里的某个字段。只负责发现变化，通知由规则交给聊天渠道发出。",
+  "command": ["./cat-plugin-apiwatch"],
+  "category": "monitor",
+  "capabilities": ["source", "action"],
+  "config_schema": {
+    "type": "object",
+    "required": ["apis"],
+    "x-order": ["apis", "interval", "auth", "headers", "body", "ignore"],
+    "properties": {
+      "apis": {
+        "type": "string",
+        "title": "接口",
+        "format": "textarea",
+        "description": "每行一个完整地址（https://…）。只想盯返回里的某个字段时，在地址后面空一格写字段路径，例如 https://api.example.com/app data.version、https://api.example.com/list items[0].id。不是 GET 请求时把方法写在最前面，例如 POST https://api.example.com/query data。# 开头的行是注释。"
+      },
+      "interval": {
+        "type": "integer",
+        "title": "检查间隔（分钟）",
+        "default": 10,
+        "description": "最小 1 分钟。请求太频繁可能被接口限流。"
+      },
+      "auth": {
+        "type": "string",
+        "title": "Authorization（可选）",
+        "format": "password",
+        "description": "Authorization 请求头的值，例如 Bearer xxxxxx。对这里的所有接口生效；认证信息不同的接口请另建一个监控。"
+      },
+      "headers": {
+        "type": "string",
+        "title": "请求头（可选）",
+        "format": "textarea",
+        "description": "每行一个，格式为 名称: 值，例如 X-Api-Version: 2。对这里的所有接口生效。"
+      },
+      "body": {
+        "type": "string",
+        "title": "请求体（可选）",
+        "format": "textarea",
+        "description": "随 POST、PUT、PATCH、DELETE 请求发送。没有在请求头里指定 Content-Type 时按 application/json 发送。"
+      },
+      "ignore": {
+        "type": "string",
+        "title": "忽略的字段（可选）",
+        "format": "textarea",
+        "description": "每行一个字段路径，比较前会从返回里去掉。用来排除每次请求都不一样的字段，例如 timestamp、data.request_id。* 代表任意一项，例如 items[*].updated_at。"
+      }
+    }
+  },
+  "events": [
+    { "type": "api.changed", "title": "接口返回有变动" }
+  ],
+  "actions": [
+    {
+      "name": "check",
+      "title": "立即检查",
+      "description": "不等下一次轮询，马上请求接口；有变动照常发出事件。输出：checked、changed、failed。",
+      "params": {
+        "type": "object",
+        "x-order": ["api"],
+        "properties": {
+          "api": { "type": "string", "title": "接口（可选）", "description": "配置里的地址；留空检查全部。" }
+        }
+      }
+    }
+  ]
+}

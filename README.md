@@ -3,7 +3,7 @@
 把各处来的事件接到一起，按规则筛选，再触发动作。
 
 ```
-QQ / Discord / Telegram / 企业微信 / RSS / 网页变动 / WebHook ──▶ 规则（条件）──▶ 动作流水线
+QQ / Discord / Telegram / 企业微信 / RSS / 网页变动 / 接口变动 / WebHook ──▶ 规则（条件）──▶ 动作流水线
                                                                     ├─ 交给 Agent（Claude Code / Codex / DeepSeek）
                                                                     ├─ 原路回复、跨平台转发
                                                                     └─ 发 HTTP 请求、跑脚本
@@ -81,7 +81,27 @@ https://example.com/pricing  #price    # 只看 id 为 price 的元素
 
 - 第一次看到的网页只记录现状，之后变了才触发。
 - 每次打开都不一样的内容（时间、访问量）会造成误报：用选择器缩小范围，或在「忽略的内容」里写正则把它们去掉。
-- 只抓取网页源码，不执行 JavaScript；靠脚本渲染的页面抓不到内容，可以改盯它背后的数据接口。
+- 只抓取网页源码，不执行 JavaScript；靠脚本渲染的页面抓不到内容，可以用下面的「接口变动」改盯它背后的数据接口。
+
+## 监控接口返回变动
+
+「接入」→「监控」→ 添加 **接口变动**，在「接口」里每行填一个地址；只想盯返回里的某个字段时，在地址后面空一格写字段路径；不是 GET 请求时把方法写在最前面：
+
+```
+https://api.example.com/app/latest
+https://api.example.com/app/latest  data.version     # 只看这个字段
+POST https://api.example.com/orders/query  data.items  # 请求体填在「请求体」里
+```
+
+比较的是解析后的 JSON，字段顺序和空白的变化不算。数据变了就发出一个 `api.changed` 事件：`payload.text` 是「接口 + 变了的字段」，可以直接转发；另有 `changes`（数组，每项有 `path`、`type`（`added` / `removed` / `changed`）、`old`、`new`）、`value`（现在的值）、`previous`（上一次的值）、`url`、`method`、`path`。返回不是 JSON 时整段当作一个字符串比较。
+
+和网页变动一样，插件只负责发现变化，通知靠规则：来源选这个监控，动作选聊天渠道的「发送到指定会话」，内容填 `{{ payload.text }}`。
+
+- 第一次请求只记录现状，之后变了才触发。
+- 每次请求都不一样的字段（时间戳、请求 ID）会造成误报：用字段路径缩小范围，或在「忽略的字段」里把它们去掉，例如 `timestamp`、`items[*].updated_at`。
+- 接口报错（状态码不是 2xx），或返回里找不到要盯的字段，算检查失败，不算变动。
+- 认证信息填在「Authorization」里，会按密钥保存；其他请求头填在「请求头」。它们对同一个监控里的所有接口生效，认证不同的接口另建一个监控。
+- 列表里插入或删除一项时，只报告多出来或少掉的那一项，不会把后面的每一项都算作变了。
 
 ## 规则怎么写
 
@@ -107,6 +127,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 | 企业微信 | 自建应用的消息回调 |
 | RSSHub / RSS | 订阅 RSSHub 路由和普通 RSS / Atom 源，有新条目时发出 `feed.item` 事件 |
 | 网页变动 | 定时检查网页，文字内容有变化时发出 `page.changed` 事件，可用 CSS 选择器只盯一块 |
+| 接口变动 | 定时请求 HTTP 接口，返回的数据有变化时发出 `api.changed` 事件并列出变了的字段，可用字段路径只盯一处 |
 | Claude Code / Codex / DeepSeek | Agent，按会话续接对话 |
 | 大模型对话 | 任意 OpenAI 兼容接口，纯对话 |
 
