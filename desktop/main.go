@@ -34,6 +34,7 @@ func main() {
 	addr := flag.String("addr", envOr("CAT_ADDR", "127.0.0.1:7788"), "listen address")
 	data := flag.String("data", os.Getenv("CAT_DATA"), "data directory (default ~/.cat)")
 	plugins := flag.String("plugins", os.Getenv("CAT_PLUGINS"), "extra plugin directories")
+	marketURL := flag.String("market", os.Getenv("CAT_MARKET"), "plugin market index URL")
 	hidden := flag.Bool("hidden", false, "start in the tray without opening the window")
 	flag.Parse()
 
@@ -63,7 +64,7 @@ func main() {
 	}
 	hub, err := app.New(app.Options{
 		Addr: *addr, DataDir: *data, PluginDirs: filepath.SplitList(*plugins),
-		Secrets: secrets, Desktop: true,
+		Secrets: secrets, Desktop: true, MarketURL: *marketURL,
 		OpenURL: func(url string) error { return wails.Browser.OpenURL(url) },
 	})
 	if err != nil {

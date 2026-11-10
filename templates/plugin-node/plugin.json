@@ -1,0 +1,25 @@
+{
+  "id": "hello-node",
+  "name": "Hello (Node)",
+  "version": "0.1.0",
+  "protocol": 1,
+  "description": "一个最小的 TypeScript 插件：定时发出事件，并提供一个动作。",
+  "command": ["bun", "run", "src/index.ts"],
+  "capabilities": ["source", "action"],
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "interval": { "type": "integer", "title": "间隔（秒）", "default": 60 },
+      "greeting": { "type": "string", "title": "问候语", "default": "你好" }
+    }
+  },
+  "events": [{ "type": "hello.tick", "title": "定时触发" }],
+  "actions": [
+    {
+      "name": "greet",
+      "title": "打招呼",
+      "description": "输出：text。",
+      "params": { "type": "object", "properties": { "name": { "type": "string", "title": "名字" } } }
+    }
+  ]
+}

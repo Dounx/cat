@@ -1,0 +1,99 @@
+# Cat 事件中心
+
+把各处来的事件接到一起，按规则筛选，再触发动作。
+
+```
+QQ / Discord / Telegram / 企业微信 / WebHook ──▶ 规则（条件）──▶ 动作流水线
+                                                              ├─ 交给 Agent（Claude Code / Codex / DeepSeek）
+                                                              ├─ 原路回复、跨平台转发
+                                                              └─ 发 HTTP 请求、跑脚本
+```
+
+- **插件化**：每个平台、每种 Agent 都是独立进程的插件，用任何语言都能写。官方提供 Go 和 TypeScript SDK。
+- **一键接入**：接入向导负责校验密钥、显示登录二维码、下载并配置依赖，配置表单由插件声明、界面自动生成。
+- **可调试**：所有事件和每次规则执行的每一步都有记录，历史事件可以重放。
+- **两种形态**：桌面应用（托盘常驻）和无界面服务，共用同一个引擎和界面。
+
+## 运行
+
+需要 Go 1.24+、Node + pnpm（构建界面）、Bun（构建 TypeScript 插件）。
+
+```bash
+make all                                 # 界面、插件、bin/catd
+./bin/catd --plugins ./plugins           # 然后打开 http://127.0.0.1:7788
+```
+
+桌面应用（macOS）：
+
+```bash
+make app                                 # 生成 bin/Cat.app，插件已打包在内
+```
+
+`catd` 的主要参数：
+
+| 参数 | 环境变量 | 说明 |
+|---|---|---|
+| `--addr` | `CAT_ADDR` | 监听地址，默认 `127.0.0.1:7788` |
+| `--data` | `CAT_DATA` | 数据目录，默认 `~/.cat` |
+| `--token` | `CAT_TOKEN` | 访问令牌。监听非本机地址时必须设置 |
+| `--plugins` | `CAT_PLUGINS` | 额外的插件目录 |
+| `--market` | `CAT_MARKET` | 插件市场索引地址 |
+
+## 第一条规则
+
+1. 「接入」→ 添加 **WebHook**，复制它的地址。
+2. 「规则」→ 新建：来源选这个 WebHook，条件 `payload.text` 包含 `deploy`，动作选「HTTP 请求」。
+3. 发一个请求试试：
+
+   ```bash
+   curl -X POST http://127.0.0.1:7788/ingress/<实例 ID> -d '{"text":"please deploy"}'
+   ```
+
+4. 在「事件」和「运行记录」里看结果。
+
+接入了聊天平台和 Agent 之后，「规则」页会出现「消息 → Agent → 回复」按钮，一键生成最常用的规则。
+
+## 规则怎么写
+
+条件是 [expr](https://expr-lang.org) 表达式，界面里可以用可视化条件构造器，也可以直接写：
+
+```
+payload.mentioned == true and actor.id in ["123", "456"]
+```
+
+可用变量：`payload`、`actor`、`conversation`、`type`、`source`、`raw`。
+
+动作参数里用 `{{ }}` 取值：`{{ payload.text }}` 是事件内容，`{{ steps.agent.text }}` 是标识为 `agent` 的那一步的输出。
+
+## 已有的插件
+
+| 插件 | 说明 |
+|---|---|
+| WebHook（内置） | 任意 HTTP 请求变成事件，支持密钥和 HMAC 签名 |
+| HTTP 请求、运行脚本（内置） | 动作 |
+| Telegram | Bot，长轮询 |
+| Discord | Bot，Gateway |
+| QQ（OneBot） | OneBot 11。Windows 上可自动下载配置 NapCat；其他系统连接你自己运行的 OneBot 服务 |
+| 企业微信 | 自建应用的消息回调 |
+| Claude Code / Codex / DeepSeek | Agent，按会话续接对话 |
+| 大模型对话 | 任意 OpenAI 兼容接口，纯对话 |
+
+## 安全
+
+- **聊天消息会原样成为给 Agent 的指令。** 所以 Agent 插件默认只读、只接受白名单里的发送者。放宽之前请想清楚谁能给你的机器人发消息。
+- **插件没有沙箱**，以你的用户身份运行。只安装你信任的插件。从市场安装时会校验 SHA-256。
+- 默认只监听本机。要对外提供服务必须设置 `--token`；WebHook 请配置密钥。
+- 密钥类配置存放在系统钥匙串（桌面版）或 `~/.cat/secrets.json`（无界面版，仅靠文件权限保护，未加密）。
+
+## 开发
+
+```bash
+make test                                # 全部测试
+go run ./cmd/catd --plugins ./plugins    # 后端
+cd frontend && pnpm dev                  # 界面热更新（代理到 7788）
+```
+
+- [写一个插件](docs/plugin-development.md)
+- [插件协议](docs/plugin-protocol.md)
+
+目录：`core/` 引擎，`app/` 组装，`cmd/catd` 无界面外壳，`desktop/` 桌面外壳（独立 Go 模块），`frontend/` 界面，`sdk/` 插件 SDK，`plugins/` 官方插件，`templates/` 插件模板。

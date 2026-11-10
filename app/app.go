@@ -28,6 +28,8 @@ type Options struct {
 	// PluginDirs are extra directories searched for plugins, ahead of
 	// <data>/plugins and the plugins directory beside the executable.
 	PluginDirs []string
+	// MarketURL is the plugin market index (http(s):// or file://).
+	MarketURL string
 	// Secrets overrides where credentials are kept (default: a private file
 	// in the data directory).
 	Secrets engine.Secrets

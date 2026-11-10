@@ -1,0 +1,50 @@
+{
+  "id": "wecom",
+  "name": "企业微信",
+  "version": "0.1.0",
+  "protocol": 1,
+  "description": "接收企业微信自建应用的消息回调，并通过应用发送消息。回调地址需要能从公网访问（反向代理或内网穿透）。",
+  "command": ["./cat-plugin-wecom"],
+  "capabilities": ["source", "action"],
+  "ingress": true,
+  "config_schema": {
+    "type": "object",
+    "required": ["corp_id", "agent_id", "secret", "token", "aes_key"],
+    "x-order": ["corp_id", "agent_id", "secret", "token", "aes_key", "api_base"],
+    "properties": {
+      "corp_id": { "type": "string", "title": "企业 ID（CorpID）" },
+      "agent_id": { "type": "string", "title": "应用 AgentId" },
+      "secret": { "type": "string", "title": "应用 Secret", "format": "password" },
+      "token": { "type": "string", "title": "回调 Token", "format": "password", "description": "应用 →「接收消息」→ API 接收里设置的 Token。" },
+      "aes_key": { "type": "string", "title": "回调 EncodingAESKey", "format": "password", "description": "43 个字符。" },
+      "api_base": { "type": "string", "title": "API 地址（可选）", "default": "https://qyapi.weixin.qq.com" }
+    }
+  },
+  "events": [
+    { "type": "message.created", "title": "收到消息" },
+    { "type": "wecom.event", "title": "事件（进入应用、菜单点击等）" }
+  ],
+  "actions": [
+    {
+      "name": "reply",
+      "title": "回复（发给消息的发送者）",
+      "description": "输出：msgid。",
+      "params": {
+        "type": "object", "required": ["text"],
+        "properties": { "text": { "type": "string", "title": "内容", "format": "textarea" } }
+      }
+    },
+    {
+      "name": "send",
+      "title": "发送给指定成员",
+      "params": {
+        "type": "object", "required": ["to_user", "text"], "x-order": ["to_user", "text"],
+        "properties": {
+          "to_user": { "type": "string", "title": "成员 UserID", "description": "多个用 | 分隔；@all 表示全部。" },
+          "text": { "type": "string", "title": "内容", "format": "textarea" }
+        }
+      }
+    },
+    { "name": "typing", "title": "显示「正在输入」", "description": "企业微信不支持，此动作什么也不做，仅为与其他平台的规则保持一致。" }
+  ]
+}

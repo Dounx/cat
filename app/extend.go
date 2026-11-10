@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/dounx/cat/core/api"
+	"github.com/dounx/cat/core/market"
 	"github.com/dounx/cat/core/pluginhost"
 )
 
@@ -27,6 +29,39 @@ func (a *App) extend() error {
 		slog.Warn("plugin skipped", "err", err)
 	}
 	a.Server.Extend(a.pluginRoutes)
+	mk := market.New(a.opts.MarketURL, a.PluginDir(), a.Plugins, a.Engine)
+	a.Server.Extend(func(mux *http.ServeMux) {
+		mux.HandleFunc("GET /api/market", func(w http.ResponseWriter, r *http.Request) {
+			list, err := mk.List(r.Context())
+			if err != nil {
+				api.WriteJSON(w, 200, map[string]any{"configured": mk.URL != "", "error": err.Error(), "plugins": []any{}})
+				return
+			}
+			api.WriteJSON(w, 200, map[string]any{"configured": true, "plugins": list})
+		})
+		mux.HandleFunc("POST /api/market/{id}/install", func(w http.ResponseWriter, r *http.Request) {
+			id := r.PathValue("id")
+			var last time.Time
+			err := mk.Install(r.Context(), id, func(done, total int64) {
+				if time.Since(last) > 200*time.Millisecond || done == total {
+					last = time.Now()
+					a.Engine.Publish("download", map[string]any{"plugin": id, "done": done, "total": total})
+				}
+			})
+			if err != nil {
+				api.WriteErr(w, 400, err.Error())
+				return
+			}
+			api.WriteJSON(w, 200, map[string]bool{"ok": true})
+		})
+		mux.HandleFunc("DELETE /api/market/{id}", func(w http.ResponseWriter, r *http.Request) {
+			if err := mk.Uninstall(r.PathValue("id")); err != nil {
+				api.WriteErr(w, 400, err.Error())
+				return
+			}
+			api.WriteJSON(w, 200, map[string]bool{"ok": true})
+		})
+	})
 	a.Server.Desktop = a.opts.Desktop
 	if open := a.opts.OpenURL; open != nil {
 		a.Server.Extend(func(mux *http.ServeMux) {

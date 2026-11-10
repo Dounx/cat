@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Copy, Pencil, Plus, Power, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useHub } from '../hub'
-import { del, post, put } from '../api'
+import { del, get, post, put } from '../api'
 import type { Instance, Plugin } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import Drawer from '../components/Drawer.vue'
@@ -23,6 +23,35 @@ function ingressURL(i: Instance) { return `${location.origin}/ingress/${i.id}` }
 async function copy(text: string) {
   await navigator.clipboard.writeText(text)
   hub.notify('已复制')
+}
+
+interface MarketPlugin {
+  id: string; name: string; version: string; description?: string; homepage?: string
+  supported: boolean; installed_version: string; bundled: boolean
+}
+const market = ref<{ configured: boolean; error?: string; plugins: MarketPlugin[] }>({ configured: false, plugins: [] })
+const installing = ref('')
+const progress = computed(() => {
+  const d = hub.signals.download as { plugin: string; done: number; total: number } | undefined
+  if (!d || d.plugin !== installing.value) return ''
+  return d.total > 0 ? `${Math.round((d.done / d.total) * 100)}%` : `${(d.done / 1e6).toFixed(1)} MB`
+})
+async function loadMarket() { market.value = await get('/market').catch(() => market.value) }
+onMounted(loadMarket)
+watch(() => hub.signals.plugins, () => { hub.reloadPlugins(); loadMarket() })
+
+async function install(p: MarketPlugin) {
+  const verb = p.installed_version ? '更新' : '安装'
+  if (!confirm(`${verb}插件「${p.name}」${p.version}？\n\n插件以你的用户身份运行，没有沙箱，能做你能做的任何事。请只安装你信任的插件。`)) return
+  installing.value = p.id
+  await hub.run(() => post(`/market/${p.id}/install`), `已${verb} ${p.name}`)
+  installing.value = ''
+  await Promise.all([hub.reloadPlugins(), loadMarket()])
+}
+async function uninstall(p: MarketPlugin) {
+  if (!confirm(`卸载插件「${p.name}」？`)) return
+  await hub.run(() => del(`/market/${p.id}`), '已卸载')
+  await Promise.all([hub.reloadPlugins(), loadMarket()])
 }
 
 const wizard = ref<null | { plugin: Plugin; instanceId?: string }>(null)
@@ -96,6 +125,30 @@ async function remove(i: Instance) {
               <span v-if="!p.builtin" class="chip">插件 {{ p.version }}</span>
             </div>
           </button>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="mb-1 text-sm font-semibold">插件市场</h2>
+        <p class="mb-3 text-xs text-mute">插件以你的用户身份运行，没有沙箱。安装前会校验文件的 SHA-256。</p>
+        <p v-if="market.error" class="card p-4 text-sm text-mute">{{ market.error }}</p>
+        <div v-for="p in market.plugins" :key="p.id" class="card mb-2 flex items-center gap-4 px-4 py-3">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2 text-sm font-medium">{{ p.name }}<span class="chip">{{ p.version }}</span>
+              <span v-if="p.bundled" class="text-xs font-normal text-mute">随应用提供</span>
+              <span v-else-if="p.installed_version" class="text-xs font-normal text-ok">已安装 {{ p.installed_version }}</span>
+            </div>
+            <p class="truncate text-xs text-mute">{{ p.description }}</p>
+          </div>
+          <span v-if="installing === p.id" class="text-xs text-mute">下载中 {{ progress }}</span>
+          <template v-else-if="!p.bundled">
+            <span v-if="!p.supported" class="text-xs text-mute">不支持当前系统</span>
+            <button v-else-if="!p.installed_version" class="btn" @click="install(p)">安装</button>
+            <template v-else>
+              <button v-if="p.installed_version !== p.version" class="btn btn-primary" @click="install(p)">更新</button>
+              <button class="btn btn-ghost btn-danger" @click="uninstall(p)">卸载</button>
+            </template>
+          </template>
         </div>
       </section>
 
