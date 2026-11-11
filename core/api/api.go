@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -89,6 +90,15 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("DELETE /api/instances/{id}", func(w http.ResponseWriter, r *http.Request) {
 		respond(w, map[string]bool{"ok": true}, e.DeleteInstance(r.PathValue("id")))
+	})
+	mux.HandleFunc("GET /api/instances/{id}/options", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		opts, err := e.Options(ctx, r.PathValue("id"), r.URL.Query().Get("action"), r.URL.Query().Get("field"))
+		if opts == nil {
+			opts = []plugin.Option{}
+		}
+		respond(w, opts, err)
 	})
 	mux.HandleFunc("POST /api/instances/{id}/restart", func(w http.ResponseWriter, r *http.Request) {
 		cur, ok := e.Instance(r.PathValue("id"))

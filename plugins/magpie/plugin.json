@@ -34,7 +34,8 @@
       "model": {
         "type": "string",
         "title": "模型",
-        "description": "Magpie 里的模型，写成 provider/model，也可以是路由组。用 magpie models 查看全部。"
+        "x-pick": "option",
+        "description": "Magpie 里的模型，写成 provider/model，也可以是路由组。可以从 Magpie 现有的模型里选。"
       },
       "system_prompt": {
         "type": "string",
@@ -92,7 +93,8 @@
           "model": {
             "type": "string",
             "title": "换一个模型（可选）",
-            "description": "只在这个动作里用另一个模型，写成 provider/model。留空用接入时选的。"
+            "x-pick": "option",
+            "description": "只在这个动作里用另一个模型，可以从 Magpie 现有的模型里选。留空用接入时选的。"
           },
           "new_session": {
             "type": "boolean",
@@ -137,7 +139,8 @@
           "model": {
             "type": "string",
             "title": "换一个模型（可选）",
-            "description": "只在这个动作里用另一个模型，写成 provider/model。留空用接入时选的。"
+            "x-pick": "option",
+            "description": "只在这个动作里用另一个模型，可以从 Magpie 现有的模型里选。留空用接入时选的。"
           }
         }
       }

@@ -407,6 +407,22 @@ func (i *instance) Invoke(ctx context.Context, action string, params map[string]
 	return out, err
 }
 
+func (i *instance) Options(ctx context.Context, action, field string) ([]plugin.Option, error) {
+	conn, err := i.conn()
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Options []plugin.Option `json:"options"`
+	}
+	err = conn.Call(ctx, "options.list", map[string]string{"action": action, "field": field}, &out)
+	var rpcErr *jsonrpc.Error
+	if errors.As(err, &rpcErr) && rpcErr.Code == jsonrpc.CodeMethodNotFound {
+		return nil, nil // a plugin that offers none
+	}
+	return out.Options, err
+}
+
 func (i *instance) HandleIngress(ctx context.Context, req plugin.IngressRequest) (plugin.IngressResponse, error) {
 	conn, err := i.conn()
 	if err != nil {

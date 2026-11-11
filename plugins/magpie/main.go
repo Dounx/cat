@@ -110,15 +110,22 @@ type model struct {
 	Label string `json:"magpie_label"` // the name with what it is: "… · routing group"
 }
 
+// name is what the model is called, with what it is: "… · routing group".
+func (m model) name() string {
+	if m.Label != "" {
+		return m.Label
+	}
+	if m.Name != "" {
+		return m.Name
+	}
+	return m.ID
+}
+
 func (m model) title() string {
-	name := m.Label
-	if name == "" {
-		name = m.Name
+	if name := m.name(); name != m.ID {
+		return name + "（" + m.ID + "）"
 	}
-	if name == "" || name == m.ID {
-		return m.ID
-	}
-	return name + "（" + m.ID + "）"
+	return m.ID
 }
 
 // models lists what the key may ask, routing groups first, as Magpie orders them.
@@ -158,6 +165,21 @@ func New() cat.Plugin {
 		return err
 	}
 	return cat.Plugin{
+		// The models to choose from, for the instance and for each action.
+		Options: func(ctx context.Context, _ *cat.Host, _, field string) ([]cat.Option, error) {
+			if field != "model" {
+				return nil, nil
+			}
+			models, err := gw.models(ctx)
+			if err != nil {
+				return nil, explain(ctx, err)
+			}
+			opts := make([]cat.Option, len(models))
+			for i, m := range models {
+				opts[i] = cat.Option{Value: m.ID, Title: m.name(), Note: m.ID}
+			}
+			return opts, nil
+		},
 		// Magpie need not be running yet: it is only asked when an action runs.
 		Start: func(_ context.Context, h *cat.Host) error {
 			gw = readGateway(h.Config)

@@ -30,6 +30,17 @@ type Plugin struct {
 	Ingress func(ctx context.Context, h *Host, req IngressRequest) (IngressResponse, error)
 	// Setup runs the onboarding wizard and returns the instance configuration.
 	Setup func(ctx context.Context, s *Setup) (map[string]any, error)
+	// Options lists what may go in a field marked "x-pick": "option" while
+	// someone fills in a form: a parameter of the named action, or a
+	// configuration field when action is "". It runs on a started instance.
+	Options func(ctx context.Context, h *Host, action, field string) ([]Option, error)
+}
+
+// Option is one value offered for a field.
+type Option struct {
+	Value string `json:"value"`
+	Title string `json:"title,omitempty"` // what people read; the value when empty
+	Note  string `json:"note,omitempty"`  // a few words more, shown beside it
 }
 
 // Host is the plugin's handle on Cat.
@@ -202,6 +213,22 @@ func Serve(p Plugin, r io.Reader, w io.Writer) error {
 			in.Params = map[string]any{}
 		}
 		return fn(rctx, host, in.Params, in.Context)
+	})
+	conn.Handle("options.list", func(rctx context.Context, raw json.RawMessage) (any, error) {
+		var in struct {
+			Action string `json:"action"`
+			Field  string `json:"field"`
+		}
+		_ = json.Unmarshal(raw, &in)
+		opts := []Option{}
+		if p.Options != nil {
+			found, err := p.Options(rctx, host, in.Action, in.Field)
+			if err != nil {
+				return nil, err
+			}
+			opts = append(opts, found...)
+		}
+		return map[string]any{"options": opts}, nil
 	})
 	conn.Handle("ingress.request", func(rctx context.Context, raw json.RawMessage) (any, error) {
 		if p.Ingress == nil {

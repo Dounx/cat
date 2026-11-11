@@ -327,7 +327,12 @@ async function remove(i: Instance) {
         <p class="mb-4 text-sm text-mute">{{ editing.plugin.description }}</p>
         <div class="space-y-3">
           <div><label class="label">名称</label><input v-model="editing.name" class="input" /></div>
-          <SchemaForm v-model="editing.config" :schema="editing.plugin.config_schema" :picks="picksFor(hub.events)" />
+          <SchemaForm
+            v-model="editing.config"
+            :schema="editing.plugin.config_schema"
+            :picks="picksFor(hub.events)"
+            :options-from="editing.id ? `/instances/${editing.id}/options?action=` : undefined"
+          />
         </div>
         <template #footer>
           <button v-if="editing.id && editing.plugin.setup" class="btn mr-auto" @click="rerunSetup">

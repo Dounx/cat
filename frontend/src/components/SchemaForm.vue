@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Renders a form from a JSON Schema object. With `templated`, every field
 // accepts {{ expression }} placeholders, so numbers are edited as text.
-import { computed } from 'vue'
-import { History } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
+import { History, List } from 'lucide-vue-next'
+import { get } from '../api'
 import type { Schema } from '../types'
 import VarPicker, { type VarGroup } from './VarPicker.vue'
 import TemplateInput from './TemplateInput.vue'
@@ -10,7 +11,9 @@ import TemplateInput from './TemplateInput.vue'
 // `variables` lists what a templated text field may refer to; when given,
 // those fields show placeholders as named tags and offer a menu that inserts
 // one at the cursor. `picks` gives, for the kinds of value a field may ask
-// for with "x-pick", the ones seen in recent events.
+// for with "x-pick", the ones seen in recent events. `optionsFrom` is where
+// the instance behind the form lists the options of a field marked
+// "x-pick": "option", e.g. "/instances/abc/options?action=chat".
 export interface Picks {
   conversation?: VarGroup[]
   actor?: VarGroup[]
@@ -21,6 +24,7 @@ const props = defineProps<{
   templated?: boolean
   variables?: VarGroup[]
   picks?: Picks
+  optionsFrom?: string
 }>()
 const emit = defineEmits<{ 'update:modelValue': [value: Record<string, any>] }>()
 
@@ -85,8 +89,39 @@ const labelOf = (expr: string) => names.value.get(expr.trim())
 
 const enumTitle = (s: Schema, i: number) => s['x-enum-titles']?.[i] || s.enum![i]
 
-// Values from recent events for a field that asks for them.
-const picksFor = (s: Schema) => (s['x-pick'] && props.picks?.[s['x-pick']]) || undefined
+// What the instance offers for the fields that ask it. A field has no entry
+// until its answer is in; a failed answer is an empty list and its reason.
+const offered = ref<Record<string, VarGroup[]>>({})
+const refused = ref<Record<string, string>>({})
+const asking = computed(() => fields.value.filter(([, s]) => s['x-pick'] === 'option').map(([key]) => key))
+watch(
+  () => [props.optionsFrom, asking.value.join(',')] as const,
+  ([from], _old, stale) => {
+    offered.value = {}
+    refused.value = {}
+    if (!from) return
+    let current = true
+    stale(() => (current = false))
+    for (const key of asking.value) {
+      get<{ value: string; title?: string; note?: string }[]>(`${from}&field=${encodeURIComponent(key)}`)
+        .then((list) => [
+          { title: '可以选的', items: list.map((o) => ({ expr: o.value, label: o.title || o.value, sample: o.note })) },
+        ])
+        .catch((e: Error) => {
+          if (current) refused.value[key] = '没有取到可选项：' + e.message
+          return [] as VarGroup[]
+        })
+        .then((groups) => {
+          if (current) offered.value[key] = groups
+        })
+    }
+  },
+  { immediate: true },
+)
+
+// Values to pick from for a field that asks for them.
+const picksFor = (key: string, s: Schema) =>
+  s['x-pick'] === 'option' ? offered.value[key] : (s['x-pick'] && props.picks?.[s['x-pick']]) || undefined
 function pick(key: string, s: Schema, value: string) {
   // senders add up to a list; a conversation replaces what was there
   const cur = show(key, s)
@@ -115,8 +150,16 @@ function setJSON(key: string, raw: string) {
         </label>
         <span class="flex items-center">
           <VarPicker
-            v-if="picksFor(s)"
-            :groups="picksFor(s)!"
+            v-if="picksFor(key, s) && s['x-pick'] === 'option'"
+            :groups="picksFor(key, s)!"
+            :icon="List"
+            text="从现有的里选"
+            :empty="refused[key] || '没有可选的。'"
+            @pick="pick(key, s, $event)"
+          />
+          <VarPicker
+            v-else-if="picksFor(key, s)"
+            :groups="picksFor(key, s)!"
             :icon="History"
             text="从最近的里选"
             empty="还没有收到过消息。先在那边发一条，这里就能选了。"

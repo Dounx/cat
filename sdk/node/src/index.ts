@@ -297,6 +297,19 @@ export interface Plugin {
   ingress?(req: IngressRequest, host: Host): IngressResponse | Promise<IngressResponse>
   /** Runs the onboarding wizard; resolves to the instance configuration. */
   setup?(setup: Setup, signal: AbortSignal): Promise<Record<string, unknown>>
+  /**
+   * Lists what may go in a field marked "x-pick": "option" while someone fills
+   * in a form: a parameter of the named action, or a configuration field when
+   * `action` is "". Runs on a started instance.
+   */
+  options?(action: string, field: string, host: Host, signal: AbortSignal): Option[] | Promise<Option[]>
+}
+
+/** One value offered for a field. `title` is what people read, `note` a few words more. */
+export interface Option {
+  value: string
+  title?: string
+  note?: string
 }
 
 /** Serves the plugin over stdin/stdout until Cat closes the connection. */
@@ -331,6 +344,9 @@ export function run(
     if (!fn) throw new RpcError(CODE_METHOD_NOT_FOUND, 'unknown action: ' + p.action)
     return (await fn(p.params ?? {}, p.context ?? {}, host, signal)) ?? {}
   })
+  conn.handle('options.list', async (p, signal) => ({
+    options: (await plugin.options?.(p.action ?? '', p.field ?? '', host, signal)) ?? [],
+  }))
   conn.handle('ingress.request', async (p) => {
     if (!plugin.ingress) return { status: 404 }
     const resp = await plugin.ingress({ ...p, body: Buffer.from(p.body ?? '', 'base64') }, host)

@@ -188,6 +188,8 @@ func TestSetupAsksWhereMagpieIs(t *testing.T) {
 // spends a few tokens there, so it only runs when asked:
 // CAT_REAL_MAGPIE=1 go test ./plugins/magpie -run Real -v
 // CAT_REAL_MAGPIE_MODEL names the model; the first one Magpie lists otherwise.
+// CAT_REAL_MAGPIE_OTHER names a second model, asked through the actions' own
+// "model" parameter.
 func TestRealMagpie(t *testing.T) {
 	if os.Getenv("CAT_REAL_MAGPIE") == "" {
 		t.Skip("set CAT_REAL_MAGPIE=1 to run against the local Magpie")
@@ -211,5 +213,38 @@ func TestRealMagpie(t *testing.T) {
 	out, err = h.Invoke("judge", map[string]any{"prompt": "Is 2 greater than 1?"}, nil)
 	if err != nil || out["choice"] != "yes" {
 		t.Fatalf("judge: %v %v", out, err)
+	}
+	t.Logf("judge: %v", out)
+	other := os.Getenv("CAT_REAL_MAGPIE_OTHER")
+	if other == "" {
+		return
+	}
+	out, err = h.Invoke("chat", map[string]any{"prompt": "Which company trained you? One short sentence.", "model": other, "new_session": true}, nil)
+	if err != nil || out["text"] == "" || out["model"] != other {
+		t.Fatalf("chat with %s: %v %v", other, out, err)
+	}
+	t.Logf("chat with its own model: %v", out)
+	out, err = h.Invoke("judge", map[string]any{"prompt": "Is 2 greater than 1?", "model": other}, nil)
+	if err != nil || out["choice"] != "yes" || out["model"] != other {
+		t.Fatalf("judge with %s: %v %v", other, out, err)
+	}
+	t.Logf("judge with its own model: %v", out)
+}
+
+func TestModelsAreOfferedToForms(t *testing.T) {
+	srv, _ := fakeMagpie(t, "")
+	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"base_url": srv.URL, "model": "auto/fast"}})
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	opts, err := h.Options("chat", "model")
+	if err != nil || len(opts) != 2 {
+		t.Fatalf("options: %+v %v", opts, err)
+	}
+	if opts[0] != (cat.Option{Value: "auto/fast", Title: "Fast · routing group", Note: "auto/fast"}) || opts[1].Title != "DeepSeek Chat" {
+		t.Fatalf("options: %+v", opts)
+	}
+	if opts, err := h.Options("chat", "prompt"); err != nil || len(opts) != 0 {
+		t.Fatalf("only the model has options: %+v %v", opts, err)
 	}
 }

@@ -108,6 +108,13 @@ type InvokeContext struct {
 	InstanceID string       `json:"instance_id,omitempty"`
 }
 
+// Option is one value an instance offers for a field marked "x-pick": "option".
+type Option struct {
+	Value string `json:"value"`
+	Title string `json:"title,omitempty"` // what people read; the value when empty
+	Note  string `json:"note,omitempty"`  // a few words more, shown beside it
+}
+
 // Host is what the engine offers to a running instance.
 type Host interface {
 	// Emit publishes an event; Source/Plugin/ID/Time are filled in by the host.
@@ -128,6 +135,9 @@ type Instance interface {
 	Stop() error
 	Invoke(ctx context.Context, action string, params map[string]any, ictx InvokeContext) (map[string]any, error)
 	HandleIngress(ctx context.Context, req IngressRequest) (IngressResponse, error)
+	// Options lists what may go in a field while someone fills in a form: a
+	// parameter of the named action, or a configuration field when action is "".
+	Options(ctx context.Context, action, field string) ([]Option, error)
 }
 
 // Factory builds an instance from its stored configuration.
@@ -144,6 +154,8 @@ func (Base) Invoke(_ context.Context, action string, _ map[string]any, _ InvokeC
 func (Base) HandleIngress(context.Context, IngressRequest) (IngressResponse, error) {
 	return IngressResponse{Status: 404}, nil
 }
+
+func (Base) Options(context.Context, string, string) ([]Option, error) { return nil, nil }
 
 // ErrUnknownAction is returned when an instance is asked for an action it lacks.
 type ErrUnknownAction string

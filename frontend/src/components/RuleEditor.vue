@@ -1175,6 +1175,7 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
               :model-value="node.params || {}"
               :schema="judgeSchema(node)"
               :variables="variablesFor(node)"
+              :options-from="node.instance ? `/instances/${node.instance}/options?action=judge` : undefined"
               templated
               @update:model-value="node.params = $event"
             />
@@ -1393,6 +1394,9 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
           :schema="specOf(node)?.params"
           :variables="variablesFor(node)"
           :picks="picksFor(hub.events, node.instance)"
+          :options-from="
+            node.instance && node.action ? `/instances/${node.instance}/options?action=${node.action}` : undefined
+          "
           templated
           @update:model-value="node.params = $event"
         />

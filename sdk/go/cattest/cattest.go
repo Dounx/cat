@@ -156,6 +156,15 @@ func (h *Harness) Invoke(action string, params map[string]any, trigger *cat.Even
 	return out, err
 }
 
+// Options asks what the plugin offers for a field, as a form would.
+func (h *Harness) Options(action, field string) ([]cat.Option, error) {
+	var out struct {
+		Options []cat.Option `json:"options"`
+	}
+	err := h.call("options.list", map[string]string{"action": action, "field": field}, &out)
+	return out.Options, err
+}
+
 // Ingress delivers an HTTP request to the plugin.
 func (h *Harness) Ingress(req cat.IngressRequest) (cat.IngressResponse, error) {
 	var out cat.IngressResponse

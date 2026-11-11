@@ -77,6 +77,7 @@
 
 - `"x-enum-titles": ["只读（推荐）", "不做任何限制（危险）"]`：和 `enum` 等长、同序，是每个选项显示给人看的名字。存下来的仍是 `enum` 里的值。请总是给出，不要让用户面对 `read-only` 这样的内部值。
 - `"x-pick": "conversation"` 或 `"actor"`：这个字段要填的是会话 ID 或发送者 ID。界面会在旁边提供「从最近的里选」，列出最近事件里出现过的会话（`conversation.id`，限这个动作所属的接入）或发送者（`actor.id`，多选时用逗号连接）。用在动作参数和配置里都可以。
+- `"x-pick": "option"`：这个字段的可选值由插件自己给出，比如一个网关里现有的模型。界面会在旁边提供「从现有的里选」，打开表单时向实例发 `options.list` 取列表。字段仍然是文本框，用户可以手写列表之外的值，也可以写 `{{ }}` 模板。用在动作参数里，或已有接入的配置里（接入向导里请直接给 `enum`）。
 
 ## 传输
 
@@ -114,6 +115,7 @@ Cat                                   插件
 | `start` | — | — |
 | `stop` | — | — |
 | `action.invoke` | `{ action, params, context: { event?, rule_id?, run_id? } }` | 一个对象，成为该动作的输出 |
+| `options.list` | `{ action, field }`：`action` 是动作名，问的是配置字段时为空串 | `{ options: [{ value, title?, note? }] }`。`title` 是给人看的名字，`note` 是旁边的一小段补充。只在实例启动后调用；没有实现这个方法等于没有可选项 |
 | `ingress.request` | `{ method, path, query, headers, body }`（`body` 为 base64） | `{ status, headers?, body? }`（`body` 为 base64） |
 | `setup.run` | `{ existing }`（已有配置，新建时为空对象） | `{ config }` |
 

@@ -366,6 +366,15 @@ func (e *Engine) Ingress(ctx context.Context, instanceID string, req plugin.Ingr
 	return inst.HandleIngress(ctx, req)
 }
 
+// Options asks an instance what may go in one of its fields.
+func (e *Engine) Options(ctx context.Context, instanceID, action, field string) ([]plugin.Option, error) {
+	inst, err := e.instance(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	return inst.Options(ctx, action, field)
+}
+
 // Invoke calls an action on an instance directly (used by tests and the UI).
 func (e *Engine) Invoke(ctx context.Context, instanceID, action string, params map[string]any, ictx plugin.InvokeContext) (map[string]any, error) {
 	inst, err := e.instance(instanceID)
