@@ -64,6 +64,22 @@ h.Emit(cat.Event{
 - `ctx` 在动作超时或被取消时结束，请把它传给你的网络请求和子进程。
 - 在 `plugin.json` 里把每个参数都写进 `params`，界面才会为它生成输入框。
 
+### 替条件节点做判断
+
+规则的条件节点可以不按字段比，而是交给一个接入来判断。插件声明一个名为 `judge` 的动作，它的接入就会出现在条件节点「模型判断」的列表里。
+
+这个动作除了自己在 `params` 里声明的参数（界面按它们生成表单，`choices` 除外），还会收到 `choices`：一个字符串数组，是可以选的全部结果。条件只问是否时，它是 `["yes", "no"]`。动作返回的对象里必须有 `choice`，值是这些选项中的一个：
+
+```go
+"judge": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
+    choices, _ := p["choices"].([]any)
+    ...
+    return map[string]any{"choice": picked}, nil
+}
+```
+
+返回的 `choice` 不在选项里时，规则走「其他」那个出口；没有 `choice` 或返回错误，这条线到此为止并记为出错。事件每走到这个节点一次就调用一次，请不要在这里保留会话上下文。
+
 ## 保存状态
 
 `h.StateGet` / `h.StateSet` 是按实例隔离的持久键值存储，适合放游标、会话映射这类小数据。大文件放 `h.DataDir`。两者都在实例被删除时清除。

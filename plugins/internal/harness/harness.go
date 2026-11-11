@@ -29,6 +29,28 @@ func Str(m map[string]any, key string) string {
 	return strings.TrimSpace(fmt.Sprint(m[key]))
 }
 
+// Choices reads what a "judge" action may pick from: the list a rule's
+// condition node sends, or, when the action is used as an ordinary step, a
+// comma or newline separated string. Empty means the question is yes or no.
+func Choices(p map[string]any) []string {
+	var out []string
+	add := func(s string) {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	if list, ok := p["choices"].([]any); ok {
+		for _, c := range list {
+			add(fmt.Sprint(c))
+		}
+		return out
+	}
+	for _, c := range strings.FieldsFunc(Str(p, "choices"), func(r rune) bool { return r == ',' || r == '，' || r == '\n' }) {
+		add(c)
+	}
+	return out
+}
+
 // List splits a comma/space/newline separated config value.
 func List(m map[string]any, key string) []string {
 	return strings.FieldsFunc(Str(m, key), func(r rune) bool { return r == ',' || r == '，' || r == ' ' || r == '\n' || r == '\t' })

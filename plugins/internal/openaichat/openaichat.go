@@ -159,3 +159,61 @@ func Converse(ctx context.Context, c *Client, h History, key, system, prompt str
 	}
 	return text, sessionID, usage, nil
 }
+
+// Pick asks the model which of the choices fits the prompt and returns that
+// one. The model is told to answer with a choice and nothing else; a reply
+// that still wraps it in other words counts when it names exactly one of
+// them. The second result is the reply as it came.
+func Pick(ctx context.Context, c *Client, system, prompt string, choices []string) (choice, reply string, usage Usage, err error) {
+	if len(choices) < 2 {
+		return "", "", Usage{}, errors.New("至少要有两个选项")
+	}
+	rule := "你在做一次分类判断。只能从下面的选项里选一个，原样输出这个选项本身，不要解释，不要加标点或其他任何文字。\n选项：\n"
+	for _, ch := range choices {
+		rule += "- " + ch + "\n"
+	}
+	if system != "" {
+		rule = system + "\n\n" + rule
+	}
+	reply, usage, err = c.Chat(ctx, []Message{{Role: "system", Content: rule}, {Role: "user", Content: prompt}})
+	if err != nil {
+		return "", "", usage, err
+	}
+	choice, ok := Match(reply, choices)
+	if !ok {
+		short := strings.TrimSpace(reply)
+		if r := []rune(short); len(r) > 120 {
+			short = string(r[:120]) + "…"
+		}
+		return "", reply, usage, fmt.Errorf("模型的回答不在选项里：%s", short)
+	}
+	return choice, reply, usage, nil
+}
+
+// Match finds the choice a reply stands for: the reply itself, give or take
+// case, quotes and punctuation around it, or else the only choice it names.
+func Match(reply string, choices []string) (string, bool) {
+	trim := func(s string) string {
+		return strings.ToLower(strings.Trim(strings.TrimSpace(s), " \t\r\n\"'`*.。,，:：!！「」“”‘’()（）[]【】-"))
+	}
+	got := trim(reply)
+	for _, ch := range choices {
+		if trim(ch) == got {
+			return ch, true
+		}
+	}
+	// A choice that is part of another ("no" in "not sure") only counts
+	// where the longer one does not: take the longest of those named.
+	found, n := "", 0
+	for _, ch := range choices {
+		if t := trim(ch); t != "" && strings.Contains(got, t) {
+			switch {
+			case found == "" || strings.Contains(t, trim(found)):
+				found, n = ch, 1
+			case !strings.Contains(trim(found), t):
+				n++
+			}
+		}
+	}
+	return found, n == 1
+}

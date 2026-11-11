@@ -481,3 +481,120 @@ func TestTryRuleRunsUnsavedRule(t *testing.T) {
 		t.Fatalf("want no run, got %v, err %v", run, err)
 	}
 }
+
+// oracle is a plugin whose "judge" action picks the choice the event's
+// payload names under "say", and counts how often it is asked.
+type oracle struct {
+	plugin.Base
+	asked *int
+	mu    *sync.Mutex
+}
+
+func (o oracle) Invoke(_ context.Context, action string, p map[string]any, ictx plugin.InvokeContext) (map[string]any, error) {
+	if action != rules.JudgeAction {
+		return nil, plugin.ErrUnknownAction(action)
+	}
+	o.mu.Lock()
+	*o.asked++
+	o.mu.Unlock()
+	say, _ := ictx.Event.Payload["say"].(string)
+	if say == "" {
+		return map[string]any{"text": "no idea"}, nil
+	}
+	return map[string]any{"choice": say, "prompt": p["prompt"], "choices": p["choices"]}, nil
+}
+
+func TestGraphJudgedCondition(t *testing.T) {
+	e := newEngine(t)
+	var mu sync.Mutex
+	asked := 0
+	e.RegisterPlugin(plugin.Manifest{ID: "oracle", Name: "oracle", Category: "processor"},
+		func(map[string]any) (plugin.Instance, error) { return oracle{asked: &asked, mu: &mu}, nil })
+	hook, _ := e.SaveInstance(store.Instance{Plugin: "webhook", Enabled: true})
+	judge, err := e.SaveInstance(store.Instance{Plugin: "oracle", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, e, hook.ID)
+	waitRunning(t, e, judge.ID)
+	waitRunning(t, e, "shell")
+	echo := func(id, text string) rules.Node {
+		return rules.Node{Kind: rules.KindAction, Step: rules.Step{
+			ID: id, Instance: "shell", Action: "run", Params: map[string]any{"command": "echo " + text},
+		}}
+	}
+	// trigger → kind (bug / question) ─ bug → spam? ─ yes → drop
+	//                                  │             └ else → fix (told what kind said)
+	//                                  └ else → other
+	rule, err := e.SaveRule(rules.Rule{Name: "judged", Enabled: true, Graph: &rules.Graph{
+		Nodes: []rules.Node{
+			{Kind: rules.KindCondition, Choices: []string{"bug", "question"}, Step: rules.Step{
+				ID: "kind", Instance: judge.ID, Params: map[string]any{"prompt": "what is {{ payload.text }}"},
+			}},
+			{Kind: rules.KindCondition, Step: rules.Step{ID: "spam", Instance: judge.ID, Action: rules.JudgeAction}},
+			echo("drop", "dropped"), echo("fix", "{{ steps.kind.choice }}"), echo("other", "other"),
+		},
+		Edges: []rules.Edge{
+			{From: rules.TriggerNode, To: "kind"},
+			{From: "kind", To: "spam", Branch: "bug"},
+			{From: "spam", To: "drop"},
+			{From: "spam", To: "fix", Branch: rules.BranchElse},
+			{From: "kind", To: "other", Branch: rules.BranchElse},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := func(n int) store.Run {
+		t.Helper()
+		waitFor(t, "runs", func() bool {
+			runs, _ := e.Store.ListRuns(rule.ID, "", 10)
+			return len(runs) == n && runs[0].Status != "running"
+		})
+		runs, _ := e.Store.ListRuns(rule.ID, "", 10)
+		return runs[0]
+	}
+	ids := func(r store.Run) string {
+		var list []string
+		for _, s := range r.Steps {
+			list = append(list, s.ID)
+		}
+		return strings.Join(list, ",")
+	}
+	json := map[string]string{"Content-Type": "application/json"}
+
+	// The oracle says "bug" to both: that is one of kind's choices, but not
+	// a yes for spam, so the walk goes kind → spam → fix.
+	post(t, e, hook.ID, `{"say":"bug","text":"it broke"}`, json)
+	run := last(1)
+	if got := ids(run); got != "kind,spam,fix" || run.Status != "ok" {
+		t.Fatalf("bug ran %q (%s)", got, run.Status)
+	}
+	if p := run.Steps[0].Params; p["prompt"] != "what is it broke" || len(p["choices"].([]any)) != 2 {
+		t.Fatalf("kind was asked %v", p)
+	}
+	if p := run.Steps[1].Params; len(p["choices"].([]any)) != 2 || p["choices"].([]any)[0] != rules.JudgeYes {
+		t.Fatalf("spam was asked %v", p)
+	}
+	if out, _ := run.Steps[2].Output["stdout"].(string); !strings.Contains(out, "bug") {
+		t.Fatalf("fix was given %v", run.Steps[2].Output)
+	}
+	// a choice that is not listed takes the else way out
+	post(t, e, hook.ID, `{"say":"praise"}`, json)
+	if got := ids(last(2)); got != "kind,other" {
+		t.Fatalf("praise ran %q", got)
+	}
+	// no verdict at all is an error, and that branch ends there
+	post(t, e, hook.ID, `{}`, json)
+	run = last(3)
+	if got := ids(run); got != "kind" || run.Status != "error" || !strings.Contains(run.Steps[0].Error, "choice") {
+		t.Fatalf("no verdict: %q %s %+v", got, run.Status, run.Steps)
+	}
+	// each condition was asked once per event that reached it, and never
+	// while only matching
+	mu.Lock()
+	defer mu.Unlock()
+	if asked != 4 {
+		t.Fatalf("asked %d times, want 4", asked)
+	}
+}

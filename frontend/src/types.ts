@@ -68,10 +68,14 @@ export interface Step {
 // lets an event past once per window. An edge leaving a
 // condition with branch "else" is taken when the condition does not hold; one
 // whose `from` is "trigger" starts at the rule's own sources and types, in a
-// graph saved without trigger nodes.
+// graph saved without trigger nodes. A condition with `instance` set is put to
+// that instance (a model) instead of being worked out from `condition`, and
+// one with `choices` comes to one of them instead of yes or no: an edge
+// leaving it names its choice as the branch.
 export interface GraphNode extends Step {
   kind: 'trigger' | 'condition' | 'throttle' | 'action'
   condition?: string
+  choices?: string[]
   sources?: string[]
   types?: string[]
   throttle_seconds?: number

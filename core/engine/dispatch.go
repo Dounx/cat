@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -62,6 +63,9 @@ func (e *Engine) SaveRule(r rules.Rule) (rules.Rule, error) {
 		for _, n := range r.Graph.Nodes {
 			if n.Kind == rules.KindAction && (n.Instance == "" || n.Action == "") {
 				return r, fmt.Errorf("动作 %s 缺少目标或动作", n.ID)
+			}
+			if n.Kind == rules.KindCondition && n.Instance == "" && n.Action != "" {
+				return r, fmt.Errorf("条件 %s 没有选由谁来判断", n.ID)
 			}
 		}
 	}
@@ -287,6 +291,18 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 			e.saveRun(run)
 		}, func(n *rules.Node, env map[string]any) bool {
 			return replay || !e.held(r.ID, n, env, true)
+		}, func(n *rules.Node, _ map[string]any) (any, error) {
+			// Asking is real work, so the run shows from here on, and what
+			// the instance said is there for later nodes as steps.<id>.
+			recorded = true
+			res, verdict := e.judge(n, ev, r.ID, run.ID, outputs)
+			if res.Error != "" {
+				return nil, errors.New(res.Error)
+			}
+			run.Steps = append(run.Steps, res)
+			outputs[n.ID] = res.Output
+			e.saveRun(run)
+			return verdict, nil
 		})
 	} else {
 		for _, step := range r.Steps {
@@ -330,6 +346,43 @@ func (e *Engine) TryRule(r rules.Rule, eventID string) (*store.Run, error) {
 		}
 	}
 	return e.execute(c, ev, true), nil
+}
+
+// judge puts a condition node to its instance: the node's parameters and the
+// choices to pick from (yes or no when the node lists none). The instance
+// answers with the one it picked under "choice". The verdict is that choice,
+// or for a yes-or-no condition whether it was yes.
+func (e *Engine) judge(n *rules.Node, ev *event.Event, ruleID, runID string, outputs map[string]any) (store.StepResult, any) {
+	step := n.Step
+	if step.Action == "" {
+		step.Action = rules.JudgeAction
+	}
+	choices := n.Choices
+	if len(choices) == 0 {
+		choices = []string{rules.JudgeYes, rules.JudgeNo}
+	}
+	step.Params = map[string]any{}
+	for k, v := range n.Params {
+		step.Params[k] = v
+	}
+	list := make([]any, len(choices))
+	for i, c := range choices {
+		list[i] = c
+	}
+	step.Params["choices"] = list
+	res := e.runStep(step, ev, ruleID, runID, outputs)
+	if res.Error != "" {
+		return res, nil
+	}
+	choice, ok := res.Output["choice"].(string)
+	if !ok {
+		res.Error = "没有给出判断结果（输出里缺少 choice）"
+		return res, nil
+	}
+	if len(n.Choices) == 0 {
+		return res, choice == rules.JudgeYes
+	}
+	return res, choice
 }
 
 func (e *Engine) saveRun(run *store.Run) {

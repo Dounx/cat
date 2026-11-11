@@ -3,7 +3,7 @@
   "name": "大模型对话",
   "version": "0.1.0",
   "category": "processor",
-  "description": "调用任意 OpenAI 兼容接口进行纯对话（不带工具），按会话保留上下文。",
+  "description": "调用任意 OpenAI 兼容接口进行纯对话（不带工具），按会话保留上下文；也可以替规则的条件做判断。",
   "config_schema": {
     "type": "object",
     "required": [
@@ -90,6 +90,41 @@
           "new_session": {
             "type": "boolean",
             "title": "丢弃之前的对话，重新开始"
+          }
+        }
+      }
+    },
+    {
+      "name": "judge",
+      "title": "判断",
+      "description": "让模型从几个选项里选一个，不保留上下文。规则的条件节点用它来决定走哪条线。输出：choice（选中的选项）、text（模型的原话）。",
+      "params": {
+        "type": "object",
+        "required": [
+          "prompt"
+        ],
+        "x-order": [
+          "prompt",
+          "choices",
+          "system_prompt"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "title": "要判断什么",
+            "format": "textarea",
+            "default": "{{ payload.text }}",
+            "description": "把要判断的内容和判断标准写清楚，例如：这条消息是在报告故障吗？\n{{ payload.text }}"
+          },
+          "choices": {
+            "type": "string",
+            "title": "选项（可选）",
+            "description": "逗号分隔。留空就是 yes / no。"
+          },
+          "system_prompt": {
+            "type": "string",
+            "title": "附加系统提示（可选）",
+            "format": "textarea"
           }
         }
       }

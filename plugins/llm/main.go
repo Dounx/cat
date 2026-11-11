@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 
 	"github.com/dounx/cat/plugins/internal/harness"
 	"github.com/dounx/cat/plugins/internal/openaichat"
@@ -58,6 +59,30 @@ func New() cat.Plugin {
 					return nil, err
 				}
 				return map[string]any{"text": text, "session_id": sid, "usage": usage}, nil
+			},
+			// One question, one answer out of a fixed set, no memory. A rule's
+			// condition node asks this and takes the way out named by "choice".
+			"judge": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
+				if err := guard.Check(actx); err != nil {
+					return nil, err
+				}
+				prompt := harness.Str(p, "prompt")
+				if prompt == "" {
+					return nil, errors.New("提示词为空")
+				}
+				choices := harness.Choices(p)
+				if len(choices) == 0 {
+					choices = []string{"yes", "no"}
+				}
+				sys := system
+				if extra := harness.Str(p, "system_prompt"); extra != "" {
+					sys = strings.TrimSpace(sys + "\n\n" + extra)
+				}
+				choice, reply, usage, err := openaichat.Pick(ctx, client, sys, prompt, choices)
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"choice": choice, "text": reply, "usage": usage}, nil
 			},
 		},
 	}

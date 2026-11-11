@@ -8,6 +8,8 @@ export const NODE_H = 64
 // the id older graphs use for the rule's one, implicit trigger
 const IMPLICIT_TRIGGER = 'trigger'
 export const ELSE = 'else'
+// the action a condition asks of the instance that judges it
+export const JUDGE = 'judge'
 
 export interface ENode {
   id: string
@@ -28,7 +30,11 @@ export interface ENode {
   // condition
   builder: Builder
   expr: string // the expression as typed, used when the builder is switched off
-  // action
+  // put to `instance` (a model) with `params`, instead of being worked out
+  ask: boolean
+  // what the condition can come to; empty means yes or no
+  choices: string[]
+  // action, and a condition that is asked
   instance: string
   action: string
   params: Record<string, unknown>
@@ -62,10 +68,26 @@ export function blankNode(kind: ENode['kind'], id: string, x = 0, y = 0): ENode 
     key: '',
     builder: { mode: 'builder', join: 'and', rows: [] },
     expr: '',
+    ask: false,
+    choices: [],
     instance: '',
     action: '',
     params: {},
   }
+}
+
+// The choices as they are saved: trimmed, none empty, none twice.
+export const choicesOf = (n: ENode) => [...new Set(n.choices.map((c) => c.trim()).filter((c) => c && c !== ELSE))]
+// The ways out of a node: the branch an edge carries and what to call it.
+export function outcomes(n: ENode): { branch: string; label?: string }[] {
+  if (n.kind !== 'condition') return [{ branch: '' }]
+  const list = choicesOf(n)
+  if (!list.length)
+    return [
+      { branch: '', label: '是' },
+      { branch: ELSE, label: '否' },
+    ]
+  return [...list.map((c) => ({ branch: c, label: c })), { branch: ELSE, label: '其他' }]
 }
 
 // An id no node has yet: t1… for triggers, c1… for conditions, r1… for
@@ -121,6 +143,15 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
       } else if (n.kind === 'condition') {
         node.expr = n.condition || ''
         node.builder = n.meta?.builder || { mode: n.condition ? 'expr' : 'builder', join: 'and', rows: [] }
+        node.choices = [...(n.choices || [])]
+        node.ask = !!n.instance
+        if (node.ask)
+          Object.assign(node, {
+            instance: n.instance,
+            action: n.action || JUDGE,
+            params: n.params || {},
+            timeout_seconds: n.timeout_seconds,
+          })
       } else {
         Object.assign(node, {
           instance: n.instance,
@@ -194,7 +225,11 @@ export function toRule(doc: Doc, base: Rule): Rule {
     while (doc.nodes.some((n) => n.id === id)) id += '_'
     limited.set(t.id, id)
   }
-  const edges: GraphEdge[] = doc.edges.map((e) => (limited.has(e.from) ? { ...e, from: limited.get(e.from)! } : e))
+  // a wire left on a way out its condition no longer has is not kept
+  const ways = new Map(doc.nodes.map((n) => [n.id, outcomes(n).map((o) => o.branch)]))
+  const edges: GraphEdge[] = doc.edges
+    .filter((e) => ways.get(e.from)?.includes(e.branch || ''))
+    .map((e) => (limited.has(e.from) ? { ...e, from: limited.get(e.from)! } : e))
   const limits: GraphNode[] = []
   for (const [of, id] of limited) {
     const t = doc.nodes.find((n) => n.id === of)!
@@ -223,15 +258,19 @@ export function toRule(doc: Doc, base: Rule): Rule {
         throttle_key: n.key.trim(),
         meta: at,
       }
-    if (n.kind === 'condition')
+    if (n.kind === 'condition') {
+      const choices = choicesOf(n)
       return {
         id: n.id,
         kind: n.kind,
-        instance: '',
-        action: '',
-        condition: conditionOf(n),
+        instance: n.ask ? n.instance : '',
+        action: n.ask ? n.action || JUDGE : '',
+        ...(n.ask ? { params: n.params, timeout_seconds: n.timeout_seconds || undefined } : {}),
+        condition: n.ask ? '' : conditionOf(n),
+        ...(choices.length ? { choices } : {}),
         meta: { ...at, builder: n.builder },
       }
+    }
     return {
       id: n.id,
       kind: n.kind,
@@ -280,7 +319,8 @@ export function wouldLoop(doc: Doc, from: string, to: string): boolean {
   return false
 }
 
-// The action nodes that run before `id` on some path, nearest last.
+// The nodes that leave an output before `id` on some path, nearest last:
+// actions, and conditions that were put to a model.
 export function upstreamActions(doc: Doc, id: string): ENode[] {
   const seen = new Set<string>()
   const order: string[] = []
@@ -293,7 +333,9 @@ export function upstreamActions(doc: Doc, id: string): ENode[] {
     }
   }
   visit(id)
-  return order.map((x) => doc.nodes.find((n) => n.id === x)!).filter((n) => n?.kind === 'action')
+  return order
+    .map((x) => doc.nodes.find((n) => n.id === x)!)
+    .filter((n) => n?.kind === 'action' || (n?.kind === 'condition' && n.ask))
 }
 
 // Lay the graph out in columns: triggers on the left, and every other node

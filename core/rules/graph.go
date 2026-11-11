@@ -2,6 +2,7 @@ package rules
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
@@ -23,8 +24,18 @@ const (
 	// and Types) in a graph that has no trigger nodes.
 	TriggerNode = "trigger"
 	// BranchElse marks an edge leaving a condition that is taken when the
-	// condition does not hold. Other edges are taken when it does.
+	// condition does not hold, or when it comes to none of its choices. An
+	// edge with no branch is taken when a yes-or-no condition holds; one
+	// leaving a condition with choices names the choice it is taken for.
 	BranchElse = "else"
+
+	// JudgeAction is the action a condition node asks of its instance when
+	// it names none.
+	JudgeAction = "judge"
+	// JudgeYes and JudgeNo are the choices a yes-or-no condition puts to
+	// the instance that judges it.
+	JudgeYes = "yes"
+	JudgeNo  = "no"
 )
 
 // Node is one trigger, condition or action of a graph. An action node is a
@@ -32,10 +43,17 @@ const (
 // names the events that start a walk there, as a rule's Sources and Types do.
 // A throttle node lets a walk past once per ThrottleSeconds for each value of
 // ThrottleKey (an expression; empty = one window for the node).
+//
+// A condition node decides by its Condition expression or, with Instance
+// set, by asking that instance (a model, say) through Action and Params, as
+// a Step would. Either way the outcome is yes or no, or, with Choices set,
+// one of them: the expression's value, or the instance's pick, selects the
+// edges whose branch is that choice, and anything else the "else" ones.
 type Node struct {
 	Step
 	Kind      string   `json:"kind"`
 	Condition string   `json:"condition,omitempty"`
+	Choices   []string `json:"choices,omitempty"`
 	Sources   []string `json:"sources,omitempty"`
 	Types     []string `json:"types,omitempty"`
 
@@ -76,7 +94,22 @@ func compileGraph(g *Graph) (*compiledGraph, error) {
 		}
 		switch n.Kind {
 		case KindCondition:
-			p, err := CompileCondition(n.Condition)
+			for i, ch := range n.Choices {
+				if strings.TrimSpace(ch) == "" || ch == BranchElse || contains(n.Choices[:i], ch) {
+					return nil, fmt.Errorf("条件 %s 的选项无效：%q", n.ID, ch)
+				}
+			}
+			if n.Judged() {
+				break
+			}
+			// with choices the expression gives one of them, not yes or no
+			var p *vm.Program
+			var err error
+			if len(n.Choices) > 0 && strings.TrimSpace(n.Condition) != "" {
+				p, err = expr.Compile(n.Condition, compileOpts...)
+			} else {
+				p, err = CompileCondition(n.Condition)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("条件 %s: %w", n.ID, err)
 			}
@@ -106,7 +139,7 @@ func compileGraph(g *Graph) (*compiledGraph, error) {
 		if c.nodes[e.To].Kind == KindTrigger {
 			return nil, fmt.Errorf("连线不能指向触发节点：%s", e.To)
 		}
-		if e.Branch != "" && (e.Branch != BranchElse || from == nil || from.Kind != KindCondition) {
+		if !validBranch(from, e.Branch) {
 			return nil, fmt.Errorf("连线 %s → %s 的分支无效：%q", e.From, e.To, e.Branch)
 		}
 		c.next[e.From] = append(c.next[e.From], e)
@@ -139,14 +172,77 @@ func compileGraph(g *Graph) (*compiledGraph, error) {
 	return c, nil
 }
 
+// Judged reports whether a condition node is decided by asking an instance
+// rather than by an expression.
+func (n *Node) Judged() bool { return n.Kind == KindCondition && n.Instance != "" }
+
+// validBranch reports whether an edge leaving from may carry the branch:
+// none, unless from is a condition; then "else", and either no branch (yes
+// or no) or one of the condition's choices.
+func validBranch(from *Node, branch string) bool {
+	if from == nil || from.Kind != KindCondition {
+		return branch == ""
+	}
+	if branch == BranchElse {
+		return true
+	}
+	if len(from.Choices) == 0 {
+		return branch == ""
+	}
+	return contains(from.Choices, branch)
+}
+
+// Judge asks a condition node's instance for its verdict: true or false for
+// a yes-or-no condition, else the choice picked.
+type Judge func(n *Node, env map[string]any) (any, error)
+
+// decide gives the branch a walk leaves a condition by.
+func (c *compiledGraph) decide(n *Node, env map[string]any, judge Judge) (string, error) {
+	var out any = true // no expression: always holds
+	var err error
+	if n.Judged() {
+		out, err = judge(n, env)
+	} else if p := c.conds[n.ID]; p != nil {
+		out, err = expr.Run(p, env)
+	} else if len(n.Choices) > 0 {
+		return BranchElse, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if len(n.Choices) == 0 {
+		if holds, _ := out.(bool); holds {
+			return "", nil
+		}
+		return BranchElse, nil
+	}
+	if s := fmt.Sprint(out); out != nil && contains(n.Choices, s) {
+		return s, nil
+	}
+	return BranchElse, nil
+}
+
+// branches lists the branches of the edges leaving a node, each once.
+func (c *compiledGraph) branches(id string) []string {
+	var list []string
+	for _, e := range c.next[id] {
+		if !contains(list, e.Branch) {
+			list = append(list, e.Branch)
+		}
+	}
+	return list
+}
+
 // walk follows the edges leaving `from` on the given branch, depth first and
 // in order. Each node is entered at most once. act runs an action and reports
 // whether to go on past it; with act nil the walk only looks for an action
 // and stops at the first one. fail is told of a condition that cannot be
 // evaluated, and that branch ends there. gate decides whether a throttle node
-// lets the walk past; with gate nil every one does.
+// lets the walk past; with gate nil every one does. judge decides the
+// conditions that are put to an instance; with judge nil nothing is asked,
+// and the walk goes on by every way out of such a condition.
 func (c *compiledGraph) walk(from, branch string, env func() map[string]any, seen map[string]bool,
-	act func(Step) bool, fail func(id string, err error), gate Gate) (found bool) {
+	act func(Step) bool, fail func(id string, err error), gate Gate, judge Judge) (found bool) {
 	for _, e := range c.next[from] {
 		if e.Branch != branch || seen[e.To] {
 			continue
@@ -159,33 +255,35 @@ func (c *compiledGraph) walk(from, branch string, env func() map[string]any, see
 			}
 			found = true
 			if act(n.Step) {
-				c.walk(n.ID, "", env, seen, act, fail, gate)
+				c.walk(n.ID, "", env, seen, act, fail, gate, judge)
 			}
 			continue
 		}
-		holds := true
-		if n.Kind == KindThrottle {
+		next := []string{""}
+		switch {
+		case n.Kind == KindThrottle:
 			if gate != nil && !gate(n, env()) {
 				continue
 			}
-		} else if p := c.conds[n.ID]; p != nil {
-			out, err := expr.Run(p, env())
+		case n.Kind != KindCondition:
+		case n.Judged() && judge == nil:
+			next = c.branches(n.ID)
+		default:
+			b, err := c.decide(n, env(), judge)
 			if err != nil {
 				if fail != nil {
 					fail(n.ID, err)
 				}
 				continue
 			}
-			holds, _ = out.(bool)
+			next[0] = b
 		}
-		next := ""
-		if !holds {
-			next = BranchElse
-		}
-		if c.walk(n.ID, next, env, seen, act, fail, gate) {
-			found = true
-			if act == nil {
-				return true
+		for _, b := range next {
+			if c.walk(n.ID, b, env, seen, act, fail, gate, judge) {
+				found = true
+				if act == nil {
+					return true
+				}
 			}
 		}
 	}
@@ -214,7 +312,8 @@ type Gate func(n *Node, env map[string]any) bool
 
 // reaches reports whether the event gets as far as an action, judging by the
 // conditions and throttles that stand between the triggers and the first
-// actions. Nothing runs.
+// actions. Nothing runs, and no instance is asked: a condition put to one
+// counts as letting the event out by any of its ways.
 func (c *compiledGraph) reaches(ev *event.Event, gate Gate) (bool, error) {
 	env := Env(ev, nil)
 	var first error
@@ -225,7 +324,7 @@ func (c *compiledGraph) reaches(ev *event.Event, gate Gate) (bool, error) {
 				if first == nil {
 					first = fmt.Errorf("条件 %s: %w", id, err)
 				}
-			}, gate)
+			}, gate, nil)
 		if ok {
 			return true, first
 		}
@@ -236,14 +335,15 @@ func (c *compiledGraph) reaches(ev *event.Event, gate Gate) (bool, error) {
 // Walk runs a graph rule for an event. act is called for each action reached,
 // in order; it runs the step, records its output in outputs (where later
 // nodes read it as steps.<id>) and reports whether the walk may go on past
-// it. fail is called for a condition that cannot be evaluated, and gate
-// decides whether each throttle node reached lets the walk past.
-func (c *Compiled) Walk(ev *event.Event, outputs map[string]any, act func(Step) bool, fail func(id string, err error), gate Gate) {
+// it. fail is called for a condition that cannot be evaluated, gate decides
+// whether each throttle node reached lets the walk past, and judge answers
+// the conditions that are put to an instance.
+func (c *Compiled) Walk(ev *event.Event, outputs map[string]any, act func(Step) bool, fail func(id string, err error), gate Gate, judge Judge) {
 	if c.graph == nil {
 		return
 	}
 	seen := map[string]bool{}
 	for _, start := range c.graph.starts(ev) {
-		c.graph.walk(start, "", func() map[string]any { return Env(ev, outputs) }, seen, act, fail, gate)
+		c.graph.walk(start, "", func() map[string]any { return Env(ev, outputs) }, seen, act, fail, gate, judge)
 	}
 }

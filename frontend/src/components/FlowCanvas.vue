@@ -17,6 +17,8 @@ export interface CanvasNode {
   label: string
   title: string
   sub?: string
+  // the ways out of a condition, top to bottom; any other node has just one
+  outs?: { branch: string; label?: string }[]
   bad?: boolean
   // how the node fared in a trial run
   state?: 'ok' | 'bad'
@@ -47,14 +49,14 @@ const view = reactive({ x: 0, y: 0, k: 1 })
 const MIN = 0.3
 const MAX = 2
 
-// Output ports sit on a node's right edge; a condition has one for each outcome.
+// Output ports sit on a node's right edge; a condition has one for each
+// outcome, and grows taller to fit more than a few.
+const outsOf = (n: CanvasNode) => (n.outs?.length ? n.outs : [{ branch: '' }])
+const heightOf = (n: CanvasNode) => Math.max(H, outsOf(n).length * 20 + 16)
 function ports(n: CanvasNode): { branch: string; y: number; label?: string }[] {
-  return n.kind === 'condition'
-    ? [
-        { branch: '', y: 20, label: '是' },
-        { branch: ELSE, y: H - 20, label: '否' },
-      ]
-    : [{ branch: '', y: H / 2 }]
+  const outs = outsOf(n)
+  const gap = outs.length === 2 ? 24 : 20
+  return outs.map((o, i) => ({ ...o, y: heightOf(n) / 2 + (i - (outs.length - 1) / 2) * gap }))
 }
 const byId = computed(() => new Map(props.nodes.map((n) => [n.id, n])))
 
@@ -71,7 +73,7 @@ const wires = computed(() =>
     return [
       {
         key: edgeKey(e),
-        d: curve({ x: from.x + W, y: from.y + port.y }, { x: to.x - 2, y: to.y + H / 2 }),
+        d: curve({ x: from.x + W, y: from.y + port.y }, { x: to.x - 2, y: to.y + heightOf(to) / 2 }),
         no: e.branch === ELSE,
       },
     ]
@@ -196,7 +198,7 @@ function fit() {
   const x0 = Math.min(...props.nodes.map((n) => n.x))
   const y0 = Math.min(...props.nodes.map((n) => n.y))
   const x1 = Math.max(...props.nodes.map((n) => n.x + W))
-  const y1 = Math.max(...props.nodes.map((n) => n.y + H))
+  const y1 = Math.max(...props.nodes.map((n) => n.y + heightOf(n)))
   const k = Math.min(1, Math.max(MIN, Math.min((w - pad * 2) / (x1 - x0), (h - pad * 2) / (y1 - y0))))
   view.k = k
   view.x = (w - (x1 - x0) * k) / 2 - x0 * k
@@ -223,7 +225,8 @@ watch(
     const y0 = n.y * view.k + view.y
     if (x0 + W * view.k > right) view.x -= x0 + W * view.k - right
     else if (x0 < gap) view.x += gap - x0
-    if (y0 + H * view.k > el.clientHeight - gap) view.y -= y0 + H * view.k - (el.clientHeight - gap)
+    const h = heightOf(n) * view.k
+    if (y0 + h > el.clientHeight - gap) view.y -= y0 + h - (el.clientHeight - gap)
     else if (y0 < gap) view.y += gap - y0
   },
   { flush: 'post' },
@@ -272,9 +275,9 @@ defineExpose({ fit, zoom, center })
         v-for="n in nodes"
         :key="n.id"
         class="node"
-        :class="{ on: selected === n.id, bad: n.bad, drag: dragging === n.id }"
+        :class="{ on: selected === n.id, bad: n.bad, drag: dragging === n.id, named: !!n.outs?.[0]?.branch }"
         :data-node="n.kind === 'trigger' ? undefined : n.id"
-        :style="{ left: n.x + 'px', top: n.y + 'px', width: W + 'px', height: H + 'px' }"
+        :style="{ left: n.x + 'px', top: n.y + 'px', width: W + 'px', height: heightOf(n) + 'px' }"
         :title="n.title"
         @pointerdown.stop="downNode($event, n)"
         @contextmenu.prevent.stop="emit('menu', { node: n.id }, point($event), $event)"
@@ -283,18 +286,23 @@ defineExpose({ fit, zoom, center })
         <span v-if="n.state" class="ran" :class="n.state" />
         <span class="glyph" :class="n.kind"><component :is="n.icon" :size="15" /></span>
         <span class="min-w-0 flex-1">
-          <span class="block text-[10.5px] leading-tight text-mute">{{ n.label }}</span>
+          <span class="block truncate text-[10.5px] leading-tight text-mute">{{ n.label }}</span>
           <span class="block truncate text-[13px] leading-snug font-medium">{{ n.title }}</span>
           <span v-if="n.sub" class="block truncate text-[11px] leading-tight text-mute">{{ n.sub }}</span>
         </span>
         <template v-for="p in ports(n)" :key="p.branch">
-          <span v-if="p.label" class="outcome" :class="{ no: p.branch }" :style="{ top: p.y + 'px' }">{{
-            p.label
-          }}</span>
+          <span
+            v-if="p.label"
+            class="outcome"
+            :class="{ no: p.branch === ELSE }"
+            :style="{ top: p.y + 'px' }"
+            :title="p.label"
+            >{{ p.label }}</span
+          >
           <button
             type="button"
             class="port"
-            :class="{ no: p.branch }"
+            :class="{ no: p.branch === ELSE }"
             :style="{ top: p.y + 'px' }"
             title="拖到另一个节点上连线，或点一下添加下一步"
             aria-label="添加下一步"
@@ -478,6 +486,16 @@ defineExpose({ fit, zoom, center })
   color: var(--color-ok);
   transform: translateY(-50%);
   pointer-events: none;
+}
+/* A condition with named choices keeps its right side for their names. */
+.node.named {
+  padding-right: 76px;
+}
+.node.named .outcome {
+  max-width: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .outcome.no {
   color: var(--color-mute);

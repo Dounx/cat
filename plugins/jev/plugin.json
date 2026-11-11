@@ -1,0 +1,103 @@
+{
+  "id": "jev",
+  "name": "Jev",
+  "version": "0.1.0",
+  "category": "processor",
+  "description": "TypeSafe 的 System One 模型：不生成文字，只做判断，又快又便宜。给规则的条件节点用：是或否，或者从几个选项里选一个，并给出概率。",
+  "config_schema": {
+    "type": "object",
+    "required": [
+      "api_key"
+    ],
+    "x-order": [
+      "api_key",
+      "model",
+      "base_url",
+      "allowed_actors"
+    ],
+    "properties": {
+      "api_key": {
+        "type": "string",
+        "title": "API Key",
+        "format": "password",
+        "description": "在 console.typesafe.ai 里创建。"
+      },
+      "model": {
+        "type": "string",
+        "title": "模型",
+        "default": "jev-latest"
+      },
+      "base_url": {
+        "type": "string",
+        "title": "接口地址",
+        "default": "https://api.typesafe.ai",
+        "description": "到 /v1/systemone 之前的部分，一般不用改。"
+      },
+      "allowed_actors": {
+        "type": "string",
+        "title": "允许谁来触发",
+        "x-pick": "actor",
+        "description": "只有这些人发的聊天消息能触发。留空则不限制。从最近发过消息的人里选，或直接写发送者 ID，逗号分隔。"
+      }
+    }
+  },
+  "actions": [
+    {
+      "name": "judge",
+      "title": "判断",
+      "description": "让 Jev 判断是或否，或者从几个选项里选一个。规则的条件节点用它来决定走哪条线。输出：choice（结果）；是否判断另有 probability（是的概率），选项判断另有 confidence（把握）和 probabilities（每个选项的概率）。",
+      "params": {
+        "type": "object",
+        "required": [
+          "prompt"
+        ],
+        "x-order": [
+          "prompt",
+          "state",
+          "choices",
+          "descriptions",
+          "threshold"
+        ],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "title": "要判断什么",
+            "format": "textarea",
+            "description": "一次只问一件事。是否判断写成「是」代表成立的问法，例如：这条消息是在报告故障吗？"
+          },
+          "state": {
+            "type": "string",
+            "title": "判断的内容",
+            "format": "textarea",
+            "default": "{{ payload.text }}",
+            "description": "通常填 {{ payload.text }}。留空则把整个事件交给它。"
+          },
+          "choices": {
+            "type": "string",
+            "title": "选项（可选）",
+            "description": "逗号分隔。留空就是 yes / no。"
+          },
+          "descriptions": {
+            "type": "string",
+            "title": "选项说明（可选）",
+            "format": "textarea",
+            "description": "每行一个「选项：它指什么」。选项的名字不够清楚时写上，判断会更准。"
+          },
+          "threshold": {
+            "type": "number",
+            "title": "多大把握才算「是」",
+            "default": 0.5,
+            "description": "只用于是否判断：是的概率不低于它才算是。怕误判就调高，比如 0.7；怕漏掉就调低。"
+          }
+        }
+      }
+    }
+  ],
+  "protocol": 1,
+  "command": [
+    "./cat-plugin-jev"
+  ],
+  "capabilities": [
+    "action"
+  ]
+}

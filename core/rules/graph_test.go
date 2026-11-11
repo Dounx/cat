@@ -37,7 +37,7 @@ func ran(t *testing.T, r Rule, ev *event.Event, failing ...string) []string {
 		}
 		outputs[s.ID] = map[string]any{"ok": true}
 		return true
-	}, func(id string, err error) { t.Fatalf("condition %s: %v", id, err) }, nil)
+	}, func(id string, err error) { t.Fatalf("condition %s: %v", id, err) }, nil, nil)
 	return got
 }
 
@@ -204,7 +204,7 @@ func TestGraphThrottle(t *testing.T) {
 			key, _ := Eval(n.ThrottleKey, env)
 			asked = append(asked, n.ID+":"+key.(string))
 			return open
-		})
+		}, nil)
 		want := []string{"always"}
 		if open {
 			want = []string{"limited", "always"}
@@ -227,5 +227,102 @@ func TestGraphThrottle(t *testing.T) {
 	}
 	if _, err := Compile(Rule{Graph: &Graph{Nodes: []Node{{Step: Step{ID: "x"}, Kind: KindThrottle, ThrottleKey: "a +"}}}}); err == nil {
 		t.Error("a throttle key that does not compile should be rejected")
+	}
+}
+
+func TestGraphChoices(t *testing.T) {
+	// trigger → level (an expression giving one of three) ─ high → page
+	//                                                      ├ low → log
+	//                                                      └ else → ignore
+	// trigger → kind (asked of an instance) ─ bug → fix
+	//                                        └ else → skip
+	// trigger → spam? (asked, yes or no) ─ yes → drop
+	//                                     └ else → keep
+	r := Rule{Graph: &Graph{
+		Nodes: []Node{
+			{Step: Step{ID: "level"}, Kind: KindCondition, Condition: `payload.level`, Choices: []string{"high", "low", "3"}},
+			{Step: Step{ID: "kind", Instance: "llm"}, Kind: KindCondition, Choices: []string{"bug", "question"}},
+			{Step: Step{ID: "spam", Instance: "llm"}, Kind: KindCondition},
+			action("page"), action("log"), action("three"), action("ignore"),
+			action("fix"), action("skip"), action("drop"), action("keep"),
+		},
+		Edges: []Edge{
+			{From: TriggerNode, To: "level"},
+			{From: "level", To: "page", Branch: "high"},
+			{From: "level", To: "log", Branch: "low"},
+			{From: "level", To: "three", Branch: "3"},
+			{From: "level", To: "ignore", Branch: BranchElse},
+			{From: TriggerNode, To: "kind"},
+			{From: "kind", To: "fix", Branch: "bug"},
+			{From: "kind", To: "skip", Branch: BranchElse},
+			{From: TriggerNode, To: "spam"},
+			{From: "spam", To: "drop"},
+			{From: "spam", To: "keep", Branch: BranchElse},
+		},
+	}}
+	c, err := Compile(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		level any
+		kind  any
+		spam  any
+		want  []string
+	}{
+		{"high", "bug", true, []string{"page", "fix", "drop"}},
+		// a choice with nothing wired to it leads nowhere, not to else
+		{"low", "question", false, []string{"log", "keep"}},
+		// a number is told apart by how it prints; nothing listed goes to else
+		{3, "other", false, []string{"three", "skip", "keep"}},
+		{nil, "bug", true, []string{"ignore", "fix", "drop"}},
+	}
+	for _, tc := range cases {
+		ev := &event.Event{Type: "x", Payload: map[string]any{"level": tc.level}}
+		var got []string
+		c.Walk(ev, map[string]any{}, func(s Step) bool {
+			got = append(got, s.ID)
+			return true
+		}, func(id string, err error) { t.Fatalf("condition %s: %v", id, err) }, nil,
+			func(n *Node, _ map[string]any) (any, error) {
+				if n.ID == "kind" {
+					return tc.kind, nil
+				}
+				return tc.spam, nil
+			})
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%v: ran %v, want %v", tc, got, tc.want)
+		}
+	}
+
+	// Matching asks no one: a condition put to an instance may come out any
+	// way, so the event matches as long as one of those ways leads somewhere.
+	asked := Rule{Graph: &Graph{
+		Nodes: []Node{{Step: Step{ID: "kind", Instance: "llm"}, Kind: KindCondition, Choices: []string{"bug", "question"}}, action("fix")},
+		Edges: []Edge{{From: TriggerNode, To: "kind"}, {From: "kind", To: "fix", Branch: "question"}},
+	}}
+	c, err = Compile(asked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := c.Match(&event.Event{Type: "x"}); !ok || err != nil {
+		t.Fatalf("match = %v, %v", ok, err)
+	}
+
+	for name, g := range map[string]*Graph{
+		"a branch that is not a choice": {
+			Nodes: []Node{{Step: Step{ID: "c"}, Kind: KindCondition, Condition: "type", Choices: []string{"a", "b"}}, action("x")},
+			Edges: []Edge{{From: "c", To: "x", Branch: "z"}},
+		},
+		"no branch out of a condition with choices": {
+			Nodes: []Node{{Step: Step{ID: "c"}, Kind: KindCondition, Condition: "type", Choices: []string{"a", "b"}}, action("x")},
+			Edges: []Edge{{From: "c", To: "x"}},
+		},
+		"a choice named else":   {Nodes: []Node{{Step: Step{ID: "c"}, Kind: KindCondition, Choices: []string{"a", BranchElse}}}},
+		"a choice listed twice": {Nodes: []Node{{Step: Step{ID: "c"}, Kind: KindCondition, Choices: []string{"a", "a"}}}},
+	} {
+		if _, err := Compile(Rule{Graph: g}); err == nil {
+			t.Errorf("%s should be rejected", name)
+		}
 	}
 }

@@ -95,3 +95,59 @@ func TestLLMBadKey(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestLLMJudge(t *testing.T) {
+	// answers with whatever follows "say:" in the user's text
+	var system string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []map[string]string `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		system = body.Messages[0]["content"]
+		_, say, _ := strings.Cut(body.Messages[len(body.Messages)-1]["content"], "say:")
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]string{"role": "assistant", "content": say}}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"base_url": srv.URL, "api_key": "k", "model": "m"}})
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	kinds := []any{"bug", "question", "not sure"}
+	cases := []struct {
+		say     string
+		choices any
+		want    string
+	}{
+		{"bug", kinds, "bug"},
+		{" **Question**。", kinds, "question"},
+		{"我认为是 bug，因为它崩了", kinds, "bug"},
+		{"not sure", kinds, "not sure"},
+		{"Yes.", nil, "yes"},
+		{"no", "", "no"},
+		{"乙", "甲，乙", "乙"},
+		{"bug or question", kinds, ""},
+		{"something else", kinds, ""},
+	}
+	for _, tc := range cases {
+		p := map[string]any{"prompt": "say:" + tc.say}
+		if tc.choices != nil {
+			p["choices"] = tc.choices
+		}
+		out, err := h.Invoke("judge", p, nil)
+		if tc.want == "" {
+			if err == nil {
+				t.Errorf("%q should not count as an answer, got %v", tc.say, out)
+			}
+			continue
+		}
+		if err != nil || out["choice"] != tc.want {
+			t.Errorf("%q: %v %v, want %s", tc.say, out, err, tc.want)
+		}
+	}
+	if !strings.Contains(system, "- 甲") && !strings.Contains(system, "- bug") {
+		t.Fatalf("the choices were not put to the model: %q", system)
+	}
+}
