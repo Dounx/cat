@@ -46,6 +46,9 @@ func findDsh(explicit string) (string, error) {
 
 type dshOptions struct {
 	bin, cwd, permission, key string
+	// profile lends its model setup to the run and model ("provider/model")
+	// overrides its choice; dataDir holds the patch file.
+	profile, model, dataDir string
 }
 
 type dshResult struct {
@@ -55,8 +58,12 @@ type dshResult struct {
 
 // dshArgs builds a headless invocation. The task is read from stdin ("-").
 // Approval is never asked for: nobody is there to answer.
-func dshArgs(o dshOptions, session string) []string {
-	a := []string{"headless", "--json", "--approval-policy", "never"}
+func dshArgs(o dshOptions, session, patch string) []string {
+	a := []string{"--profile", runProfile}
+	if patch != "" {
+		a = append(a, "--patch", patch)
+	}
+	a = append(a, "--json", "--approval-policy", "never")
 	if o.permission != "" {
 		a = append(a, "--permission-mode", o.permission)
 	}
@@ -96,7 +103,7 @@ func parseDsh(stdout []byte) (res dshResult, failure string) {
 			if ev.Reason.Kind == "error" {
 				failure = ev.Reason.Error.Message
 				if ev.Reason.Error.Code == "MISSING_CREDENTIAL" {
-					failure = "DeepSeek Harness 没有可用的 API Key。请在这个接入的配置里填写 API Key，或先在 DeepSeek Harness 里配置好模型"
+					failure = "它要用的模型没有可用的密钥（" + ev.Reason.Error.Message + "）。请在这个接入的配置里选一个已经配好模型的档案，或填写 DeepSeek 的 API Key"
 				}
 				if failure == "" {
 					failure = "运行出错"
@@ -112,7 +119,11 @@ func runDsh(ctx context.Context, o dshOptions, prompt, session string) (dshResul
 	if o.key != "" {
 		env = append(env, "DEEPSEEK_API_KEY="+o.key)
 	}
-	stdout, stderr, runErr := harness.RunCLI(ctx, o.bin, dshArgs(o, session), o.cwd, harness.PathEnv(env...), prompt)
+	patch, err := overlay(o.profile, o.model, o.dataDir)
+	if err != nil {
+		return dshResult{}, err
+	}
+	stdout, stderr, runErr := harness.RunCLI(ctx, o.bin, dshArgs(o, session, patch), o.cwd, harness.PathEnv(env...), prompt)
 	res, failure := parseDsh(stdout)
 	if failure != "" {
 		return res, errors.New("DeepSeek Harness：" + failure)
@@ -158,6 +169,36 @@ func claudeEnv(s settings) []string {
 		"ANTHROPIC_DEFAULT_SONNET_MODEL=" + s.model,
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL=" + s.model,
 	}
+}
+
+// apiModels lists the models the key may ask.
+func apiModels(ctx context.Context, s settings) ([]cat.Option, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", s.base+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, errors.New("无法连接 DeepSeek：" + err.Error())
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Data []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if resp.StatusCode != 200 || json.NewDecoder(resp.Body).Decode(&out) != nil {
+		return nil, errors.New("DeepSeek 没有给出模型列表")
+	}
+	opts := make([]cat.Option, len(out.Data))
+	for i, m := range out.Data {
+		opts[i] = cat.Option{Value: m.ID, Title: m.Name, Note: m.ID}
+	}
+	return opts, nil
 }
 
 // verifyKey checks the key with a free call (listing models).
@@ -206,7 +247,8 @@ func New() cat.Plugin {
 				if err != nil {
 					return err
 				}
-				dsh = dshOptions{bin: bin, cwd: cwd, permission: harness.Str(h.Config, "harness_permission"), key: s.key}
+				dsh = dshOptions{bin: bin, cwd: cwd, permission: harness.Str(h.Config, "harness_permission"), key: s.key,
+					profile: harness.Str(h.Config, "harness_profile"), dataDir: h.DataDir}
 				guard = harness.NewGuard(h.Config, false)
 			case "api":
 				client = &openaichat.Client{Base: s.base, Key: s.key, Model: s.model}
@@ -235,6 +277,36 @@ func New() cat.Plugin {
 			}
 			return nil
 		},
+		// The models an action may switch to, written the way its mode wants them.
+		Options: func(ctx context.Context, h *cat.Host, _, field string) ([]cat.Option, error) {
+			if field != "model" {
+				return nil, nil
+			}
+			if s.mode != "harness" {
+				return apiModels(ctx, s)
+			}
+			// the Harness answers with what the profile in use declares, and
+			// with DeepSeek's own models when there is a key for them
+			profile := dsh.profile
+			if profile == "" {
+				profile = runProfile
+			}
+			entries, _ := modelEntries(profile)
+			var opts []cat.Option
+			for _, m := range declaredModels(entries) {
+				opts = append(opts, cat.Option{Value: m.provider + "/" + m.id, Title: m.name, Note: m.provider + "/" + m.id})
+			}
+			if s.key != "" {
+				official, err := apiModels(ctx, s)
+				if err != nil && len(opts) == 0 {
+					return nil, err
+				}
+				for _, o := range official {
+					opts = append(opts, cat.Option{Value: "deepseek-official/" + o.Value, Title: o.Title, Note: "deepseek-official/" + o.Value})
+				}
+			}
+			return opts, nil
+		},
 		Actions: map[string]cat.ActionFunc{
 			"chat": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
 				if err := guard.Check(actx); err != nil {
@@ -247,9 +319,15 @@ func New() cat.Plugin {
 				key := harness.SessionKey(p, actx)
 				defer locks.Lock(key)()
 				extra := harness.Str(p, "system_prompt")
+				// this action's own model, when it names one
+				model := harness.Str(p, "model")
 				if s.mode == "api" {
 					sys := strings.TrimSpace(s.system + "\n\n" + extra)
-					text, sid, usage, err := openaichat.Converse(ctx, client, history, key, sys, prompt, p["new_session"] == true)
+					c := client
+					if model != "" {
+						c = &openaichat.Client{Base: s.base, Key: s.key, Model: model}
+					}
+					text, sid, usage, err := openaichat.Converse(ctx, c, history, key, sys, prompt, p["new_session"] == true)
 					if err != nil {
 						return nil, err
 					}
@@ -267,13 +345,15 @@ func New() cat.Plugin {
 					}
 					var res dshResult
 					var err error
+					o := dsh
+					o.model = model
 					if resume != "" {
-						if res, err = runDsh(ctx, dsh, prompt, resume); err != nil && ctx.Err() == nil {
+						if res, err = runDsh(ctx, o, prompt, resume); err != nil && ctx.Err() == nil {
 							h.Log("warn", "续接会话 %s 失败（%v），改为新开会话", resume, err)
-							res, err = runDsh(ctx, dsh, first, "")
+							res, err = runDsh(ctx, o, first, "")
 						}
 					} else {
-						res, err = runDsh(ctx, dsh, first, "")
+						res, err = runDsh(ctx, o, first, "")
 					}
 					if res.SessionID != "" && key != "" && err == nil {
 						_ = h.StateSet("session:"+key, res.SessionID)
@@ -281,6 +361,11 @@ func New() cat.Plugin {
 					return res, err
 				}
 				o := claude
+				if model != "" {
+					with := s
+					with.model = model
+					o.Model, o.Env = model, claudeEnv(with)
+				}
 				if extra != "" {
 					o.SystemPrompt = strings.TrimSpace(o.SystemPrompt + "\n\n" + extra)
 				}
@@ -300,7 +385,26 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 	for k, v := range s.Existing {
 		cfg[k] = v
 	}
-	_, dshErr := findDsh(harness.Str(cfg, "bin"))
+	dshBin, dshErr := findDsh(harness.Str(cfg, "bin"))
+	// Which profile's model to use: only offered when there is a choice.
+	var profiles, profileTitles []string
+	if dshErr == nil {
+		for _, p := range listProfiles() {
+			title := p.name + "（" + p.provider + " · " + p.model + "）"
+			if p.model == "" {
+				title = p.name + "（DeepSeek 官方模型，需要 API Key）"
+			}
+			profiles, profileTitles = append(profiles, p.name), append(profileTitles, title)
+		}
+	}
+	if len(profiles) > 1 && harness.Str(cfg, "harness_profile") == "" {
+		cfg["harness_profile"] = profiles[0]
+		for _, name := range profiles {
+			if name == "desktop" {
+				cfg["harness_profile"] = name
+			}
+		}
+	}
 	problem := ""
 	for {
 		mode := harness.Str(cfg, "mode")
@@ -321,18 +425,23 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 			desc = "⚠ " + problem + "\n\n" + desc
 		}
 		guardSchema := harness.GuardSchema()
+		props := map[string]any{
+			"mode":           map[string]any{"type": "string", "title": "方式", "enum": []string{"harness", "api", "claude-code"}, "x-enum-titles": []string{"本机的 DeepSeek Harness", "只调用 API（纯对话，不带工具）", "用 DeepSeek 模型驱动本机的 Claude Code"}},
+			"api_key":        map[string]any{"type": "string", "title": "API Key", "format": "password"},
+			"cwd":            map[string]any{"type": "string", "title": "工作目录（Harness / Claude Code 方式）", "description": "留空使用 Cat 为它准备的空目录。"},
+			"allowed_actors": guardSchema["allowed_actors"],
+			"allow_anyone":   guardSchema["allow_anyone"],
+		}
+		if len(profiles) > 1 {
+			props["harness_profile"] = map[string]any{"type": "string", "title": "跟哪个档案用同一个模型（Harness 方式）", "enum": profiles, "x-enum-titles": profileTitles,
+				"description": "DeepSeek Harness 的桌面端、网页端各有一份设置，这里按 " + runProfile + " 档案运行，默认不会用到你在桌面端选的模型。"}
+		}
 		out, err := s.Ask(ctx, cat.Step{
 			Kind: cat.StepForm, Title: "连接 DeepSeek", Description: desc, URL: "https://platform.deepseek.com/api_keys",
-			Values: map[string]any{"mode": mode, "cwd": cfg["cwd"], "allowed_actors": cfg["allowed_actors"]},
+			Values: map[string]any{"mode": mode, "harness_profile": cfg["harness_profile"], "cwd": cfg["cwd"], "allowed_actors": cfg["allowed_actors"]},
 			Schema: map[string]any{
-				"type": "object", "x-order": []string{"mode", "api_key", "cwd", "allowed_actors", "allow_anyone"},
-				"properties": map[string]any{
-					"mode":           map[string]any{"type": "string", "title": "方式", "enum": []string{"harness", "api", "claude-code"}, "x-enum-titles": []string{"本机的 DeepSeek Harness", "只调用 API（纯对话，不带工具）", "用 DeepSeek 模型驱动本机的 Claude Code"}},
-					"api_key":        map[string]any{"type": "string", "title": "API Key", "format": "password"},
-					"cwd":            map[string]any{"type": "string", "title": "工作目录（Harness / Claude Code 方式）", "description": "留空使用 Cat 为它准备的空目录。"},
-					"allowed_actors": guardSchema["allowed_actors"],
-					"allow_anyone":   guardSchema["allow_anyone"],
-				},
+				"type": "object", "x-order": []string{"mode", "harness_profile", "api_key", "cwd", "allowed_actors", "allow_anyone"},
+				"properties": props,
 			},
 		})
 		if err != nil {
@@ -365,9 +474,22 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 				continue
 			}
 		}
-		if _, err := harness.EnsureDir(harness.Str(cfg, "cwd"), s.DataDir); err != nil {
+		cwd, err := harness.EnsureDir(harness.Str(cfg, "cwd"), s.DataDir)
+		if err != nil {
 			problem = err.Error()
 			continue
+		}
+		// The only proof that the Harness can answer is an answer.
+		if set.mode == "harness" && set.key != "••••••••" {
+			s.Progress("正在让 DeepSeek Harness 试答一句…", -1)
+			tctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			_, err := runDsh(tctx, dshOptions{bin: dshBin, cwd: cwd, permission: harness.Str(cfg, "harness_permission"), key: set.key,
+				profile: harness.Str(cfg, "harness_profile"), dataDir: s.DataDir}, "只回复两个字：收到", "")
+			cancel()
+			if err != nil {
+				problem = err.Error()
+				continue
+			}
 		}
 		s.Show(cat.Step{Kind: cat.StepInfo, Title: "已连接 DeepSeek（" + set.mode + "）",
 			Description: "在规则里添加一个动作，目标选这个实例，动作选「对话」。"})

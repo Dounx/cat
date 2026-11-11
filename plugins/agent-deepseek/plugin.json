@@ -13,6 +13,7 @@
       "model",
       "system_prompt",
       "cwd",
+      "harness_profile",
       "harness_permission",
       "permission_mode",
       "allowed_tools",
@@ -41,8 +42,9 @@
       },
       "model": {
         "type": "string",
-        "title": "模型",
-        "default": "deepseek-flash"
+        "title": "模型（API / Claude Code 方式）",
+        "default": "deepseek-flash",
+        "description": "DeepSeek Harness 方式的模型由下面选的档案决定。"
       },
       "system_prompt": {
         "type": "string",
@@ -90,6 +92,11 @@
         "title": "命令路径（可选）",
         "description": "dsh 或 claude 的路径，留空自动查找。"
       },
+      "harness_profile": {
+        "type": "string",
+        "title": "跟哪个档案用同一个模型（仅 harness，可选）",
+        "description": "DeepSeek Harness 的档案名，如 desktop。这里按 headless 档案运行，默认不会用到你在桌面端选的模型；填了就沿用那个档案选的模型。留空或填 headless 则用 headless 自己的设置。"
+      },
       "harness_permission": {
         "type": "string",
         "title": "权限预设（仅 harness，可选）",
@@ -111,6 +118,7 @@
           "prompt",
           "session_key",
           "system_prompt",
+          "model",
           "new_session"
         ],
         "properties": {
@@ -130,6 +138,12 @@
             "type": "string",
             "title": "附加系统提示（可选）",
             "format": "textarea"
+          },
+          "model": {
+            "type": "string",
+            "title": "换一个模型（可选）",
+            "x-pick": "option",
+            "description": "只在这个动作里用另一个模型，可以从现有的模型里选。留空用接入时选的。DeepSeek Harness 方式写成 提供方/模型，如 magpie/auto/glm-5.3；另外两种方式写 DeepSeek 的模型名，如 deepseek-v4-pro。"
           },
           "new_session": {
             "type": "boolean",
