@@ -28,6 +28,9 @@ type Client struct {
 	Key   string
 	Model string
 	HTTP  *http.Client
+	// Keyless lets requests go out without a key, for an endpoint that asks
+	// for none (a gateway on this machine).
+	Keyless bool
 }
 
 type Usage struct {
@@ -37,7 +40,7 @@ type Usage struct {
 
 // Chat sends the messages and returns the assistant's reply.
 func (c *Client) Chat(ctx context.Context, msgs []Message) (string, Usage, error) {
-	if c.Key == "" {
+	if c.Key == "" && !c.Keyless {
 		return "", Usage{}, errors.New("缺少 API Key")
 	}
 	body, _ := json.Marshal(map[string]any{"model": c.Model, "messages": msgs, "stream": false})
@@ -46,7 +49,9 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, Usage, error
 		return "", Usage{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.Key)
+	if c.Key != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Key)
+	}
 	client := c.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Minute}
