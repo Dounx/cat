@@ -32,7 +32,7 @@ const categories: { id: Category; title: string; hint: string; empty: string }[]
   {
     id: 'monitor',
     title: '监控',
-    hint: '盯着外面的变化或时间，有动静、到点时触发规则',
+    hint: '盯着外面的变化，有动静时触发规则',
     empty: '还没有添加监控',
   },
   {
@@ -44,8 +44,10 @@ const categories: { id: Category; title: string; hint: string; empty: string }[]
 ]
 // The page shows what is set up; what could be added waits behind each
 // section's 添加 button, and the market behind its own tab. Singleton built-ins
-// (HTTP 请求, 运行脚本) are plain actions with nothing to set up, so they only
-// appear where they are used: in the rule editor.
+// (HTTP 请求, 运行脚本) are plain actions with nothing to set up, and the
+// monitors that are told what to watch by the rules themselves (定时触发,
+// 网页变动, 接口变动) come ready, so both only appear where they are used: in
+// the rule editor.
 const tab = ref<'instances' | 'market'>('instances')
 const picking = ref<Category | null>(null)
 const pickingGroup = computed(() => groups.value.find((g) => g.id === picking.value))
@@ -56,8 +58,10 @@ function categoryOf(i: Instance): Category {
 const groups = computed(() =>
   categories.map((c) => ({
     ...c,
-    addable: hub.plugins.filter((p) => !p.singleton && p.category === c.id),
-    configured: hub.instances.filter((i) => !hub.pluginOf(i.plugin)?.singleton && categoryOf(i) === c.id),
+    addable: hub.plugins.filter((p) => !p.singleton && !p.default_instance && p.category === c.id),
+    configured: hub.instances.filter((i) => !hub.given(i) && categoryOf(i) === c.id),
+    // what of this kind needs no connecting: said, so that it is not looked for here
+    given: hub.plugins.filter((p) => p.default_instance && p.category === c.id).map((p) => p.name),
     market: market.value.plugins.filter((p) => p.category === c.id),
   })),
 )
@@ -140,7 +144,7 @@ async function wizardToRule() {
   router.push({ path: '/rules', query: { new: '' } })
 }
 // Something is connected and nothing uses it yet: say what comes next.
-const idle = computed(() => !hub.rules.length && hub.instances.some((i) => !hub.pluginOf(i.plugin)?.singleton))
+const idle = computed(() => !hub.rules.length && hub.instances.some((i) => !hub.given(i)))
 
 function add(p: Plugin) {
   picking.value = null
@@ -207,6 +211,9 @@ async function remove(i: Instance) {
           <div class="min-w-0">
             <h2 class="text-sm font-semibold">{{ g.title }}</h2>
             <p class="truncate text-xs text-mute">{{ g.hint }}</p>
+            <p v-if="g.given.length" class="truncate text-xs text-mute">
+              {{ g.given.join('、') }}不用接入，建规则时在触发节点里直接填。
+            </p>
           </div>
           <button class="btn shrink-0" @click="picking = g.id"><Plus :size="14" />添加</button>
         </div>

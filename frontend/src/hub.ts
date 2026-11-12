@@ -22,6 +22,13 @@ export const useHub = defineStore('hub', {
     pluginOf: (s) => (id: string) => s.plugins.find((p) => p.id === id),
     instanceOf: (s) => (id: string) => s.instances.find((i) => i.id === id),
     instanceName: (s) => (id: string) => s.instances.find((i) => i.id === id)?.name || id,
+    // Whether an instance is there without anyone having set it up: a
+    // built-in action's, or the one a plugin that is told everything by the
+    // rules comes with. Such an instance is not a connection to look after.
+    given: (s) => (i: { id: string; plugin: string }) => {
+      const p = s.plugins.find((p) => p.id === i.plugin)
+      return !!p && (!!p.singleton || (!!p.default_instance && i.id === p.id))
+    },
   },
   actions: {
     async init() {

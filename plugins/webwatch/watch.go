@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/andybalholm/cascadia"
@@ -38,6 +39,13 @@ type page struct {
 	Selector string
 	sel      cascadia.Matcher // nil: the whole page
 
+	// How it is watched, as said beside it: by the rule that asks for it, or
+	// by the instance's settings.
+	ignore []*regexp.Regexp
+	rules  string       // identifies the ignore patterns the stored hashes were made with
+	key    string       // Spec and rules: the same page compared differently is watched apart
+	every  atomic.Int64 // time between checks: the shortest anyone asks for
+
 	mu      sync.Mutex // one fetch at a time: the poll loop and "check" can overlap
 	lastErr string
 }
@@ -54,16 +62,47 @@ type pageState struct {
 
 type watcher struct {
 	// the pages in the settings and those rules ask for in their triggers
-	pages    watchlist.List[*page]
-	interval time.Duration
-	ignore   []*regexp.Regexp
-	rules    string // identifies the ignore patterns the stored hashes were made with
-	client   *http.Client
+	pages  watchlist.List[*page]
+	client *http.Client
+	wake   chan struct{} // what is watched has changed
 }
 
-// parsePages turns the "pages" setting into watched pages. Each line is a URL,
-// optionally followed by a CSS selector.
-func parsePages(text string) ([]*page, error) {
+func (p *page) interval() time.Duration { return time.Duration(p.every.Load()) }
+
+// parsePages reads the pages a rule's trigger (or the instance's settings)
+// lists under "pages", with what it says beside them about how to watch.
+// Each line is a URL, optionally followed by a CSS selector.
+func parsePages(params map[string]any) ([]*page, error) {
+	str := func(k string) string { s, _ := params[k].(string); return strings.TrimSpace(s) }
+	var ignore []*regexp.Regexp
+	var patterns []string
+	for _, line := range strings.Split(str("ignore"), "\n") {
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		re, err := regexp.Compile(line)
+		if err != nil {
+			return nil, fmt.Errorf("忽略规则不是有效的正则表达式「%s」：%v", line, err)
+		}
+		ignore = append(ignore, re)
+		patterns = append(patterns, line)
+	}
+	rules := ""
+	if len(patterns) > 0 {
+		rules = hash(strings.Join(patterns, "\n"))
+	}
+	minutes := float64(defaultInterval)
+	switch v := params["interval"].(type) {
+	case float64:
+		minutes = v
+	case string:
+		if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			minutes = n
+		}
+	}
+	every := time.Duration(max(minutes, 1) * float64(time.Minute))
+
+	text := str("pages")
 	var out []*page
 	seen := map[string]bool{}
 	for _, line := range strings.Split(text, "\n") {
@@ -90,50 +129,37 @@ func parsePages(text string) ([]*page, error) {
 			continue
 		}
 		seen[p.Spec] = true
+		p.ignore, p.rules, p.key = ignore, rules, p.Spec
+		if rules != "" {
+			p.key += "\x00" + rules
+		}
+		p.every.Store(int64(every))
 		out = append(out, p)
 	}
 	return out, nil
 }
 
 func pageList() watchlist.List[*page] {
-	return watchlist.List[*page]{Field: "pages", Parse: parsePages, Key: func(p *page) string { return p.Spec }}
+	return watchlist.List[*page]{
+		Field: "pages", Parse: parsePages, Key: func(p *page) string { return p.key },
+		// Rules that want a page looked at at different paces share one watch
+		// of it, at the quickest of them.
+		Merge: func(kept *page, wanted []*page) {
+			every := wanted[0].interval()
+			for _, p := range wanted[1:] {
+				every = min(every, p.interval())
+			}
+			kept.every.Store(int64(every))
+		},
+	}
 }
 
 func newWatcher(cfg map[string]any) (*watcher, error) {
-	str := func(k string) string { s, _ := cfg[k].(string); return strings.TrimSpace(s) }
-	w := &watcher{pages: pageList(), client: &http.Client{Timeout: 30 * time.Second}}
-	if err := w.pages.Init(cfg); err != nil {
-		return nil, err
-	}
-	var patterns []string
-	for _, line := range strings.Split(str("ignore"), "\n") {
-		if line = strings.TrimSpace(line); line == "" {
-			continue
-		}
-		re, err := regexp.Compile(line)
-		if err != nil {
-			return nil, fmt.Errorf("忽略规则不是有效的正则表达式「%s」：%v", line, err)
-		}
-		w.ignore = append(w.ignore, re)
-		patterns = append(patterns, line)
-	}
-	if len(patterns) > 0 {
-		w.rules = hash(strings.Join(patterns, "\n"))
-	}
-	minutes := float64(defaultInterval)
-	switch v := cfg["interval"].(type) {
-	case float64:
-		minutes = v
-	case string:
-		if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
-			minutes = n
-		}
-	}
-	w.interval = time.Duration(max(minutes, 1) * float64(time.Minute))
-	return w, nil
+	w := &watcher{pages: pageList(), client: &http.Client{Timeout: 30 * time.Second}, wake: make(chan struct{}, 1)}
+	return w, w.pages.Init(cfg)
 }
 
-func stateKey(spec string) string { return "page:" + hash(spec) }
+func stateKey(key string) string { return "page:" + hash(key) }
 
 func hash(s string) string {
 	sum := sha1.Sum([]byte(s))
@@ -189,7 +215,7 @@ func (w *watcher) fetch(ctx context.Context, p *page, st *pageState) (*snapshot,
 	if len(body) > maxBody {
 		return nil, errors.New("网页内容过大")
 	}
-	title, lines, err := extract(body, resp.Header.Get("Content-Type"), p.sel, w.ignore)
+	title, lines, err := extract(body, resp.Header.Get("Content-Type"), p.sel, p.ignore)
 	if err != nil {
 		return nil, err
 	}
@@ -203,12 +229,12 @@ func (w *watcher) check(ctx context.Context, h *cat.Host, p *page) (changed bool
 	defer p.mu.Unlock()
 
 	var st pageState
-	raw, known := h.StateGet(stateKey(p.Spec))
+	raw, known := h.StateGet(stateKey(p.key))
 	if known && json.Unmarshal([]byte(raw), &st) != nil {
 		known = false
 	}
 	// Hashes made with other ignore patterns can't be compared: start over.
-	if known && st.Rules != w.rules {
+	if known && st.Rules != p.rules {
 		known = false
 	}
 	if !known {
@@ -235,12 +261,12 @@ func (w *watcher) check(ctx context.Context, h *cat.Host, p *page) (changed bool
 		}
 		changed = true
 	}
-	st.Hash, st.Rules, st.Title, st.Text = sum, w.rules, snap.Title, ""
+	st.Hash, st.Rules, st.Title, st.Text = sum, p.rules, snap.Title, ""
 	if len(text) <= maxKeep {
 		st.Text = text
 	}
 	if data, err := json.Marshal(st); err == nil {
-		if err := h.StateSet(stateKey(p.Spec), string(data)); err != nil {
+		if err := h.StateSet(stateKey(p.key), string(data)); err != nil {
 			h.Log("error", "%s：保存状态失败：%v", p.Spec, err)
 		}
 	}
@@ -290,7 +316,7 @@ func (w *watcher) event(p *page, snap *snapshot, old []string, haveOld bool, sum
 		Type:         "page.changed",
 		Conversation: &cat.Conversation{ID: p.Spec, Kind: "channel", Name: name},
 		Payload:      payload,
-		Triggers:     w.pages.AskedBy(p.Spec), // the rules that asked for this page take it as theirs
+		Triggers:     w.pages.AskedBy(p.key), // the rules that asked for this page take it as theirs
 	}
 }
 
@@ -360,21 +386,45 @@ func (w *watcher) round(ctx context.Context, h *cat.Host, pages []*page) result 
 	return res
 }
 
+// poll looks at each page as often as it is asked to, starting with a look
+// at once: on start, and at a page a rule has just asked for.
 func (w *watcher) poll(ctx context.Context, h *cat.Host) {
 	status := ""
-	tick := time.NewTicker(w.interval)
-	defer tick.Stop()
+	last := map[*page]time.Time{}
 	for {
 		pages := w.pages.Items()
-		res := w.round(ctx, h, pages)
+		now := time.Now()
+		var due []*page
+		seen := make(map[*page]time.Time, len(pages))
+		for _, p := range pages {
+			if t, ok := last[p]; ok && now.Sub(t) < p.interval() {
+				seen[p] = t
+				continue
+			}
+			seen[p] = now
+			due = append(due, p)
+		}
+		last = seen // pages no longer watched are forgotten
+		if len(due) > 0 {
+			w.round(ctx, h, due)
+		}
 		if ctx.Err() != nil {
 			return
 		}
 		// The instance is only "in error" when nothing works; a single broken
 		// page is reported in the log and shouldn't hide the healthy ones.
-		next := ""
-		if len(pages) > 0 && len(res.Errors) == len(pages) {
-			next = "网页全部检查失败，将继续重试：" + res.Errors[0]
+		next, failing := "", 0
+		for _, p := range pages {
+			p.mu.Lock()
+			if p.lastErr != "" {
+				if failing++; next == "" {
+					next = "网页全部检查失败，将继续重试：" + p.Spec + "：" + p.lastErr
+				}
+			}
+			p.mu.Unlock()
+		}
+		if failing < len(pages) {
+			next = ""
 		}
 		if next != status {
 			if next != "" {
@@ -384,21 +434,26 @@ func (w *watcher) poll(ctx context.Context, h *cat.Host) {
 			}
 			status = next
 		}
+		wait := time.Hour
+		for _, p := range pages {
+			wait = min(wait, time.Until(last[p].Add(p.interval())))
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick.C:
+		case <-w.wake:
+		case <-time.After(max(wait, time.Second)):
 		}
 	}
 }
 
-// New builds the plugin. What it watches is listed in the instance's settings
-// and in the trigger nodes of rules, under "pages" in both.
+// New builds the plugin. What it watches, and how, is said in the trigger
+// nodes of rules; an instance with settings of its own may list pages there
+// too, under the same names.
 func New() cat.Plugin {
 	var (
-		mu  sync.Mutex
-		w   *watcher // set once the instance has started
-		run context.Context
+		mu sync.Mutex
+		w  *watcher // set once the instance has started
 	)
 	return cat.Plugin{
 		Start: func(ctx context.Context, h *cat.Host) error {
@@ -407,13 +462,13 @@ func New() cat.Plugin {
 				return err
 			}
 			mu.Lock()
-			w, run = nw, ctx
+			w = nw
 			nw.pages.Ask(h.Triggers()) // under mu: a change of triggers comes after, not in between
 			mu.Unlock()
 			if n := len(nw.pages.Items()); n > 0 {
-				h.Log("info", "监控 %d 个网页，每 %s 检查一次", n, nw.interval)
+				h.Log("info", "监控 %d 个网页", n)
 			} else {
-				h.Log("info", "还没有要监控的网页：在规则的触发节点里选这个接入后填写")
+				h.Log("info", "还没有要监控的网页：在规则的触发节点里选「网页变动」后填写")
 			}
 			go nw.poll(ctx, h)
 			return nil
@@ -425,6 +480,9 @@ func New() cat.Plugin {
 			defer mu.Unlock()
 			if w == nil {
 				probe := pageList()
+				if probe.Init(h.Config) != nil {
+					return nil // Start says so
+				}
 				return probe.Check(list)
 			}
 			before := len(w.pages.Items())
@@ -432,8 +490,9 @@ func New() cat.Plugin {
 			if n := len(w.pages.Items()); len(added) > 0 || n != before {
 				h.Log("info", "规则要监控的网页有变化：现在监控 %d 个", n)
 			}
-			if len(added) > 0 { // don't leave a new page waiting for the next round
-				go w.round(run, h, added)
+			select { // a new page is looked at now, and a new pace is kept from now
+			case w.wake <- struct{}{}:
+			default:
 			}
 			return errs
 		},

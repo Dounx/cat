@@ -390,3 +390,44 @@ func TestRSSHubErrorPage(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+// A rule says beside its feeds how often to look and whether what is already
+// there counts as new; the instance needs no settings for it.
+func TestSettingsFromRules(t *testing.T) {
+	site := newSite(t)
+	site.set("/a.xml", rss(feedItem(1)))
+	site.set("/b.xml", rss(feedItem(1)))
+	a, b := site.URL+"/a.xml", site.URL+"/b.xml"
+	h := cattest.New(t, New(RSS), cattest.Options{})
+	if errs, err := h.SetTriggers(
+		cat.Trigger{ID: "t-quiet", Params: map[string]any{"feeds": a + "\n" + b}},
+		cat.Trigger{ID: "t-all", Params: map[string]any{"feeds": a, "emit_existing": true, "interval": float64(1)}},
+	); err != nil || len(errs) != 0 {
+		t.Fatalf("errs=%v err=%v", errs, err)
+	}
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// Only the feed someone wants the existing items of announces them.
+	if ev := h.NextEvent(); ev.Conversation.ID != a || fmt.Sprint(ev.Triggers) != "[t-quiet t-all]" {
+		t.Fatalf("event: %+v", ev)
+	}
+	if out, err := h.Invoke("check", nil, nil); err != nil || out["checked"] != float64(2) || out["new"] != float64(0) {
+		t.Fatalf("out=%v err=%v", out, err)
+	}
+
+	// The pace is the quickest anyone asks for; unsaid, it is the settings'.
+	base := map[string]any{"interval": float64(20)}
+	_, _, ways, _ := RSS.asked(base, []cat.Trigger{
+		{ID: "t1", Params: map[string]any{"feeds": a, "interval": float64(30)}},
+		{ID: "t2", Params: map[string]any{"feeds": a + "\n" + b, "interval": float64(5)}},
+		{ID: "t3", Params: map[string]any{"feeds": b}},
+	})
+	if ways[a].every != 5*time.Minute || ways[b].every != 5*time.Minute || ways[a].existing {
+		t.Fatalf("ways: %+v", ways)
+	}
+	_, _, ways, _ = RSS.asked(base, []cat.Trigger{{ID: "t3", Params: map[string]any{"feeds": b}}})
+	if ways[b].every != 20*time.Minute {
+		t.Fatalf("unsaid: %+v", ways)
+	}
+}

@@ -385,12 +385,13 @@ const choices = computed(() => {
     const p = hub.pluginOf(i.plugin)!
     const c = { key: i.id, name: i.name, icon: targetIcon(i.id), instance: i.id }
     if (p.singleton) ready.push({ ...c, about: p.description || does(p) })
+    else if (hub.given(i)) ready.push({ ...c, about: does(p), tag: kindTitle[p.category] })
     else
       connected.push({ ...c, about: (p.name !== i.name ? p.name + ' · ' : '') + does(p), tag: kindTitle[p.category] })
   }
   const order = ['processor', 'channel', 'monitor']
   const more: Choice[] = hub.plugins
-    .filter((p) => !p.singleton && p.actions?.length)
+    .filter((p) => !p.singleton && !p.default_instance && p.actions?.length)
     .sort((a, b) => order.indexOf(a.category) - order.indexOf(b.category))
     .map((p) => ({
       key: 'new:' + p.id,

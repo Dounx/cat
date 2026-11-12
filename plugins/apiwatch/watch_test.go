@@ -434,3 +434,58 @@ func TestDescribe(t *testing.T) {
 		t.Fatalf("text: %q", text)
 	}
 }
+
+// A rule says beside its APIs how to ask them; the instance needs no settings
+// for it. The same API asked differently is watched apart.
+func TestSettingsFromRules(t *testing.T) {
+	srv := newAPI(t)
+	srv.set("/q", `{"total": 1, "at": 1}`)
+	requests := func() int {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+		return len(srv.requests)
+	}
+	h := cattest.New(t, New(), cattest.Options{})
+	errs, err := h.SetTriggers(
+		cat.Trigger{ID: "t-plain", Params: map[string]any{"apis": "POST " + srv.URL + "/q"}},
+		cat.Trigger{ID: "t-auth", Params: map[string]any{
+			"apis": "POST " + srv.URL + "/q", "headers": "Authorization: Bearer abc\nX-Api-Version: 2",
+			"body": `{"q": "open"}`, "ignore": "at", "interval": float64(1),
+		}},
+		cat.Trigger{ID: "t-bad", Params: map[string]any{"apis": srv.URL + "/q", "headers": "no colon"}},
+	)
+	if err != nil || len(errs) != 1 || !strings.Contains(errs["t-bad"], "请求头格式") {
+		t.Fatalf("errs=%v err=%v", errs, err)
+	}
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); requests() < 2; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the API was not called on start")
+		}
+	}
+	check(t, h, 0)
+	var plain, auth int
+	srv.mu.Lock()
+	for _, r := range srv.requests {
+		switch {
+		case r.Header.Get("Authorization") == "" && r.Body == "":
+			plain++
+		case r.Header.Get("Authorization") == "Bearer abc" && r.Header.Get("X-Api-Version") == "2" && r.Body == `{"q": "open"}`:
+			auth++
+		default:
+			t.Errorf("request: %+v", r)
+		}
+	}
+	srv.mu.Unlock()
+	if plain != 2 || auth != 2 {
+		t.Fatalf("plain=%d auth=%d", plain, auth)
+	}
+	// Only the rule that does not ignore "at" hears of it changing.
+	srv.set("/q", `{"total": 1, "at": 2}`)
+	check(t, h, 1)
+	if ev := h.NextEvent(); strings.Join(ev.Triggers, ",") != "t-plain" {
+		t.Fatalf("event: %+v", ev)
+	}
+}

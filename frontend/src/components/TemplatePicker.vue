@@ -24,7 +24,7 @@ const fitting = (n: Need) =>
     const p = hub.pluginOf(i.plugin)
     return !!p && n.fits(p)
   })
-const connectable = (n: Need) => hub.plugins.filter((p) => !p.singleton && n.fits(p))
+const connectable = (n: Need) => hub.plugins.filter((p) => !p.singleton && !p.default_instance && n.fits(p))
 const ready = computed(() => !!picked.value?.needs.every((n) => hub.instanceOf(chosen[n.key])))
 
 function pick(t: Template) {

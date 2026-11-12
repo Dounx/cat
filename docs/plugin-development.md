@@ -75,7 +75,7 @@ cat.Plugin{
 h.Emit(cat.Event{Type: "feed.item", Triggers: []string{t.ID}, Payload: …})
 ```
 
-盯什么全由规则来说、没有必填配置的插件，可以再加上 `"default_instance": true`：Cat 会替用户建好一个实例，不用先去「接入」页添加。
+盯什么、怎么盯全由规则来说的插件，可以再加上 `"default_instance": true`：Cat 会替用户建好一个实例，用户直接在规则里用。这样的插件不出现在「接入」页，所以要用户填的东西（检查间隔、请求头……）都应该放在 `trigger_params` 里。
 
 `Triggers` 第一次被调用是在 `Start` 之前。同样的参数总是同一个 `ID`，细节见[协议文档](plugin-protocol.md#触发参数)。测试里用 `h.SetTriggers(…)` 模拟。
 

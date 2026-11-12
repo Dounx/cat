@@ -1,12 +1,13 @@
 {
   "id": "rss",
   "name": "RSS",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "protocol": 1,
-  "description": "订阅 RSS / Atom 源，有新条目时发出事件。订阅哪些源在规则的触发节点里填。定时轮询，不需要公网地址。",
+  "description": "订阅 RSS / Atom 源，有新条目时发出事件。订阅哪些源、多久看一次直接在规则的触发节点里填，不用先接入。定时轮询，不需要公网地址。",
   "command": ["./cat-plugin-rss"],
   "category": "monitor",
   "capabilities": ["source", "action"],
+  "default_instance": true,
   "config_schema": {
     "type": "object",
     "x-order": ["interval", "emit_existing", "feeds"],
@@ -21,7 +22,7 @@
         "type": "integer",
         "title": "检查间隔（分钟）",
         "default": 10,
-        "description": "最小 1 分钟。"
+        "description": "最小 1 分钟。规则里没有填间隔时用这里的。"
       },
       "emit_existing": {
         "type": "boolean",
@@ -35,13 +36,24 @@
   ],
   "trigger_params": {
     "type": "object",
-    "x-order": ["feeds"],
+    "x-order": ["feeds", "interval", "emit_existing"],
     "properties": {
       "feeds": {
         "type": "string",
         "title": "订阅源",
         "format": "textarea",
-        "description": "这条规则要订阅的 RSS / Atom 源，每行一个完整地址（https://…）。填了以后只接收这些源的新条目；留空则接收这个接入的全部条目。"
+        "description": "这条规则要订阅的 RSS / Atom 源，每行一个完整地址（https://…）。# 开头的行是注释。"
+      },
+      "interval": {
+        "type": "integer",
+        "title": "检查间隔（分钟，可选）",
+        "default": 10,
+        "description": "留空是 10 分钟，最小 1 分钟。几条规则订阅同一个源时按最短的来。"
+      },
+      "emit_existing": {
+        "type": "boolean",
+        "title": "首次订阅时把已有条目也当作新条目",
+        "description": "默认关闭：新加入的订阅源只记录现有条目，之后出现的才发事件。"
       }
     }
   },

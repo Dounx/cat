@@ -10,9 +10,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dounx/cat/plugins/internal/watchlist"
@@ -40,6 +42,15 @@ type api struct {
 	Path   string
 	path   []string // nil: the whole response
 
+	// How it is asked and compared, as said beside it: by the rule that asks
+	// for it, or by the instance's settings.
+	headers http.Header
+	body    string
+	ignore  [][]string
+	rules   string       // identifies the ignore paths the stored hashes were made with
+	key     string       // Spec and the above: the same API asked differently is watched apart
+	every   atomic.Int64 // time between checks: the shortest anyone asks for
+
 	mu      sync.Mutex // one request at a time: the poll loop and "check" can overlap
 	lastErr string
 }
@@ -55,21 +66,73 @@ type apiState struct {
 
 type watcher struct {
 	// the APIs in the settings and those rules ask for in their triggers
-	apis     watchlist.List[*api]
-	interval time.Duration
-	headers  http.Header
-	body     string
-	ignore   [][]string
-	rules    string // identifies the ignore paths the stored hashes were made with
-	client   *http.Client
+	apis   watchlist.List[*api]
+	client *http.Client
+	wake   chan struct{} // what is watched has changed
 }
 
-// parseAPIs turns the "apis" setting into watched endpoints. Each line is
-// "[METHOD] URL [field path]".
-func parseAPIs(text string) ([]*api, error) {
+func (a *api) interval() time.Duration { return time.Duration(a.every.Load()) }
+
+// parseAPIs reads the endpoints a rule's trigger (or the instance's settings)
+// lists under "apis", with what it says beside them about how to ask and
+// compare. Each line is "[METHOD] URL [field path]".
+func parseAPIs(params map[string]any) ([]*api, error) {
+	str := func(k string) string { s, _ := params[k].(string); return strings.TrimSpace(s) }
+	headers, body := http.Header{}, str("body")
+	for _, line := range strings.Split(str("headers"), "\n") {
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(line, ":")
+		if name = strings.TrimSpace(name); !ok || name == "" || strings.ContainsAny(name, " \t") {
+			return nil, fmt.Errorf("请求头格式应为「名称: 值」：%s", line)
+		}
+		headers.Set(name, strings.TrimSpace(value))
+	}
+	if auth := str("auth"); auth != "" {
+		headers.Set("Authorization", auth)
+	}
+	var ignore [][]string
+	var patterns []string
+	for _, line := range strings.Split(str("ignore"), "\n") {
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		p, err := parsePath(line, true)
+		if err != nil {
+			return nil, fmt.Errorf("忽略的字段：%v", err)
+		}
+		ignore = append(ignore, p)
+		patterns = append(patterns, strings.Join(p, "\x00"))
+	}
+	rules := ""
+	if len(patterns) > 0 {
+		rules = hash(strings.Join(patterns, "\n"))
+	}
+	// What tells two ways of asking the same API apart.
+	how := rules
+	if len(headers) > 0 || body != "" {
+		names := make([]string, 0, len(headers))
+		for name := range headers {
+			names = append(names, name+": "+headers.Get(name))
+		}
+		sort.Strings(names)
+		how = hash(rules + "\x00" + strings.Join(names, "\n") + "\x00" + body)
+	}
+	minutes := float64(defaultInterval)
+	switch v := params["interval"].(type) {
+	case float64:
+		minutes = v
+	case string:
+		if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			minutes = n
+		}
+	}
+	every := time.Duration(max(minutes, 1) * float64(time.Minute))
+
 	var out []*api
 	seen := map[string]bool{}
-	for _, line := range strings.Split(text, "\n") {
+	for _, line := range strings.Split(str("apis"), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
@@ -102,63 +165,37 @@ func parseAPIs(text string) ([]*api, error) {
 			continue
 		}
 		seen[a.Spec] = true
+		a.headers, a.body, a.ignore, a.rules, a.key = headers, body, ignore, rules, a.Spec
+		if how != "" {
+			a.key += "\x00" + how
+		}
+		a.every.Store(int64(every))
 		out = append(out, a)
 	}
 	return out, nil
 }
 
 func apiList() watchlist.List[*api] {
-	return watchlist.List[*api]{Field: "apis", Parse: parseAPIs, Key: func(a *api) string { return a.Spec }}
+	return watchlist.List[*api]{
+		Field: "apis", Parse: parseAPIs, Key: func(a *api) string { return a.key },
+		// Rules that want an API asked at different paces share one watch of
+		// it, at the quickest of them.
+		Merge: func(kept *api, wanted []*api) {
+			every := wanted[0].interval()
+			for _, a := range wanted[1:] {
+				every = min(every, a.interval())
+			}
+			kept.every.Store(int64(every))
+		},
+	}
 }
 
 func newWatcher(cfg map[string]any) (*watcher, error) {
-	str := func(k string) string { s, _ := cfg[k].(string); return strings.TrimSpace(s) }
-	w := &watcher{apis: apiList(), headers: http.Header{}, body: str("body"), client: &http.Client{Timeout: 30 * time.Second}}
-	if err := w.apis.Init(cfg); err != nil {
-		return nil, err
-	}
-	for _, line := range strings.Split(str("headers"), "\n") {
-		if line = strings.TrimSpace(line); line == "" {
-			continue
-		}
-		name, value, ok := strings.Cut(line, ":")
-		if name = strings.TrimSpace(name); !ok || name == "" || strings.ContainsAny(name, " \t") {
-			return nil, fmt.Errorf("请求头格式应为「名称: 值」：%s", line)
-		}
-		w.headers.Set(name, strings.TrimSpace(value))
-	}
-	if auth := str("auth"); auth != "" {
-		w.headers.Set("Authorization", auth)
-	}
-	var patterns []string
-	for _, line := range strings.Split(str("ignore"), "\n") {
-		if line = strings.TrimSpace(line); line == "" {
-			continue
-		}
-		p, err := parsePath(line, true)
-		if err != nil {
-			return nil, fmt.Errorf("忽略的字段：%v", err)
-		}
-		w.ignore = append(w.ignore, p)
-		patterns = append(patterns, strings.Join(p, "\x00"))
-	}
-	if len(patterns) > 0 {
-		w.rules = hash(strings.Join(patterns, "\n"))
-	}
-	minutes := float64(defaultInterval)
-	switch v := cfg["interval"].(type) {
-	case float64:
-		minutes = v
-	case string:
-		if n, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
-			minutes = n
-		}
-	}
-	w.interval = time.Duration(max(minutes, 1) * float64(time.Minute))
-	return w, nil
+	w := &watcher{apis: apiList(), client: &http.Client{Timeout: 30 * time.Second}, wake: make(chan struct{}, 1)}
+	return w, w.apis.Init(cfg)
 }
 
-func stateKey(spec string) string { return "api:" + hash(spec) }
+func stateKey(key string) string { return "api:" + hash(key) }
 
 func hash(s string) string {
 	sum := sha1.Sum([]byte(s))
@@ -169,9 +206,9 @@ func hash(s string) string {
 // error, when the server says nothing changed since st was recorded.
 func (w *watcher) fetch(ctx context.Context, a *api, st *apiState) (value any, ok bool, err error) {
 	var body io.Reader
-	sendBody := a.Method != "GET" && w.body != ""
+	sendBody := a.Method != "GET" && a.body != ""
 	if sendBody {
-		body = strings.NewReader(w.body)
+		body = strings.NewReader(a.body)
 	}
 	req, err := http.NewRequestWithContext(ctx, a.Method, a.URL, body)
 	if err != nil {
@@ -182,7 +219,7 @@ func (w *watcher) fetch(ctx context.Context, a *api, st *apiState) (value any, o
 	if sendBody {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	for name, values := range w.headers {
+	for name, values := range a.headers {
 		req.Header[name] = values
 	}
 	if a.Method == "GET" {
@@ -231,7 +268,7 @@ func (w *watcher) fetch(ctx context.Context, a *api, st *apiState) (value any, o
 	if !isJSON && a.path != nil {
 		return nil, false, errors.New("返回的不是 JSON，不能使用字段路径")
 	}
-	for _, p := range w.ignore {
+	for _, p := range a.ignore {
 		value = drop(value, p)
 	}
 	if a.path != nil {
@@ -251,12 +288,12 @@ func (w *watcher) check(ctx context.Context, h *cat.Host, a *api) (changed bool,
 	defer a.mu.Unlock()
 
 	var st apiState
-	raw, known := h.StateGet(stateKey(a.Spec))
+	raw, known := h.StateGet(stateKey(a.key))
 	if known && json.Unmarshal([]byte(raw), &st) != nil {
 		known = false
 	}
 	// Hashes made with other ignore paths can't be compared: start over.
-	if known && st.Rules != w.rules {
+	if known && st.Rules != a.rules {
 		known = false
 	}
 	if !known {
@@ -283,12 +320,12 @@ func (w *watcher) check(ctx context.Context, h *cat.Host, a *api) (changed bool,
 		}
 		changed = true
 	}
-	st.Hash, st.Rules, st.Value = sum, w.rules, ""
+	st.Hash, st.Rules, st.Value = sum, a.rules, ""
 	if len(text) <= maxKeep {
 		st.Value = text
 	}
 	if data, err := json.Marshal(st); err == nil {
-		if err := h.StateSet(stateKey(a.Spec), string(data)); err != nil {
+		if err := h.StateSet(stateKey(a.key), string(data)); err != nil {
 			h.Log("error", "%s：保存状态失败：%v", a.Name, err)
 		}
 	}
@@ -332,7 +369,7 @@ func (w *watcher) event(a *api, value, old any, haveOld bool, sum string) cat.Ev
 		Type:         "api.changed",
 		Conversation: &cat.Conversation{ID: a.Spec, Kind: "channel", Name: a.Name},
 		Payload:      payload,
-		Triggers:     w.apis.AskedBy(a.Spec), // the rules that asked for this API take it as theirs
+		Triggers:     w.apis.AskedBy(a.key), // the rules that asked for this API take it as theirs
 	}
 }
 
@@ -407,21 +444,45 @@ func (w *watcher) round(ctx context.Context, h *cat.Host, apis []*api) result {
 	return res
 }
 
+// poll asks each API as often as it is asked to, starting with a call at
+// once: on start, and to an API a rule has just asked for.
 func (w *watcher) poll(ctx context.Context, h *cat.Host) {
 	status := ""
-	tick := time.NewTicker(w.interval)
-	defer tick.Stop()
+	last := map[*api]time.Time{}
 	for {
 		apis := w.apis.Items()
-		res := w.round(ctx, h, apis)
+		now := time.Now()
+		var due []*api
+		seen := make(map[*api]time.Time, len(apis))
+		for _, a := range apis {
+			if t, ok := last[a]; ok && now.Sub(t) < a.interval() {
+				seen[a] = t
+				continue
+			}
+			seen[a] = now
+			due = append(due, a)
+		}
+		last = seen // APIs no longer watched are forgotten
+		if len(due) > 0 {
+			w.round(ctx, h, due)
+		}
 		if ctx.Err() != nil {
 			return
 		}
 		// The instance is only "in error" when nothing works; a single broken
 		// API is reported in the log and shouldn't hide the healthy ones.
-		next := ""
-		if len(apis) > 0 && len(res.Errors) == len(apis) {
-			next = "接口全部检查失败，将继续重试：" + res.Errors[0]
+		next, failing := "", 0
+		for _, a := range apis {
+			a.mu.Lock()
+			if a.lastErr != "" {
+				if failing++; next == "" {
+					next = "接口全部检查失败，将继续重试：" + a.Name + "：" + a.lastErr
+				}
+			}
+			a.mu.Unlock()
+		}
+		if failing < len(apis) {
+			next = ""
 		}
 		if next != status {
 			if next != "" {
@@ -431,21 +492,26 @@ func (w *watcher) poll(ctx context.Context, h *cat.Host) {
 			}
 			status = next
 		}
+		wait := time.Hour
+		for _, a := range apis {
+			wait = min(wait, time.Until(last[a].Add(a.interval())))
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-tick.C:
+		case <-w.wake:
+		case <-time.After(max(wait, time.Second)):
 		}
 	}
 }
 
-// New builds the plugin. What it watches is listed in the instance's settings
-// and in the trigger nodes of rules, under "apis" in both.
+// New builds the plugin. What it watches, and how, is said in the trigger
+// nodes of rules; an instance with settings of its own may list APIs there
+// too, under the same names.
 func New() cat.Plugin {
 	var (
-		mu  sync.Mutex
-		w   *watcher // set once the instance has started
-		run context.Context
+		mu sync.Mutex
+		w  *watcher // set once the instance has started
 	)
 	return cat.Plugin{
 		Start: func(ctx context.Context, h *cat.Host) error {
@@ -454,13 +520,13 @@ func New() cat.Plugin {
 				return err
 			}
 			mu.Lock()
-			w, run = nw, ctx
+			w = nw
 			nw.apis.Ask(h.Triggers()) // under mu: a change of triggers comes after, not in between
 			mu.Unlock()
 			if n := len(nw.apis.Items()); n > 0 {
-				h.Log("info", "监控 %d 个接口，每 %s 检查一次", n, nw.interval)
+				h.Log("info", "监控 %d 个接口", n)
 			} else {
-				h.Log("info", "还没有要监控的接口：在规则的触发节点里选这个接入后填写")
+				h.Log("info", "还没有要监控的接口：在规则的触发节点里选「接口变动」后填写")
 			}
 			go nw.poll(ctx, h)
 			return nil
@@ -472,6 +538,9 @@ func New() cat.Plugin {
 			defer mu.Unlock()
 			if w == nil {
 				probe := apiList()
+				if probe.Init(h.Config) != nil {
+					return nil // Start says so
+				}
 				return probe.Check(list)
 			}
 			before := len(w.apis.Items())
@@ -479,8 +548,9 @@ func New() cat.Plugin {
 			if n := len(w.apis.Items()); len(added) > 0 || n != before {
 				h.Log("info", "规则要监控的接口有变化：现在监控 %d 个", n)
 			}
-			if len(added) > 0 { // don't leave a new API waiting for the next round
-				go w.round(run, h, added)
+			select { // a new API is asked now, and a new pace is kept from now
+			case w.wake <- struct{}{}:
+			default:
 			}
 			return errs
 		},

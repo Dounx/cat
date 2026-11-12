@@ -270,22 +270,22 @@ func TestCatchUpAcrossRestart(t *testing.T) {
 	cfg := map[string]any{"schedules": "9:00 早报", "catch_up": true}
 	c := useClock(t, at(shanghai, "2026-11-09 20:00:00"))
 	h := start(t, cfg, nil)
-	saved := h.State(stateKey("9:00 早报"))
+	saved := h.State(stateKey("9:00 早报\x00Asia/Shanghai"))
 	if saved == "" {
 		t.Fatal("no state saved on first start")
 	}
 
 	c.set(at(shanghai, "2026-11-10 10:00:00"))
-	h2 := start(t, cfg, map[string]string{stateKey("9:00 早报"): saved})
+	h2 := start(t, cfg, map[string]string{stateKey("9:00 早报\x00Asia/Shanghai"): saved})
 	if ev := h2.NextEvent(); ev.Payload["scheduled"] != "2026-11-10T09:00:00+08:00" || ev.Payload["missed"] != true {
 		t.Errorf("payload = %v", ev.Payload)
 	}
 	// And only once: a third start has nothing left to make up for.
-	h3 := start(t, cfg, map[string]string{stateKey("9:00 早报"): h2.State(stateKey("9:00 早报"))})
+	h3 := start(t, cfg, map[string]string{stateKey("9:00 早报\x00Asia/Shanghai"): h2.State(stateKey("9:00 早报\x00Asia/Shanghai"))})
 	quiet(t, h3)
 
 	// Without catch-up the same restart stays silent.
-	h4 := start(t, map[string]any{"schedules": "9:00 早报"}, map[string]string{stateKey("9:00 早报"): saved})
+	h4 := start(t, map[string]any{"schedules": "9:00 早报"}, map[string]string{stateKey("9:00 早报\x00Asia/Shanghai"): saved})
 	quiet(t, h4)
 }
 
@@ -315,4 +315,37 @@ func TestFireAction(t *testing.T) {
 		t.Error("unknown schedule: want an error")
 	}
 	quiet(t, h) // firing by hand does not disturb the timetable
+}
+
+// A rule says beside its times which time zone they are in and whether a
+// missed one is made up for; the instance needs no settings for it.
+func TestSettingsFromRules(t *testing.T) {
+	c := useClock(t, at(shanghai, "2026-11-10 07:59:00"))
+	h := cattest.New(t, New(), cattest.Options{})
+	errs, err := h.SetTriggers(
+		cat.Trigger{ID: "t-sh", Params: map[string]any{"schedules": "9:00", "timezone": "Asia/Shanghai"}},
+		cat.Trigger{ID: "t-tokyo", Params: map[string]any{"schedules": "9:00", "timezone": "Asia/Tokyo", "catch_up": true}},
+		cat.Trigger{ID: "t-bad", Params: map[string]any{"schedules": "9:00", "timezone": "Mars/Base"}},
+	)
+	if err != nil || len(errs) != 1 || !strings.Contains(errs["t-bad"], "不认识的时区") {
+		t.Fatalf("errs=%v err=%v", errs, err)
+	}
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// 9:00 in Tokyo is 8:00 in Shanghai: the same line, another time.
+	c.set(at(shanghai, "2026-11-10 08:00:01"))
+	if ev := h.NextEvent(); ev.Payload["scheduled"] != "2026-11-10T09:00:00+09:00" || strings.Join(ev.Triggers, ",") != "t-tokyo" {
+		t.Fatalf("event: %v for %v", ev.Payload, ev.Triggers)
+	}
+	c.set(at(shanghai, "2026-11-10 09:00:01"))
+	if ev := h.NextEvent(); ev.Payload["scheduled"] != "2026-11-10T09:00:00+08:00" || strings.Join(ev.Triggers, ",") != "t-sh" {
+		t.Fatalf("event: %v for %v", ev.Payload, ev.Triggers)
+	}
+	// Both are slept through: only the rule that asked for it is caught up.
+	c.set(at(shanghai, "2026-11-11 12:00:00"))
+	if ev := h.NextEvent(); ev.Payload["missed"] != true || strings.Join(ev.Triggers, ",") != "t-tokyo" {
+		t.Fatalf("event: %v for %v", ev.Payload, ev.Triggers)
+	}
+	quiet(t, h)
 }

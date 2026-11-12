@@ -36,14 +36,18 @@ type entry struct {
 	Text string
 	spec spec
 
+	// How it is kept, as said beside it: by the rule that asks for it, or by
+	// the instance's settings.
+	loc     *time.Location
+	catchUp bool
+	key     string // Line and the above: the same line in another time zone is another time
+
 	cursor time.Time // the schedule has been dealt with up to here
 }
 
 type scheduler struct {
 	// the schedules in the settings and those rules ask for in their triggers
 	entries watchlist.List[*entry]
-	loc     *time.Location
-	catchUp bool
 
 	mu sync.Mutex // guards the cursors
 }
@@ -56,9 +60,21 @@ type firing struct {
 	manual bool      // asked for by the "fire" action
 }
 
-// parseSchedules turns the "schedules" setting into entries. Each line is a
-// time, optionally followed by the text to send along.
-func parseSchedules(text string, loc *time.Location) ([]*entry, error) {
+// parseSchedules reads the times a rule's trigger (or the instance's
+// settings) lists under "schedules", with what it says beside them: the time
+// zone, and whether a missed time is made up for. Each line is a time,
+// optionally followed by the text to send along.
+func parseSchedules(params map[string]any) ([]*entry, error) {
+	loc, err := location(params)
+	if err != nil {
+		return nil, err
+	}
+	catchUp, _ := params["catch_up"].(bool)
+	how := ""
+	if loc != time.Local {
+		how = "\x00" + loc.String()
+	}
+	text, _ := params["schedules"].(string)
 	var out []*entry
 	seen := map[string]bool{}
 	for _, line := range strings.Split(text, "\n") {
@@ -76,8 +92,11 @@ func parseSchedules(text string, loc *time.Location) ([]*entry, error) {
 			rest = strings.TrimLeft(rest, " \t")
 			rest = rest[strings.IndexAny(rest+" ", " \t"):]
 		}
-		e := &entry{When: strings.Join(fields[:used], " "), Text: strings.TrimSpace(rest), spec: s}
+		e := &entry{When: strings.Join(fields[:used], " "), Text: strings.TrimSpace(rest), spec: s, loc: loc, catchUp: catchUp}
 		e.Line = strings.TrimSpace(e.When + " " + e.Text)
+		if e.key = e.Line + how; catchUp {
+			e.key += "\x00catch-up"
+		}
 		if s.next(now(), loc).IsZero() {
 			return nil, fmt.Errorf("定时「%s」永远不会触发", e.When)
 		}
@@ -90,12 +109,8 @@ func parseSchedules(text string, loc *time.Location) ([]*entry, error) {
 	return out, nil
 }
 
-func entryList(loc *time.Location) watchlist.List[*entry] {
-	return watchlist.List[*entry]{
-		Field: "schedules",
-		Parse: func(text string) ([]*entry, error) { return parseSchedules(text, loc) },
-		Key:   func(e *entry) string { return e.Line },
-	}
+func entryList() watchlist.List[*entry] {
+	return watchlist.List[*entry]{Field: "schedules", Parse: parseSchedules, Key: func(e *entry) string { return e.key }}
 }
 
 // location reads the "timezone" setting; the machine's own when it is empty.
@@ -112,16 +127,20 @@ func location(cfg map[string]any) (*time.Location, error) {
 }
 
 func newScheduler(cfg map[string]any) (*scheduler, error) {
-	loc, err := location(cfg)
-	if err != nil {
-		return nil, err
-	}
-	s := &scheduler{loc: loc, entries: entryList(loc)}
-	s.catchUp, _ = cfg["catch_up"].(bool)
+	s := &scheduler{entries: entryList()}
 	return s, s.entries.Init(cfg)
 }
 
 func stateKey(line string) string { return "last:" + hash(line) }
+
+// state is where an entry's cursor is kept: under its line, and its time
+// zone when it has one of its own.
+func (e *entry) state() string {
+	if e.loc != time.Local {
+		return stateKey(e.Line + "\x00" + e.loc.String())
+	}
+	return stateKey(e.Line)
+}
 
 func hash(s string) string {
 	sum := sha1.Sum([]byte(s))
@@ -139,10 +158,10 @@ func (s *scheduler) resume(h *cat.Host, entries []*entry, fresh bool) {
 	defer s.mu.Unlock()
 	for _, e := range entries {
 		e.cursor = t
-		if !s.catchUp {
+		if !e.catchUp {
 			continue
 		}
-		raw, _ := h.StateGet(stateKey(e.Line))
+		raw, _ := h.StateGet(e.state())
 		if last, err := time.Parse(time.RFC3339, raw); err == nil && last.Before(t) && !fresh {
 			e.cursor = last
 		} else {
@@ -152,7 +171,7 @@ func (s *scheduler) resume(h *cat.Host, entries []*entry, fresh bool) {
 }
 
 func (s *scheduler) save(h *cat.Host, e *entry) {
-	if err := h.StateSet(stateKey(e.Line), e.cursor.Format(time.RFC3339)); err != nil {
+	if err := h.StateSet(e.state(), e.cursor.Format(time.RFC3339)); err != nil {
 		h.Log("error", "%s：保存状态失败：%v", e.Line, err)
 	}
 }
@@ -167,13 +186,13 @@ func (s *scheduler) step(t time.Time) []firing {
 		if e.cursor.IsZero() {
 			continue // just asked for: not counting yet
 		}
-		due := e.spec.next(e.cursor, s.loc)
+		due := e.spec.next(e.cursor, e.loc)
 		if due.IsZero() || due.After(t) {
 			continue
 		}
 		// Several times may have passed: the latest one is the one that counts.
 		for range 100000 {
-			n := e.spec.next(due, s.loc)
+			n := e.spec.next(due, e.loc)
 			if n.IsZero() || n.After(t) {
 				break
 			}
@@ -194,15 +213,15 @@ func (s *scheduler) soonest() time.Time {
 		if e.cursor.IsZero() {
 			continue
 		}
-		if n := e.spec.next(e.cursor, s.loc); !n.IsZero() && (first.IsZero() || n.Before(first)) {
-			first = n
+		if n := e.spec.next(e.cursor, e.loc); !n.IsZero() && (first.IsZero() || n.Before(first)) {
+			first = n.In(e.loc)
 		}
 	}
 	return first
 }
 
 func (s *scheduler) event(f firing) cat.Event {
-	at := f.at.In(s.loc)
+	at := f.at.In(f.e.loc)
 	name := f.e.Text
 	if name == "" {
 		name = f.e.When
@@ -213,7 +232,7 @@ func (s *scheduler) event(f firing) cat.Event {
 	return cat.Event{
 		Type:         "schedule.fired",
 		Conversation: &cat.Conversation{ID: f.e.Line, Kind: "channel", Name: name},
-		Triggers:     s.entries.AskedBy(f.e.Line), // the rules that asked for this time take it as theirs
+		Triggers:     s.entries.AskedBy(f.e.key), // the rules that asked for this time take it as theirs
 		Payload: map[string]any{
 			"message_id": fmt.Sprintf("%s-%d", hash(f.e.Line), at.Unix()),
 			"text":       f.e.Text,
@@ -231,8 +250,8 @@ func (s *scheduler) event(f firing) cat.Event {
 // fire emits the event for f, or drops it when it was missed and catching up
 // is off.
 func (s *scheduler) fire(h *cat.Host, f firing) error {
-	if f.missed && !s.catchUp {
-		h.Log("info", "「%s」错过了 %s 的触发，已跳过", f.e.Line, f.at.In(s.loc).Format("01-02 15:04"))
+	if f.missed && !f.e.catchUp {
+		h.Log("info", "「%s」错过了 %s 的触发，已跳过", f.e.Line, f.at.In(f.e.loc).Format("01-02 15:04"))
 		return nil
 	}
 	if _, err := h.Emit(s.event(f)); err != nil {
@@ -240,7 +259,7 @@ func (s *scheduler) fire(h *cat.Host, f firing) error {
 		return err
 	}
 	if f.missed {
-		h.Log("info", "「%s」错过了 %s 的触发，已补发", f.e.Line, f.at.In(s.loc).Format("01-02 15:04"))
+		h.Log("info", "「%s」错过了 %s 的触发，已补发", f.e.Line, f.at.In(f.e.loc).Format("01-02 15:04"))
 	}
 	return nil
 }
@@ -250,7 +269,7 @@ func (s *scheduler) run(ctx context.Context, h *cat.Host) {
 		for _, f := range s.step(now()) {
 			// Saved first: a crash in between loses one event rather than
 			// repeating it on every start.
-			if s.catchUp {
+			if f.e.catchUp {
 				s.save(h, f.e)
 			}
 			_ = s.fire(h, f)
@@ -271,14 +290,15 @@ func (s *scheduler) run(ctx context.Context, h *cat.Host) {
 func (s *scheduler) describe(h *cat.Host) {
 	n := len(s.entries.Items())
 	if n == 0 {
-		h.Log("info", "还没有定时：在规则的触发节点里选这个接入后填写")
+		h.Log("info", "还没有定时：在规则的触发节点里选「定时触发」后填写")
 		return
 	}
-	h.Log("info", "%d 个定时，时区 %s，下一次触发：%s", n, s.loc, s.soonest().In(s.loc).Format("2006-01-02 15:04"))
+	h.Log("info", "%d 个定时，下一次触发：%s", n, s.soonest().Format("2006-01-02 15:04 MST"))
 }
 
-// New builds the plugin. When to fire is listed in the instance's settings
-// and in the trigger nodes of rules, under "schedules" in both.
+// New builds the plugin. When to fire is said in the trigger nodes of rules;
+// an instance with settings of its own may list times there too, under the
+// same names.
 func New() cat.Plugin {
 	var (
 		mu sync.Mutex
@@ -305,11 +325,10 @@ func New() cat.Plugin {
 			mu.Lock()
 			defer mu.Unlock()
 			if s == nil {
-				loc, err := location(h.Config)
-				if err != nil {
+				probe := entryList()
+				if probe.Init(h.Config) != nil {
 					return nil // Start says so
 				}
-				probe := entryList(loc)
 				return probe.Check(list)
 			}
 			before := len(s.entries.Items())

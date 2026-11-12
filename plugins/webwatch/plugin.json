@@ -1,9 +1,9 @@
 {
   "id": "webwatch",
   "name": "网页变动",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "protocol": 1,
-  "description": "定时检查网页，文字内容有变化时发出事件。可以只盯页面上的某一块。监控哪些网页在规则的触发节点里填；只负责发现变化，通知由规则交给聊天渠道发出。",
+  "description": "定时检查网页，文字内容有变化时发出事件。可以只盯页面上的某一块。监控哪些网页、多久看一次直接在规则的触发节点里填，不用先接入；只负责发现变化，通知由规则交给聊天渠道发出。",
   "command": ["./cat-plugin-webwatch"],
   "category": "monitor",
   "capabilities": ["source", "action"],
@@ -22,7 +22,7 @@
         "type": "integer",
         "title": "检查间隔（分钟）",
         "default": 10,
-        "description": "最小 1 分钟。检查太频繁可能被网站拦截。"
+        "description": "最小 1 分钟。检查太频繁可能被网站拦截。规则里没有填间隔时用这里的。"
       },
       "ignore": {
         "type": "string",
@@ -37,13 +37,25 @@
   ],
   "trigger_params": {
     "type": "object",
-    "x-order": ["pages"],
+    "x-order": ["pages", "interval", "ignore"],
     "properties": {
       "pages": {
         "type": "string",
         "title": "网页",
         "format": "textarea",
-        "description": "这条规则要监控的网页，每行一个完整地址（https://…）。只想盯页面上的某一块时，在地址后面空一格写 CSS 选择器，例如 https://example.com/pricing #price。填了以后只接收这些网页的变动；留空则接收这个接入的全部变动。"
+        "description": "这条规则要监控的网页，每行一个完整地址（https://…）。只想盯页面上的某一块时，在地址后面空一格写 CSS 选择器，例如 https://example.com/pricing #price。# 开头的行是注释。"
+      },
+      "interval": {
+        "type": "integer",
+        "title": "检查间隔（分钟，可选）",
+        "default": 10,
+        "description": "留空是 10 分钟，最小 1 分钟。检查太频繁可能被网站拦截。几条规则盯同一个网页时按最短的来。"
+      },
+      "ignore": {
+        "type": "string",
+        "title": "忽略的内容（可选）",
+        "format": "textarea",
+        "description": "每行一个正则表达式，匹配到的文字在比较前会被去掉。用来排除每次打开都不一样的部分，例如时间 \\d{2}:\\d{2}:\\d{2}、访问量 阅读 \\d+。"
       }
     }
   },

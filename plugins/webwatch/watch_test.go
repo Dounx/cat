@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -333,5 +334,86 @@ func TestDiffLines(t *testing.T) {
 	}
 	if s := section("+ ", long); !strings.HasSuffix(s, "\n… 还有 3 行") || strings.Count(s, "\n") != 10 {
 		t.Fatalf("section: %q", s)
+	}
+}
+
+// A rule says beside its pages what to leave out; the instance needs no
+// settings for it. The same page compared differently is watched apart.
+func TestSettingsFromRules(t *testing.T) {
+	site := newSite(t)
+	site.set("/p", doc(`<p>Stock: 3</p><p>阅读 120</p>`))
+	requests := func() int {
+		site.mu.Lock()
+		defer site.mu.Unlock()
+		return len(site.requests)
+	}
+	h := cattest.New(t, New(), cattest.Options{})
+	errs, err := h.SetTriggers(
+		cat.Trigger{ID: "t-all", Params: map[string]any{"pages": site.URL + "/p", "interval": float64(1)}},
+		cat.Trigger{ID: "t-stock", Params: map[string]any{"pages": site.URL + "/p", "ignore": "阅读 \\d+"}},
+		cat.Trigger{ID: "t-stock-too", Params: map[string]any{"pages": site.URL + "/p", "ignore": "阅读 \\d+", "interval": float64(30)}},
+		cat.Trigger{ID: "t-bad", Params: map[string]any{"pages": site.URL + "/p", "ignore": "("}},
+	)
+	if err != nil || len(errs) != 1 || !strings.Contains(errs["t-bad"], "忽略规则") {
+		t.Fatalf("errs=%v err=%v", errs, err)
+	}
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); requests() < 2; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the page was not looked at on start")
+		}
+	}
+	check(t, h, 0)
+	site.set("/p", doc(`<p>Stock: 3</p><p>阅读 135</p>`))
+	check(t, h, 1)
+	if ev := h.NextEvent(); strings.Join(ev.Triggers, ",") != "t-all" {
+		t.Fatalf("event: %+v", ev)
+	}
+	site.set("/p", doc(`<p>Stock: 0</p><p>阅读 135</p>`))
+	check(t, h, 2)
+	got := []string{strings.Join(h.NextEvent().Triggers, ","), strings.Join(h.NextEvent().Triggers, ",")}
+	if sort.Strings(got); strings.Join(got, " ") != "t-all t-stock,t-stock-too" {
+		t.Fatalf("triggers: %q", got)
+	}
+}
+
+// Rules that ask for a page at different paces share one watch of it, at the
+// quickest of them.
+func TestInterval(t *testing.T) {
+	list := pageList()
+	if err := list.Init(map[string]any{"interval": float64(20)}); err != nil {
+		t.Fatal(err)
+	}
+	ask := func(minutes ...any) time.Duration {
+		t.Helper()
+		var triggers []cat.Trigger
+		for i, m := range minutes {
+			params := map[string]any{"pages": "https://example.com/"}
+			if m != nil {
+				params["interval"] = m
+			}
+			triggers = append(triggers, cat.Trigger{ID: fmt.Sprint("t", i), Params: params})
+		}
+		if _, errs := list.Ask(triggers); len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		if n := len(list.Items()); n != 1 {
+			t.Fatalf("%d pages", n)
+		}
+		return list.Items()[0].interval()
+	}
+	if got := ask(float64(30), float64(5)); got != 5*time.Minute {
+		t.Fatalf("quickest: %s", got)
+	}
+	if got := ask(float64(30)); got != 30*time.Minute {
+		t.Fatalf("after the quick one left: %s", got)
+	}
+	if got := ask(nil); got != 20*time.Minute { // unsaid: as the instance's settings have it
+		t.Fatalf("unsaid: %s", got)
+	}
+	if got := ask(0.1); got != time.Minute {
+		t.Fatalf("floor: %s", got)
 	}
 }

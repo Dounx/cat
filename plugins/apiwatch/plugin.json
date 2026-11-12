@@ -1,9 +1,9 @@
 {
   "id": "apiwatch",
   "name": "接口变动",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "protocol": 1,
-  "description": "定时请求 HTTP 接口，返回的数据有变化时发出事件，并指出是哪些字段变了。可以只盯返回里的某个字段。监控哪些接口在规则的触发节点里填；只负责发现变化，通知由规则交给聊天渠道发出。",
+  "description": "定时请求 HTTP 接口，返回的数据有变化时发出事件，并指出是哪些字段变了。可以只盯返回里的某个字段。监控哪些接口、怎么请求直接在规则的触发节点里填，不用先接入；只负责发现变化，通知由规则交给聊天渠道发出。",
   "command": ["./cat-plugin-apiwatch"],
   "category": "monitor",
   "capabilities": ["source", "action"],
@@ -22,13 +22,13 @@
         "type": "integer",
         "title": "检查间隔（分钟）",
         "default": 10,
-        "description": "最小 1 分钟。请求太频繁可能被接口限流。"
+        "description": "最小 1 分钟。请求太频繁可能被接口限流。规则里没有填间隔时用这里的。"
       },
       "auth": {
         "type": "string",
         "title": "Authorization（可选）",
         "format": "password",
-        "description": "Authorization 请求头的值，例如 Bearer xxxxxx。对这里的所有接口生效；认证信息不同的接口请另建一个监控。"
+        "description": "Authorization 请求头的值，例如 Bearer xxxxxx。对这里的所有接口生效，规则里另外填了请求头的除外。"
       },
       "headers": {
         "type": "string",
@@ -55,13 +55,37 @@
   ],
   "trigger_params": {
     "type": "object",
-    "x-order": ["apis"],
+    "x-order": ["apis", "interval", "headers", "body", "ignore"],
     "properties": {
       "apis": {
         "type": "string",
         "title": "接口",
         "format": "textarea",
-        "description": "这条规则要监控的接口，每行一个完整地址（https://…）。只想盯返回里的某个字段时，在地址后面空一格写字段路径，例如 https://api.example.com/app data.version。不是 GET 请求时把方法写在最前面，例如 POST https://api.example.com/query data。填了以后只接收这些接口的变动；留空则接收这个接入的全部变动。需要认证或特殊请求头的接口，请在「接入」里另建一个接口变动，把它们填在那里。"
+        "description": "这条规则要监控的接口，每行一个完整地址（https://…）。只想盯返回里的某个字段时，在地址后面空一格写字段路径，例如 https://api.example.com/app data.version、https://api.example.com/list items[0].id。不是 GET 请求时把方法写在最前面，例如 POST https://api.example.com/query data。# 开头的行是注释。"
+      },
+      "interval": {
+        "type": "integer",
+        "title": "检查间隔（分钟，可选）",
+        "default": 10,
+        "description": "留空是 10 分钟，最小 1 分钟。请求太频繁可能被接口限流。几条规则盯同一个接口时按最短的来。"
+      },
+      "headers": {
+        "type": "string",
+        "title": "请求头（可选）",
+        "format": "textarea",
+        "description": "每行一个，格式为 名称: 值。需要认证的接口把认证信息填在这里，例如 Authorization: Bearer xxxxxx。对上面的所有接口生效；认证信息不同的接口请分到两个触发节点里。"
+      },
+      "body": {
+        "type": "string",
+        "title": "请求体（可选）",
+        "format": "textarea",
+        "description": "随 POST、PUT、PATCH、DELETE 请求发送。没有在请求头里指定 Content-Type 时按 application/json 发送。"
+      },
+      "ignore": {
+        "type": "string",
+        "title": "忽略的字段（可选）",
+        "format": "textarea",
+        "description": "每行一个字段路径，比较前会从返回里去掉。用来排除每次请求都不一样的字段，例如 timestamp、data.request_id。* 代表任意一项，例如 items[*].updated_at。"
       }
     }
   },
