@@ -96,7 +96,7 @@ type starter func(port int, key string) (*sidecar.Process, error)
 
 // prepareDocker makes sure the image is there, asking before it is pulled.
 func prepareDocker(ctx context.Context, s *cat.Setup) (starter, error) {
-	if err := sidecar.DockerReady(); err != nil {
+	if err := sidecar.DockerUp(ctx, func() { s.Progress("正在启动 Docker…", -1) }); err != nil {
 		return nil, err
 	}
 	if !sidecar.DockerImagePresent(dockerImage) {

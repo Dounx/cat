@@ -185,7 +185,7 @@ func startManaged(ctx context.Context, h *cat.Host) (*napcat, error) {
 }
 
 func startDocker(ctx context.Context, h *cat.Host) (*napcat, error) {
-	if err := sidecar.DockerReady(); err != nil {
+	if err := sidecar.DockerUp(ctx, func() { h.Log("info", "Docker 没有在运行，正在启动它…") }); err != nil {
 		return nil, err
 	}
 	if !sidecar.DockerImagePresent(dockerImage) { // e.g. the pinned version moved on

@@ -84,7 +84,7 @@ func New() cat.Plugin {
 }
 
 func runDocker(ctx context.Context, h *cat.Host, port int, key string) (*sidecar.Process, error) {
-	if err := sidecar.DockerReady(); err != nil {
+	if err := sidecar.DockerUp(ctx, func() { h.Log("info", "Docker 没有在运行，正在启动它…") }); err != nil {
 		return nil, err
 	}
 	if !sidecar.DockerImagePresent(dockerImage) { // e.g. the pinned revision moved on

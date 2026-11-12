@@ -152,7 +152,7 @@ func setupManaged(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[st
 }
 
 func setupDocker(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[string]any, error) {
-	if err := sidecar.DockerReady(); err != nil {
+	if err := sidecar.DockerUp(ctx, func() { s.Progress("正在启动 Docker…", -1) }); err != nil {
 		return nil, err
 	}
 	if !sidecar.DockerImagePresent(dockerImage) {
