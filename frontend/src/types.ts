@@ -34,6 +34,8 @@ export interface Plugin {
   // what a rule's trigger node can ask of an instance: which feeds to watch, say
   trigger_params?: Schema
   singleton?: boolean
+  // works without being set up: comes with an instance of its own
+  default_instance?: boolean
   ingress?: boolean
   setup?: boolean
   builtin: boolean

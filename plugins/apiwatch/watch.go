@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dounx/cat/plugins/internal/watchlist"
 	cat "github.com/dounx/cat/sdk/go"
 )
 
@@ -53,7 +54,8 @@ type apiState struct {
 }
 
 type watcher struct {
-	apis     []*api
+	// the APIs in the settings and those rules ask for in their triggers
+	apis     watchlist.List[*api]
 	interval time.Duration
 	headers  http.Header
 	body     string
@@ -102,19 +104,19 @@ func parseAPIs(text string) ([]*api, error) {
 		seen[a.Spec] = true
 		out = append(out, a)
 	}
-	if len(out) == 0 {
-		return nil, errors.New("还没有填要监控的接口")
-	}
 	return out, nil
+}
+
+func apiList() watchlist.List[*api] {
+	return watchlist.List[*api]{Field: "apis", Parse: parseAPIs, Key: func(a *api) string { return a.Spec }}
 }
 
 func newWatcher(cfg map[string]any) (*watcher, error) {
 	str := func(k string) string { s, _ := cfg[k].(string); return strings.TrimSpace(s) }
-	apis, err := parseAPIs(str("apis"))
-	if err != nil {
+	w := &watcher{apis: apiList(), headers: http.Header{}, body: str("body"), client: &http.Client{Timeout: 30 * time.Second}}
+	if err := w.apis.Init(cfg); err != nil {
 		return nil, err
 	}
-	w := &watcher{apis: apis, headers: http.Header{}, body: str("body"), client: &http.Client{Timeout: 30 * time.Second}}
 	for _, line := range strings.Split(str("headers"), "\n") {
 		if line = strings.TrimSpace(line); line == "" {
 			continue
@@ -330,6 +332,7 @@ func (w *watcher) event(a *api, value, old any, haveOld bool, sum string) cat.Ev
 		Type:         "api.changed",
 		Conversation: &cat.Conversation{ID: a.Spec, Kind: "channel", Name: a.Name},
 		Payload:      payload,
+		Triggers:     w.apis.AskedBy(a.Spec), // the rules that asked for this API take it as theirs
 	}
 }
 
@@ -409,14 +412,15 @@ func (w *watcher) poll(ctx context.Context, h *cat.Host) {
 	tick := time.NewTicker(w.interval)
 	defer tick.Stop()
 	for {
-		res := w.round(ctx, h, w.apis)
+		apis := w.apis.Items()
+		res := w.round(ctx, h, apis)
 		if ctx.Err() != nil {
 			return
 		}
 		// The instance is only "in error" when nothing works; a single broken
 		// API is reported in the log and shouldn't hide the healthy ones.
 		next := ""
-		if len(res.Errors) == len(w.apis) {
+		if len(apis) > 0 && len(res.Errors) == len(apis) {
 			next = "接口全部检查失败，将继续重试：" + res.Errors[0]
 		}
 		if next != status {
@@ -435,35 +439,71 @@ func (w *watcher) poll(ctx context.Context, h *cat.Host) {
 	}
 }
 
-// New builds the plugin.
+// New builds the plugin. What it watches is listed in the instance's settings
+// and in the trigger nodes of rules, under "apis" in both.
 func New() cat.Plugin {
-	var w *watcher
+	var (
+		mu  sync.Mutex
+		w   *watcher // set once the instance has started
+		run context.Context
+	)
 	return cat.Plugin{
 		Start: func(ctx context.Context, h *cat.Host) error {
-			var err error
-			if w, err = newWatcher(h.Config); err != nil {
+			nw, err := newWatcher(h.Config)
+			if err != nil {
 				return err
 			}
-			h.Log("info", "监控 %d 个接口，每 %s 检查一次", len(w.apis), w.interval)
-			go w.poll(ctx, h)
+			mu.Lock()
+			w, run = nw, ctx
+			nw.apis.Ask(h.Triggers()) // under mu: a change of triggers comes after, not in between
+			mu.Unlock()
+			if n := len(nw.apis.Items()); n > 0 {
+				h.Log("info", "监控 %d 个接口，每 %s 检查一次", n, nw.interval)
+			} else {
+				h.Log("info", "还没有要监控的接口：在规则的触发节点里选这个接入后填写")
+			}
+			go nw.poll(ctx, h)
 			return nil
+		},
+		// The rules changed what they ask for. Before the instance has started
+		// there is only the reading of it to check; Start picks up the rest.
+		Triggers: func(_ context.Context, h *cat.Host, list []cat.Trigger) map[string]string {
+			mu.Lock()
+			defer mu.Unlock()
+			if w == nil {
+				probe := apiList()
+				return probe.Check(list)
+			}
+			before := len(w.apis.Items())
+			added, errs := w.apis.Ask(list)
+			if n := len(w.apis.Items()); len(added) > 0 || n != before {
+				h.Log("info", "规则要监控的接口有变化：现在监控 %d 个", n)
+			}
+			if len(added) > 0 { // don't leave a new API waiting for the next round
+				go w.round(run, h, added)
+			}
+			return errs
 		},
 		Actions: map[string]cat.ActionFunc{
 			"check": func(ctx context.Context, h *cat.Host, p map[string]any, _ cat.ActionContext) (any, error) {
+				mu.Lock()
+				w := w
+				mu.Unlock()
 				if w == nil {
 					return nil, errors.New("实例尚未启动")
 				}
-				apis := w.apis
+				apis := w.apis.Items()
 				if want, _ := p["api"].(string); strings.TrimSpace(want) != "" {
 					want = strings.Join(strings.Fields(want), " ")
+					all := apis
 					apis = nil
-					for _, a := range w.apis {
+					for _, a := range all {
 						if a.Spec == want || a.URL == want {
 							apis = append(apis, a)
 						}
 					}
 					if apis == nil {
-						return nil, fmt.Errorf("配置里没有这个接口：%s", want)
+						return nil, fmt.Errorf("没有监控这个接口：%s", want)
 					}
 				}
 				res := w.round(ctx, h, apis)
@@ -471,7 +511,7 @@ func New() cat.Plugin {
 				if res.Errors == nil {
 					out["errors"] = []string{}
 				}
-				if len(res.Errors) == res.Checked {
+				if res.Checked > 0 && len(res.Errors) == res.Checked {
 					return out, errors.New(strings.Join(res.Errors, "；"))
 				}
 				return out, nil

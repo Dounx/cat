@@ -26,13 +26,14 @@ const notify: Need = { key: 'to', title: '发到哪里', fits: (p) => p.category
 const agent: Need = { key: 'agent', title: '交给谁处理', fits: (p) => has(p, 'chat') }
 
 const blank = (name = ''): Rule => ({ id: '', name, enabled: true, sources: [], types: [], condition: '', steps: [] })
-const trigger = (id: string, sources: string[], types: string[] = []) => ({
+const trigger = (id: string, sources: string[], types: string[] = [], params?: Record<string, unknown>) => ({
   id,
   kind: 'trigger' as const,
   instance: '',
   action: '',
   sources,
   types,
+  ...(params ? { params } : {}),
 })
 const action = (id: string, instance: string, name: string, params: Record<string, unknown>, more = {}) => ({
   id,
@@ -123,7 +124,13 @@ export const templates: Template[] = [
       ...blank(`${when.name} → ${agent.name} → ${to.name}`),
       graph: {
         nodes: [
-          trigger('t1', [when.id]),
+          // a time to start from, unless the connection has its own
+          trigger(
+            't1',
+            [when.id],
+            [],
+            String(when.config?.schedules || '').trim() ? undefined : { schedules: '9:00 在这里写要 Agent 做的事' },
+          ),
           action('agent', agent.id, 'chat', params(plugins, agent, 'chat', { prompt: '{{ payload.text }}' })),
           action('send', to.id, 'send', params(plugins, to, 'send', { text: '{{ steps.agent.text }}' })),
         ],

@@ -89,6 +89,11 @@ type Manifest struct {
 	// Singleton plugins need no configuration; one instance whose id equals
 	// the plugin id is created automatically.
 	Singleton bool `json:"singleton,omitempty"`
+	// DefaultInstance plugins work without being set up: the first time one
+	// is seen, an instance is created for it, so that rules can use it right
+	// away. Unlike a singleton's it is an instance like any other: it can be
+	// configured or deleted, and there may be more beside it.
+	DefaultInstance bool `json:"default_instance,omitempty"`
 	// Ingress plugins receive HTTP requests at /ingress/<instance id>.
 	Ingress bool `json:"ingress,omitempty"`
 	// Setup plugins offer an interactive onboarding wizard.

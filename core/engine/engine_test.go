@@ -758,3 +758,66 @@ func TestTriggerParams(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// A plugin that works without being set up comes with an instance, once.
+func TestDefaultInstance(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	clock := plugin.Manifest{ID: "clock", Name: "定时", Category: "monitor", DefaultInstance: true}
+	boot := func(seen ...plugin.Manifest) *engine.Engine {
+		e := engine.New(st, t.TempDir(), nil)
+		for _, m := range seen {
+			e.RegisterPlugin(m, func(map[string]any) (plugin.Instance, error) { return &watcher{}, nil })
+		}
+		if err := e.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	count := func(e *engine.Engine, pluginID string) (n int) {
+		for _, i := range e.Instances() {
+			if i.Plugin == pluginID {
+				n++
+			}
+		}
+		return n
+	}
+
+	e := boot(clock)
+	waitRunning(t, e, "clock")
+	if v, _ := e.Instance("clock"); v.Name != "定时" || !v.Enabled {
+		t.Fatalf("instance: %+v", v)
+	}
+	// One installed while Cat runs gets its instance then.
+	pages := plugin.Manifest{ID: "pages", Name: "网页", Category: "monitor", DefaultInstance: true}
+	e.RegisterPlugin(pages, func(map[string]any) (plugin.Instance, error) { return &watcher{}, nil })
+	waitRunning(t, e, "pages")
+	// More can be added beside it, and it can be deleted for good.
+	if _, err := e.SaveInstance(store.Instance{Plugin: "clock", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.DeleteInstance("pages"); err != nil {
+		t.Fatal(err)
+	}
+	e.Stop()
+
+	e = boot(clock, pages)
+	defer e.Stop()
+	if count(e, "clock") != 2 || count(e, "pages") != 0 {
+		t.Fatalf("after a restart: clock=%d pages=%d", count(e, "clock"), count(e, "pages"))
+	}
+	// A plugin that had instances before it came with one keeps just those.
+	feeds := plugin.Manifest{ID: "feeds", Name: "feeds", Category: "monitor"}
+	e.RegisterPlugin(feeds, func(map[string]any) (plugin.Instance, error) { return &watcher{}, nil })
+	if _, err := e.SaveInstance(store.Instance{Plugin: "feeds", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	feeds.DefaultInstance = true
+	e.RegisterPlugin(feeds, func(map[string]any) (plugin.Instance, error) { return &watcher{}, nil })
+	if count(e, "feeds") != 1 {
+		t.Fatalf("feeds=%d", count(e, "feeds"))
+	}
+}

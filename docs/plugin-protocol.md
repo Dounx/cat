@@ -48,6 +48,7 @@
   "command": ["./cat-plugin-telegram"], // 以 ./ 开头相对插件目录解析，否则走 PATH
   "category": "channel",       // "channel"（默认）、"monitor" 或 "processor"，见下
   "capabilities": ["source", "action"],
+  "default_instance": false,   // true：不用配置就能用，Cat 自动建好一个实例，见下
   "ingress": false,            // true：接收 /ingress/<实例 ID> 的 HTTP 请求
   "setup": true,               // true：提供接入向导
   "config_schema": { },        // JSON Schema，界面据此渲染配置表单
@@ -67,6 +68,8 @@
 - `processor`（界面上叫「Agent」）：收到事件后负责处理并给出结果。例如 Claude Code、大模型对话，也可以是关键词自动回复、转人工这类不涉及 AI 的实现。
 
 填其它值插件会加载失败。
+
+`default_instance` 用于不需要任何配置就能工作的插件，典型的是盯什么全由规则来说（见「触发参数」）的监控。Cat 第一次见到这样的插件时替用户建好一个实例（ID 等于插件 ID），用户不用去「接入」页添加就能在规则里用它。这个实例和其它实例没有区别：可以改配置、可以删除（删了不会再自动建），旁边也可以再添加别的。已经有实例的插件不会再多建一个。配置为空时 `start` 必须能成功，所以不要和 `setup` 或必填的配置项一起用。
 
 这几项会直接显示在规则编辑器里，请写给用户看：
 

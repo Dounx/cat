@@ -147,6 +147,13 @@ function triggerSchema(t: ENode) {
   const plugins = new Set(t.sources.map((id) => hub.instanceOf(id)?.plugin || ''))
   return plugins.size === 1 ? hub.pluginOf([...plugins][0])?.trigger_params : undefined
 }
+// The sources that are told what to watch in the trigger itself (a time, a
+// feed, a page): offered up front, since choosing one is how that gets said.
+const askable = computed(() => sourceInstances.value.filter((i) => hub.pluginOf(i.plugin)?.trigger_params))
+function listenOnly(t: ENode, id: string) {
+  narrowed.add(t.id + ':from')
+  t.sources = [id]
+}
 // What it asks for, line by line, to show on the node.
 const asked = (t: ENode) =>
   triggerSchema(t)
@@ -1050,6 +1057,14 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
           <button :class="{ on: anySource(node) }" @click="widen(node, 'from')">所有接入</button>
           <button :class="{ on: !anySource(node) }" @click="narrowed.add(node.id + ':from')">只听指定的</button>
         </div>
+        <template v-if="anySource(node) && askable.length">
+          <p class="mb-1.5 text-xs text-mute">定时、订阅和监控要先选中，才能填它什么时候触发、盯什么：</p>
+          <div class="flex flex-wrap gap-1.5">
+            <button v-for="s in askable" :key="s.id" class="btn text-xs" @click="listenOnly(node, s.id)">
+              {{ s.name }}
+            </button>
+          </div>
+        </template>
         <template v-if="!anySource(node)">
           <div v-if="sourceInstances.length" class="list">
             <label

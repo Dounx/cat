@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	cat "github.com/dounx/cat/sdk/go"
 	"github.com/dounx/cat/sdk/go/cattest"
 )
 
@@ -321,10 +322,51 @@ func TestErrors(t *testing.T) {
 	}
 }
 
+// Rules say which APIs to watch in their trigger nodes: the instance's own
+// settings may be empty, and each event names the triggers that asked.
+func TestAPIsFromRules(t *testing.T) {
+	srv := newAPI(t)
+	srv.set("/v", `{"version":"1.0"}`)
+	requests := func() int {
+		srv.mu.Lock()
+		defer srv.mu.Unlock()
+		return len(srv.requests)
+	}
+	h := cattest.New(t, New(), cattest.Options{})
+	// Cat hands the triggers over before the instance starts.
+	errs, err := h.SetTriggers(
+		cat.Trigger{ID: "t1", Params: map[string]any{"apis": srv.URL + "/v version"}},
+		cat.Trigger{ID: "t2", Params: map[string]any{"apis": "GET " + srv.URL + "/v   version"}},
+		cat.Trigger{ID: "t-bad", Params: map[string]any{"apis": "FETCH https://example.com/api"}},
+	)
+	if err != nil || len(errs) != 1 || !strings.Contains(errs["t-bad"], "不支持的请求方法") {
+		t.Fatalf("errs=%v err=%v", errs, err)
+	}
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); requests() < 1; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the API was not called on start")
+		}
+	}
+	check(t, h, 0)
+	srv.set("/v", `{"version":"1.1"}`)
+	check(t, h, 1)
+	if ev := h.NextEvent(); ev.Type != "api.changed" || strings.Join(ev.Triggers, ",") != "t1,t2" {
+		t.Fatalf("event: %+v", ev)
+	}
+	// With no rule asking there is nothing to watch, which is not a failure.
+	if _, err := h.SetTriggers(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := h.Invoke("check", nil, nil); err != nil || out["checked"] != float64(0) {
+		t.Fatalf("out=%v err=%v", out, err)
+	}
+}
+
 func TestBadConfig(t *testing.T) {
 	for _, cfg := range []map[string]any{
-		{"apis": ""},
-		{"apis": "# nothing\n"},
 		{"apis": "example.com/api"},
 		{"apis": "FETCH https://example.com/api"},
 		{"apis": "https://example.com/api data[x]"},

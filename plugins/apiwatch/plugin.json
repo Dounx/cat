@@ -1,22 +1,22 @@
 {
   "id": "apiwatch",
   "name": "接口变动",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "protocol": 1,
-  "description": "定时请求 HTTP 接口，返回的数据有变化时发出事件，并指出是哪些字段变了。可以只盯返回里的某个字段。只负责发现变化，通知由规则交给聊天渠道发出。",
+  "description": "定时请求 HTTP 接口，返回的数据有变化时发出事件，并指出是哪些字段变了。可以只盯返回里的某个字段。监控哪些接口在规则的触发节点里填；只负责发现变化，通知由规则交给聊天渠道发出。",
   "command": ["./cat-plugin-apiwatch"],
   "category": "monitor",
   "capabilities": ["source", "action"],
+  "default_instance": true,
   "config_schema": {
     "type": "object",
-    "required": ["apis"],
-    "x-order": ["apis", "interval", "auth", "headers", "body", "ignore"],
+    "x-order": ["interval", "auth", "headers", "body", "ignore", "apis"],
     "properties": {
       "apis": {
         "type": "string",
-        "title": "接口",
+        "title": "始终监控的接口（可选）",
         "format": "textarea",
-        "description": "每行一个完整地址（https://…）。只想盯返回里的某个字段时，在地址后面空一格写字段路径，例如 https://api.example.com/app data.version、https://api.example.com/list items[0].id。不是 GET 请求时把方法写在最前面，例如 POST https://api.example.com/query data。# 开头的行是注释。"
+        "description": "一般不用填：要监控的接口写在规则的触发节点里。这里填的接口不管有没有规则用到都会监控。每行一个完整地址（https://…）。只想盯返回里的某个字段时，在地址后面空一格写字段路径，例如 https://api.example.com/app data.version、https://api.example.com/list items[0].id。不是 GET 请求时把方法写在最前面，例如 POST https://api.example.com/query data。# 开头的行是注释。"
       },
       "interval": {
         "type": "integer",
@@ -53,6 +53,18 @@
   "events": [
     { "type": "api.changed", "title": "接口返回有变动" }
   ],
+  "trigger_params": {
+    "type": "object",
+    "x-order": ["apis"],
+    "properties": {
+      "apis": {
+        "type": "string",
+        "title": "接口",
+        "format": "textarea",
+        "description": "这条规则要监控的接口，每行一个完整地址（https://…）。只想盯返回里的某个字段时，在地址后面空一格写字段路径，例如 https://api.example.com/app data.version。不是 GET 请求时把方法写在最前面，例如 POST https://api.example.com/query data。填了以后只接收这些接口的变动；留空则接收这个接入的全部变动。需要认证或特殊请求头的接口，请在「接入」里另建一个接口变动，把它们填在那里。"
+      }
+    }
+  },
   "actions": [
     {
       "name": "check",
@@ -62,7 +74,7 @@
         "type": "object",
         "x-order": ["api"],
         "properties": {
-          "api": { "type": "string", "title": "接口（可选）", "description": "配置里的地址；留空检查全部。" }
+          "api": { "type": "string", "title": "接口（可选）", "description": "和填写时的写法一致；留空检查全部。" }
         }
       }
     }

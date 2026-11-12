@@ -1,22 +1,22 @@
 {
   "id": "schedule",
   "name": "定时触发",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "protocol": 1,
-  "description": "到了设定的时间就发出一个事件：每天 9 点、每隔 30 分钟，或任意 cron 表达式。配合规则定时让 Agent 干活、往群里发消息、请求接口。",
+  "description": "到了设定的时间就发出一个事件：每天 9 点、每隔 30 分钟，或任意 cron 表达式。什么时候触发在规则的触发节点里填。配合规则定时让 Agent 干活、往群里发消息、请求接口。",
   "command": ["./cat-plugin-schedule"],
   "category": "monitor",
   "capabilities": ["source", "action"],
+  "default_instance": true,
   "config_schema": {
     "type": "object",
-    "required": ["schedules"],
-    "x-order": ["schedules", "timezone", "catch_up"],
+    "x-order": ["timezone", "catch_up", "schedules"],
     "properties": {
       "schedules": {
         "type": "string",
-        "title": "定时",
+        "title": "始终生效的定时（可选）",
         "format": "textarea",
-        "description": "每行一个：先写时间，空一格后面可以跟一段内容（会成为事件的 payload.text，例如给 Agent 的提示词或要发的提醒）。时间有三种写法：9:00（每天）；@every 30m（每隔一段时间，落在整点上：30m 是每小时的 0 分和 30 分，2h 是 0 点、2 点、4 点…）；5 段 cron 表达式「分 时 日 月 周」，如 0 9 * * 1-5 是工作日 9 点。# 开头的行是注释。"
+        "description": "一般不用填：什么时候触发写在规则的触发节点里。这里填的定时不管有没有规则用到都会触发。每行一个：先写时间，空一格后面可以跟一段内容（会成为事件的 payload.text，例如给 Agent 的提示词或要发的提醒）。时间有三种写法：9:00（每天）；@every 30m（每隔一段时间，落在整点上：30m 是每小时的 0 分和 30 分，2h 是 0 点、2 点、4 点…）；5 段 cron 表达式「分 时 日 月 周」，如 0 9 * * 1-5 是工作日 9 点。# 开头的行是注释。"
       },
       "timezone": {
         "type": "string",
@@ -33,6 +33,18 @@
   "events": [
     { "type": "schedule.fired", "title": "到点了" }
   ],
+  "trigger_params": {
+    "type": "object",
+    "x-order": ["schedules"],
+    "properties": {
+      "schedules": {
+        "type": "string",
+        "title": "什么时候",
+        "format": "textarea",
+        "description": "这条规则什么时候触发，每行一个。时间有三种写法：9:00（每天）；@every 30m（每隔一段时间，落在整点上：30m 是每小时的 0 分和 30 分，2h 是 0 点、2 点、4 点…）；5 段 cron 表达式「分 时 日 月 周」，如 0 9 * * 1-5 是工作日 9 点。时间后面空一格可以跟一段内容，它会成为事件的 payload.text。填了以后只在这些时间触发；留空则接收这个接入的全部定时。"
+      }
+    }
+  },
   "actions": [
     {
       "name": "fire",
@@ -42,7 +54,7 @@
         "type": "object",
         "x-order": ["schedule"],
         "properties": {
-          "schedule": { "type": "string", "title": "定时（可选）", "description": "配置里的一整行，或只写它的时间或内容；留空触发全部。" }
+          "schedule": { "type": "string", "title": "定时（可选）", "description": "填写时的一整行，或只写它的时间或内容；留空触发全部。" }
         }
       }
     }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	cat "github.com/dounx/cat/sdk/go"
 	"github.com/dounx/cat/sdk/go/cattest"
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
@@ -249,10 +250,67 @@ func TestErrors(t *testing.T) {
 	}
 }
 
+// Rules say which pages to watch in their trigger nodes: the instance's own
+// settings may be empty, and each event names the triggers that asked.
+func TestPagesFromRules(t *testing.T) {
+	site := newSite(t)
+	site.set("/p", doc(`<p>Basic $5</p>`))
+	requests := func() int {
+		site.mu.Lock()
+		defer site.mu.Unlock()
+		return len(site.requests)
+	}
+	h := cattest.New(t, New(), cattest.Options{})
+	// Cat hands the triggers over before the instance starts.
+	errs, err := h.SetTriggers(
+		cat.Trigger{ID: "t1", Params: map[string]any{"pages": site.URL + "/p"}},
+		cat.Trigger{ID: "t2", Params: map[string]any{"pages": "# the same page\n" + site.URL + "/p"}},
+		cat.Trigger{ID: "t-bad", Params: map[string]any{"pages": "example.com/page"}},
+	)
+	if err != nil || len(errs) != 1 || !strings.Contains(errs["t-bad"], "看不懂的网页地址") {
+		t.Fatalf("errs=%v err=%v", errs, err)
+	}
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); requests() < 1; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the page was not looked at on start")
+		}
+	}
+	check(t, h, 0)
+	site.set("/p", doc(`<p>Basic $6</p>`))
+	check(t, h, 1)
+	if ev := h.NextEvent(); ev.Type != "page.changed" || strings.Join(ev.Triggers, ",") != "t1,t2" {
+		t.Fatalf("event: %+v", ev)
+	}
+
+	// A rule is added while the instance runs: its page is looked at right
+	// away. The others are gone, and so is their page.
+	site.set("/q", doc(`<p>Q</p>`))
+	before := requests()
+	if errs, err := h.SetTriggers(cat.Trigger{ID: "t3", Params: map[string]any{"pages": site.URL + "/q"}}); err != nil || len(errs) != 0 {
+		t.Fatalf("errs=%v err=%v", errs, err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); requests() <= before; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the new page was not looked at")
+		}
+	}
+	if out, err := h.Invoke("check", nil, nil); err != nil || out["checked"] != float64(1) {
+		t.Fatalf("out=%v err=%v", out, err)
+	}
+	// With no rule asking there is nothing to watch, which is not a failure.
+	if _, err := h.SetTriggers(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := h.Invoke("check", nil, nil); err != nil || out["checked"] != float64(0) {
+		t.Fatalf("out=%v err=%v", out, err)
+	}
+}
+
 func TestBadConfig(t *testing.T) {
 	for _, cfg := range []map[string]any{
-		{"pages": ""},
-		{"pages": "# nothing\n"},
 		{"pages": "example.com/page"},
 		{"pages": "https://example.com/ div["},
 		{"pages": "https://example.com/", "ignore": "("},

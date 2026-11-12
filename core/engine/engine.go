@@ -97,6 +97,9 @@ type Engine struct {
 	sem     chan struct{}
 	wg      sync.WaitGroup
 	emitted int
+
+	started bool       // Start has run: instances are launched as they come
+	defMu   sync.Mutex // one default instance at a time
 }
 
 func New(st *store.Store, dataDir string, log *slog.Logger) *Engine {
@@ -128,7 +131,51 @@ func (e *Engine) RegisterPlugin(m plugin.Manifest, f plugin.Factory) {
 	}
 	e.mu.Lock()
 	e.plugins[m.ID] = registered{m, f}
+	started := e.started
 	e.mu.Unlock()
+	if started { // a plugin installed while running
+		if rec, ok := e.defaultInstance(m); ok {
+			e.launch(rec)
+		}
+	}
+}
+
+// defaultInstance creates the instance a DefaultInstance plugin comes with,
+// the first time the plugin is seen. It is done once: an instance the user
+// deleted does not come back, and a plugin that already has instances from
+// before gets none.
+func (e *Engine) defaultInstance(m plugin.Manifest) (store.Instance, bool) {
+	if !m.DefaultInstance || m.Singleton {
+		return store.Instance{}, false
+	}
+	e.defMu.Lock()
+	defer e.defMu.Unlock()
+	const scope = "engine"
+	key := "default-instance:" + m.ID
+	if _, done := e.Store.KVGet(scope, key); done {
+		return store.Instance{}, false
+	}
+	stored, err := e.Store.ListInstances()
+	if err != nil {
+		return store.Instance{}, false
+	}
+	taken := false
+	for _, rec := range stored {
+		if rec.Plugin == m.ID || rec.ID == m.ID {
+			taken = true
+		}
+	}
+	rec := store.Instance{ID: m.ID, Plugin: m.ID, Name: m.Name, Enabled: true, Config: map[string]any{}}
+	if !taken {
+		if err := e.Store.SaveInstance(&rec); err != nil {
+			e.log.Warn("create default instance", "plugin", m.ID, "err", err)
+			return store.Instance{}, false
+		}
+	}
+	if err := e.Store.KVSet(scope, key, "1"); err != nil {
+		e.log.Warn("create default instance", "plugin", m.ID, "err", err)
+	}
+	return rec, !taken
 }
 
 func (e *Engine) UnregisterPlugin(pluginID string) {
@@ -184,6 +231,14 @@ func (e *Engine) Start() error {
 			stored = append(stored, rec)
 		}
 	}
+	for _, m := range e.Plugins() {
+		if rec, ok := e.defaultInstance(m); ok {
+			stored = append(stored, rec)
+		}
+	}
+	e.mu.Lock()
+	e.started = true
+	e.mu.Unlock()
 	for _, rec := range stored {
 		// Move any secret still stored in plain form into the secret store.
 		if sealed, err := e.seal(rec); err == nil && e.Secrets != nil {

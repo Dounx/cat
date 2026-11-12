@@ -75,6 +75,8 @@ cat.Plugin{
 h.Emit(cat.Event{Type: "feed.item", Triggers: []string{t.ID}, Payload: …})
 ```
 
+盯什么全由规则来说、没有必填配置的插件，可以再加上 `"default_instance": true`：Cat 会替用户建好一个实例，不用先去「接入」页添加。
+
 `Triggers` 第一次被调用是在 `Start` 之前。同样的参数总是同一个 `ID`，细节见[协议文档](plugin-protocol.md#触发参数)。测试里用 `h.SetTriggers(…)` 模拟。
 
 ## 做动作

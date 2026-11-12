@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dounx/cat/plugins/internal/watchlist"
 	cat "github.com/dounx/cat/sdk/go"
 )
 
@@ -39,7 +40,8 @@ type entry struct {
 }
 
 type scheduler struct {
-	entries []*entry
+	// the schedules in the settings and those rules ask for in their triggers
+	entries watchlist.List[*entry]
 	loc     *time.Location
 	catchUp bool
 
@@ -85,26 +87,38 @@ func parseSchedules(text string, loc *time.Location) ([]*entry, error) {
 		seen[e.Line] = true
 		out = append(out, e)
 	}
-	if len(out) == 0 {
-		return nil, errors.New("还没有填定时")
-	}
 	return out, nil
 }
 
-func newScheduler(cfg map[string]any) (*scheduler, error) {
-	str := func(k string) string { s, _ := cfg[k].(string); return strings.TrimSpace(s) }
-	s := &scheduler{loc: time.Local}
-	if tz := str("timezone"); tz != "" {
-		loc, err := time.LoadLocation(tz)
-		if err != nil {
-			return nil, fmt.Errorf("不认识的时区「%s」：应填 Asia/Shanghai 这样的名字", tz)
-		}
-		s.loc = loc
+func entryList(loc *time.Location) watchlist.List[*entry] {
+	return watchlist.List[*entry]{
+		Field: "schedules",
+		Parse: func(text string) ([]*entry, error) { return parseSchedules(text, loc) },
+		Key:   func(e *entry) string { return e.Line },
 	}
+}
+
+// location reads the "timezone" setting; the machine's own when it is empty.
+func location(cfg map[string]any) (*time.Location, error) {
+	tz, _ := cfg["timezone"].(string)
+	if tz = strings.TrimSpace(tz); tz == "" {
+		return time.Local, nil
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return nil, fmt.Errorf("不认识的时区「%s」：应填 Asia/Shanghai 这样的名字", tz)
+	}
+	return loc, nil
+}
+
+func newScheduler(cfg map[string]any) (*scheduler, error) {
+	loc, err := location(cfg)
+	if err != nil {
+		return nil, err
+	}
+	s := &scheduler{loc: loc, entries: entryList(loc)}
 	s.catchUp, _ = cfg["catch_up"].(bool)
-	var err error
-	s.entries, err = parseSchedules(str("schedules"), s.loc)
-	return s, err
+	return s, s.entries.Init(cfg)
 }
 
 func stateKey(line string) string { return "last:" + hash(line) }
@@ -116,16 +130,20 @@ func hash(s string) string {
 
 // resume decides where each schedule picks up. Normally that is now; with
 // catch-up it is where the previous run left off, so times that passed while
-// Cat was not running are noticed.
-func (s *scheduler) resume(h *cat.Host) {
+// Cat was not running are noticed. A schedule a rule has just asked for
+// (fresh) always counts from now: what passed before it was asked for was
+// not missed.
+func (s *scheduler) resume(h *cat.Host, entries []*entry, fresh bool) {
 	t := now()
-	for _, e := range s.entries {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range entries {
 		e.cursor = t
 		if !s.catchUp {
 			continue
 		}
 		raw, _ := h.StateGet(stateKey(e.Line))
-		if last, err := time.Parse(time.RFC3339, raw); err == nil && last.Before(t) {
+		if last, err := time.Parse(time.RFC3339, raw); err == nil && last.Before(t) && !fresh {
 			e.cursor = last
 		} else {
 			s.save(h, e)
@@ -145,7 +163,10 @@ func (s *scheduler) step(t time.Time) []firing {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []firing
-	for _, e := range s.entries {
+	for _, e := range s.entries.Items() {
+		if e.cursor.IsZero() {
+			continue // just asked for: not counting yet
+		}
 		due := e.spec.next(e.cursor, s.loc)
 		if due.IsZero() || due.After(t) {
 			continue
@@ -169,7 +190,10 @@ func (s *scheduler) soonest() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var first time.Time
-	for _, e := range s.entries {
+	for _, e := range s.entries.Items() {
+		if e.cursor.IsZero() {
+			continue
+		}
 		if n := e.spec.next(e.cursor, s.loc); !n.IsZero() && (first.IsZero() || n.Before(first)) {
 			first = n
 		}
@@ -189,6 +213,7 @@ func (s *scheduler) event(f firing) cat.Event {
 	return cat.Event{
 		Type:         "schedule.fired",
 		Conversation: &cat.Conversation{ID: f.e.Line, Kind: "channel", Name: name},
+		Triggers:     s.entries.AskedBy(f.e.Line), // the rules that asked for this time take it as theirs
 		Payload: map[string]any{
 			"message_id": fmt.Sprintf("%s-%d", hash(f.e.Line), at.Unix()),
 			"text":       f.e.Text,
@@ -242,36 +267,79 @@ func (s *scheduler) run(ctx context.Context, h *cat.Host) {
 	}
 }
 
-// New builds the plugin.
+// describe says in the log what is scheduled.
+func (s *scheduler) describe(h *cat.Host) {
+	n := len(s.entries.Items())
+	if n == 0 {
+		h.Log("info", "还没有定时：在规则的触发节点里选这个接入后填写")
+		return
+	}
+	h.Log("info", "%d 个定时，时区 %s，下一次触发：%s", n, s.loc, s.soonest().In(s.loc).Format("2006-01-02 15:04"))
+}
+
+// New builds the plugin. When to fire is listed in the instance's settings
+// and in the trigger nodes of rules, under "schedules" in both.
 func New() cat.Plugin {
-	var s *scheduler
+	var (
+		mu sync.Mutex
+		s  *scheduler // set once the instance has started
+	)
 	return cat.Plugin{
 		Start: func(ctx context.Context, h *cat.Host) error {
-			var err error
-			if s, err = newScheduler(h.Config); err != nil {
+			ns, err := newScheduler(h.Config)
+			if err != nil {
 				return err
 			}
-			s.resume(h)
-			h.Log("info", "%d 个定时，时区 %s，下一次触发：%s", len(s.entries), s.loc, s.soonest().In(s.loc).Format("2006-01-02 15:04"))
-			go s.run(ctx, h)
+			mu.Lock()
+			s = ns
+			ns.entries.Ask(h.Triggers()) // under mu: a change of triggers comes after, not in between
+			ns.resume(h, ns.entries.Items(), false)
+			mu.Unlock()
+			ns.describe(h)
+			go ns.run(ctx, h)
 			return nil
+		},
+		// The rules changed what they ask for. Before the instance has started
+		// there is only the reading of it to check; Start picks up the rest.
+		Triggers: func(_ context.Context, h *cat.Host, list []cat.Trigger) map[string]string {
+			mu.Lock()
+			defer mu.Unlock()
+			if s == nil {
+				loc, err := location(h.Config)
+				if err != nil {
+					return nil // Start says so
+				}
+				probe := entryList(loc)
+				return probe.Check(list)
+			}
+			before := len(s.entries.Items())
+			added, errs := s.entries.Ask(list)
+			s.resume(h, added, true)
+			if len(added) > 0 || len(s.entries.Items()) != before {
+				s.describe(h)
+			}
+			return errs
 		},
 		Actions: map[string]cat.ActionFunc{
 			"fire": func(_ context.Context, h *cat.Host, p map[string]any, _ cat.ActionContext) (any, error) {
+				mu.Lock()
+				s := s
+				mu.Unlock()
 				if s == nil {
 					return nil, errors.New("实例尚未启动")
 				}
-				entries := s.entries
+				entries := s.entries.Items()
 				if want, _ := p["schedule"].(string); strings.TrimSpace(want) != "" {
 					want = strings.Join(strings.Fields(want), " ")
+					all := entries
 					entries = nil
-					for _, e := range s.entries {
+					for _, e := range all {
 						if want == e.Line || want == e.When || want == e.Text || want == strings.Join(strings.Fields(e.Line), " ") {
 							entries = append(entries, e)
 						}
 					}
 					if entries == nil {
-						return nil, fmt.Errorf("配置里没有这个定时：%s", want)
+						return nil, fmt.Errorf("没有这个定时：%s", want)
 					}
 				}
 				fired := 0

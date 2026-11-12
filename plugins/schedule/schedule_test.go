@@ -134,7 +134,7 @@ func TestNextAcrossClockChange(t *testing.T) {
 func TestBadConfig(t *testing.T) {
 	fake.set(at(shanghai, "2026-11-10 08:00:00"))
 	for _, schedules := range []string{
-		"", "# nothing\n", "25:00", "9:60", "0 9 * *", "60 * * * *", "0 9 * * 8", "0 9 5-1 * *", "*/0 * * * *",
+		"25:00", "9:60", "0 9 * *", "60 * * * *", "0 9 * * 8", "0 9 5-1 * *", "*/0 * * * *",
 		"@every", "@every soon", "@every 30s", "@every 90s", "0 0 30 2 *", "每天九点 开会",
 	} {
 		h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"schedules": schedules}})
@@ -179,6 +179,60 @@ func TestFiresOnTime(t *testing.T) {
 	c.set(at(shanghai, "2026-11-11 09:00:00"))
 	if ev := h.NextEvent(); ev.Payload["date"] != "2026-11-11" {
 		t.Errorf("next day: %v", ev.Payload)
+	}
+}
+
+// Rules say when to fire in their trigger nodes: the instance's own settings
+// may be empty, and each event names the triggers that asked for its time.
+func TestSchedulesFromRules(t *testing.T) {
+	c := useClock(t, at(shanghai, "2026-11-10 08:59:30"))
+	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"timezone": "Asia/Shanghai"}})
+	// Cat hands the triggers over before the instance starts.
+	errs, err := h.SetTriggers(
+		cat.Trigger{ID: "t-9", Params: map[string]any{"schedules": "9:00"}},
+		cat.Trigger{ID: "t-both", Params: map[string]any{"schedules": "9:00\n10:00 写周报"}},
+		cat.Trigger{ID: "t-bad", Params: map[string]any{"schedules": "每天九点"}},
+	)
+	if err != nil || len(errs) != 1 || !strings.Contains(errs["t-bad"], "看不懂的定时") {
+		t.Fatalf("errs=%v err=%v", errs, err)
+	}
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	quiet(t, h)
+	c.set(at(shanghai, "2026-11-10 09:00:01"))
+	if ev := h.NextEvent(); ev.Payload["time"] != "09:00" || strings.Join(ev.Triggers, ",") != "t-9,t-both" {
+		t.Fatalf("event: %v for %v", ev.Payload, ev.Triggers)
+	}
+	quiet(t, h) // one event for a time, however many rules ask for it
+
+	// A rule is added while the instance runs. Its time counts from now: the
+	// 9:30 that has passed is not fired late.
+	c.set(at(shanghai, "2026-11-10 09:40:00"))
+	if errs, err := h.SetTriggers(
+		cat.Trigger{ID: "t-both", Params: map[string]any{"schedules": "9:00\n10:00 写周报"}},
+		cat.Trigger{ID: "t-half", Params: map[string]any{"schedules": "30 * * * *"}},
+	); err != nil || len(errs) != 0 {
+		t.Fatalf("errs=%v err=%v", errs, err)
+	}
+	quiet(t, h)
+	c.set(at(shanghai, "2026-11-10 10:00:01"))
+	if ev := h.NextEvent(); ev.Payload["text"] != "写周报" || strings.Join(ev.Triggers, ",") != "t-both" {
+		t.Fatalf("event: %v for %v", ev.Payload, ev.Triggers)
+	}
+	c.set(at(shanghai, "2026-11-10 10:30:01"))
+	if ev := h.NextEvent(); ev.Payload["time"] != "10:30" || strings.Join(ev.Triggers, ",") != "t-half" {
+		t.Fatalf("event: %v for %v", ev.Payload, ev.Triggers)
+	}
+
+	// With no rule asking there is nothing to fire, which is not a failure.
+	if _, err := h.SetTriggers(); err != nil {
+		t.Fatal(err)
+	}
+	c.set(at(shanghai, "2026-11-11 09:00:01"))
+	quiet(t, h)
+	if out, err := h.Invoke("fire", nil, nil); err != nil || out["fired"] != float64(0) {
+		t.Fatalf("out=%v err=%v", out, err)
 	}
 }
 

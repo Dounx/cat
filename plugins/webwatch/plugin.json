@@ -1,22 +1,22 @@
 {
   "id": "webwatch",
   "name": "网页变动",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "protocol": 1,
-  "description": "定时检查网页，文字内容有变化时发出事件。可以只盯页面上的某一块。只负责发现变化，通知由规则交给聊天渠道发出。",
+  "description": "定时检查网页，文字内容有变化时发出事件。可以只盯页面上的某一块。监控哪些网页在规则的触发节点里填；只负责发现变化，通知由规则交给聊天渠道发出。",
   "command": ["./cat-plugin-webwatch"],
   "category": "monitor",
   "capabilities": ["source", "action"],
+  "default_instance": true,
   "config_schema": {
     "type": "object",
-    "required": ["pages"],
-    "x-order": ["pages", "interval", "ignore"],
+    "x-order": ["interval", "ignore", "pages"],
     "properties": {
       "pages": {
         "type": "string",
-        "title": "网页",
+        "title": "始终监控的网页（可选）",
         "format": "textarea",
-        "description": "每行一个完整地址（https://…）。只想盯页面上的某一块时，在地址后面空一格写 CSS 选择器，例如 https://example.com/pricing #price。# 开头的行是注释。"
+        "description": "一般不用填：要监控的网页写在规则的触发节点里。这里填的网页不管有没有规则用到都会监控。每行一个完整地址（https://…）。只想盯页面上的某一块时，在地址后面空一格写 CSS 选择器，例如 https://example.com/pricing #price。# 开头的行是注释。"
       },
       "interval": {
         "type": "integer",
@@ -35,6 +35,18 @@
   "events": [
     { "type": "page.changed", "title": "网页有变动" }
   ],
+  "trigger_params": {
+    "type": "object",
+    "x-order": ["pages"],
+    "properties": {
+      "pages": {
+        "type": "string",
+        "title": "网页",
+        "format": "textarea",
+        "description": "这条规则要监控的网页，每行一个完整地址（https://…）。只想盯页面上的某一块时，在地址后面空一格写 CSS 选择器，例如 https://example.com/pricing #price。填了以后只接收这些网页的变动；留空则接收这个接入的全部变动。"
+      }
+    }
+  },
   "actions": [
     {
       "name": "check",
@@ -44,7 +56,7 @@
         "type": "object",
         "x-order": ["page"],
         "properties": {
-          "page": { "type": "string", "title": "网页（可选）", "description": "配置里的地址；留空检查全部。" }
+          "page": { "type": "string", "title": "网页（可选）", "description": "和填写时的写法一致；留空检查全部。" }
         }
       }
     }
