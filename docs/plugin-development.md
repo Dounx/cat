@@ -47,6 +47,36 @@ h.Emit(cat.Event{
 
 `id`、`source`、`plugin` 由 Cat 填写。聊天类插件请遵守[聊天平台约定](plugin-protocol.md#聊天平台约定)，这样用户为一个平台写的规则换个平台也能用。
 
+### 让规则说要盯什么
+
+监控类插件盯什么（哪个订阅源、哪个页面）最好由规则来说，而不是让用户先在接入的配置里填一遍。在 `plugin.json` 里加 `trigger_params`，用户在规则的触发节点里选中这个接入时就会看到这份表单：
+
+```json
+"trigger_params": {
+  "type": "object",
+  "properties": { "feeds": { "type": "string", "title": "订阅源", "format": "textarea" } }
+}
+```
+
+启用的规则填了什么，`Start` 里用 `h.Triggers()` 就能读到；之后规则有变化时 `Triggers` 会被调用，拿到新的完整列表。发事件时把触发的 `ID` 写进 `Triggers`，提出它的规则就只收到属于自己的事件：
+
+```go
+cat.Plugin{
+    Start: func(ctx context.Context, h *cat.Host) error {
+        watch(h.Triggers()) // 可能是空的：还没有规则用到这个接入
+        return nil
+    },
+    Triggers: func(ctx context.Context, h *cat.Host, list []cat.Trigger) map[string]string {
+        watch(list)
+        return nil // 或 { 触发的 ID: "哪里不对" }，会显示在那条规则上
+    },
+}
+
+h.Emit(cat.Event{Type: "feed.item", Triggers: []string{t.ID}, Payload: …})
+```
+
+`Triggers` 第一次被调用是在 `Start` 之前。同样的参数总是同一个 `ID`，细节见[协议文档](plugin-protocol.md#触发参数)。测试里用 `h.SetTriggers(…)` 模拟。
+
 ## 做动作
 
 动作收到规则里填的参数（模板已经求值），以及触发规则的那个事件：

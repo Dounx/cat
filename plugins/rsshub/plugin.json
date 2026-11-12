@@ -1,23 +1,22 @@
 {
   "id": "rsshub",
   "name": "RSSHub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "protocol": 1,
-  "description": "订阅 RSSHub 实例上的路由，有新条目时发出事件。可以用已有的实例，也可以让 Cat 在 Docker 容器里或用本机的 Node.js 运行一个。定时轮询，不需要公网地址。",
+  "description": "订阅 RSSHub 实例上的路由，有新条目时发出事件。订阅哪些路由在规则的触发节点里填。可以用已有的实例，也可以让 Cat 在 Docker 容器里或用本机的 Node.js 运行一个。定时轮询，不需要公网地址。",
   "command": ["./cat-plugin-rsshub"],
   "category": "monitor",
   "capabilities": ["source", "action"],
   "setup": true,
   "config_schema": {
     "type": "object",
-    "required": ["routes"],
-    "x-order": ["routes", "mode", "base_url", "access_key", "port", "interval", "emit_existing"],
+    "x-order": ["mode", "base_url", "access_key", "port", "interval", "emit_existing", "routes"],
     "properties": {
       "routes": {
         "type": "string",
-        "title": "路由",
+        "title": "始终订阅的路由（可选）",
         "format": "textarea",
-        "description": "每行一个，以 / 开头（如 /github/issue/DIYgod/RSSHub，也可写成 rsshub://github/issue/DIYgod/RSSHub）。# 开头的行是注释。"
+        "description": "一般不用填：要订阅的路由写在规则的触发节点里。这里填的路由不管有没有规则用到都会订阅，每行一个，以 / 开头。# 开头的行是注释。"
       },
       "mode": {
         "type": "string",
@@ -59,6 +58,18 @@
   "events": [
     { "type": "feed.item", "title": "新条目" }
   ],
+  "trigger_params": {
+    "type": "object",
+    "x-order": ["routes"],
+    "properties": {
+      "routes": {
+        "type": "string",
+        "title": "路由",
+        "format": "textarea",
+        "description": "这条规则要订阅的路由，每行一个，以 / 开头（如 /github/issue/DIYgod/RSSHub，也可写成 rsshub://github/issue/DIYgod/RSSHub）。填了以后只接收这些路由的新条目；留空则接收这个接入的全部条目。"
+      }
+    }
+  },
   "actions": [
     {
       "name": "check",
@@ -68,7 +79,7 @@
         "type": "object",
         "x-order": ["route"],
         "properties": {
-          "route": { "type": "string", "title": "路由（可选）", "description": "和配置里的写法一致；留空检查全部。" }
+          "route": { "type": "string", "title": "路由（可选）", "description": "和订阅时的写法一致；留空检查全部。" }
         }
       }
     }

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,12 +52,21 @@ type subState struct {
 	Modified string   `json:"modified,omitempty"`
 }
 
+// watcher polls the subscriptions: those in the instance's own settings and
+// those the rules ask for in their trigger nodes.
 type watcher struct {
-	subs         []*sub
+	kind         Kind
+	hub          string // RSSHub: where the routes are fetched from
 	interval     time.Duration
 	secret       string // RSSHub access key, kept out of logs
 	emitExisting bool
 	client       *http.Client
+	ctx          context.Context // the instance's life
+
+	mu    sync.Mutex
+	fixed []string            // from the settings
+	subs  []*sub              // everything watched, the settings' first
+	asked map[string][]string // spec → the triggers that ask for it
 }
 
 func isURL(s string) bool {
@@ -73,94 +83,107 @@ func route(s string) (string, bool) {
 	return s, strings.HasPrefix(s, "/")
 }
 
-// lines splits a multi-line setting, dropping blanks, comments and repeats.
-func lines(text string, each func(line string) (*sub, error)) ([]*sub, error) {
-	var out []*sub
+// parseSpec reads one subscription as a person writes it: a feed's address
+// for RSS, a route for RSSHub. Each kind points at the other's plugin.
+func parseSpec(kind Kind, line string) (string, error) {
+	spec, isRoute := route(line)
+	if kind == RSSHub {
+		switch {
+		case isURL(line):
+			return "", fmt.Errorf("「%s」是完整地址，不是路由：普通 RSS / Atom 源请用 RSS 插件订阅", line)
+		case !isRoute:
+			return "", fmt.Errorf("看不懂的路由「%s」：路由以 / 开头，如 /github/issue/DIYgod/RSSHub", line)
+		}
+		if _, err := url.Parse("http://hub" + spec); err != nil {
+			return "", fmt.Errorf("路由无效：%s", line)
+		}
+		return spec, nil
+	}
+	switch {
+	case isRoute:
+		return "", fmt.Errorf("「%s」是 RSSHub 路由，请用 RSSHub 插件订阅", line)
+	case !isURL(line):
+		return "", fmt.Errorf("看不懂的订阅源「%s」：请填完整的 http(s) 地址", line)
+	}
+	if u, err := url.Parse(line); err != nil || u.Host == "" {
+		return "", fmt.Errorf("地址无效：%s", line)
+	}
+	return line, nil
+}
+
+// parseSpecs reads a multi-line list of subscriptions, dropping blanks,
+// comments and repeats.
+func parseSpecs(kind Kind, text string) ([]string, error) {
+	var out []string
 	seen := map[string]bool{}
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		s, err := each(line)
+		spec, err := parseSpec(kind, line)
 		if err != nil {
 			return nil, err
 		}
-		if u, err := url.Parse(s.URL); err != nil || u.Host == "" {
-			return nil, fmt.Errorf("地址无效：%s", line)
-		}
-		if !seen[s.Spec] {
-			seen[s.Spec] = true
-			out = append(out, s)
+		if !seen[spec] {
+			seen[spec] = true
+			out = append(out, spec)
 		}
 	}
 	return out, nil
 }
 
-// parseFeeds turns the RSS plugin's "feeds" setting into subscriptions.
-func parseFeeds(feeds string) ([]*sub, error) {
-	out, err := lines(feeds, func(line string) (*sub, error) {
-		if _, ok := route(line); ok {
-			return nil, fmt.Errorf("「%s」是 RSSHub 路由，请用 RSSHub 插件订阅", line)
-		}
-		if !isURL(line) {
-			return nil, fmt.Errorf("看不懂的订阅源「%s」：请填完整的 http(s) 地址", line)
-		}
-		return &sub{Spec: line, URL: line}, nil
-	})
-	if err == nil && len(out) == 0 {
-		err = errors.New("还没有填订阅源")
+// field is the setting, and the trigger parameter, that lists subscriptions.
+func (k Kind) field() string {
+	if k == RSSHub {
+		return "routes"
 	}
-	return out, err
+	return "feeds"
 }
 
-// parseRoutes turns the RSSHub plugin's "routes" setting into subscriptions
-// on the instance at hub.
-func parseRoutes(routes, hub, key string) ([]*sub, error) {
-	hub = strings.TrimRight(strings.TrimSpace(hub), "/")
-	if hub == "" {
-		hub = defaultHub
+func (k Kind) noun() string {
+	if k == RSSHub {
+		return "路由"
 	}
-	if u, err := url.Parse(hub); err != nil || !isURL(hub) || u.Host == "" {
-		return nil, errors.New("RSSHub 实例地址无效，应以 http:// 或 https:// 开头")
-	}
-	out, err := lines(routes, func(line string) (*sub, error) {
-		spec, ok := route(line)
-		switch {
-		case isURL(line):
-			return nil, fmt.Errorf("「%s」是完整地址，不是路由：普通 RSS / Atom 源请用 RSS 插件订阅", line)
-		case !ok:
-			return nil, fmt.Errorf("看不懂的路由「%s」：路由以 / 开头，如 /github/issue/DIYgod/RSSHub", line)
+	return "订阅源"
+}
+
+// asked reads what the rules' triggers ask for: for each subscription, the
+// triggers that want it, and for each trigger that cannot be read, why.
+func (k Kind) asked(list []cat.Trigger) (specs []string, by map[string][]string, errs map[string]string) {
+	by, errs = map[string][]string{}, map[string]string{}
+	for _, t := range list {
+		text, _ := t.Params[k.field()].(string)
+		found, err := parseSpecs(k, text)
+		if err != nil {
+			errs[t.ID] = err.Error()
+			continue
 		}
-		s := &sub{Spec: spec, URL: hub + spec, Hub: true}
-		if u, err := url.Parse(s.URL); err == nil && key != "" {
-			q := u.Query()
-			q.Set("key", key)
-			u.RawQuery = q.Encode()
-			s.URL = u.String()
+		for _, spec := range found {
+			if by[spec] == nil {
+				specs = append(specs, spec)
+			}
+			by[spec] = append(by[spec], t.ID)
 		}
-		return s, nil
-	})
-	if err == nil && len(out) == 0 {
-		err = errors.New("还没有填路由")
 	}
-	return out, err
+	return specs, by, errs
 }
 
 func newWatcher(kind Kind, cfg map[string]any) (*watcher, error) {
 	str := func(k string) string { s, _ := cfg[k].(string); return strings.TrimSpace(s) }
-	var (
-		subs   []*sub
-		secret string
-		err    error
-	)
+	w := &watcher{kind: kind, emitExisting: cfg["emit_existing"] == true, client: &http.Client{Timeout: 30 * time.Second}}
 	if kind == RSSHub {
-		secret = str("access_key")
-		subs, err = parseRoutes(str("routes"), str("base_url"), secret)
-	} else {
-		subs, err = parseFeeds(str("feeds"))
+		w.secret = str("access_key")
+		w.hub = strings.TrimRight(str("base_url"), "/")
+		if w.hub == "" {
+			w.hub = defaultHub
+		}
+		if u, err := url.Parse(w.hub); err != nil || !isURL(w.hub) || u.Host == "" {
+			return nil, errors.New("RSSHub 实例地址无效，应以 http:// 或 https:// 开头")
+		}
 	}
-	if err != nil {
+	var err error
+	if w.fixed, err = parseSpecs(kind, str(kind.field())); err != nil {
 		return nil, err
 	}
 	minutes := float64(defaultInterval)
@@ -175,11 +198,65 @@ func newWatcher(kind Kind, cfg map[string]any) (*watcher, error) {
 	if minutes < 1 {
 		minutes = 1
 	}
-	return &watcher{
-		subs: subs, interval: time.Duration(minutes * float64(time.Minute)),
-		secret: secret, emitExisting: cfg["emit_existing"] == true,
-		client: &http.Client{Timeout: 30 * time.Second},
-	}, nil
+	w.interval = time.Duration(minutes * float64(time.Minute))
+	w.watch(nil)
+	return w, nil
+}
+
+// newSub works out what to fetch for a subscription.
+func (w *watcher) newSub(spec string) *sub {
+	if w.kind != RSSHub {
+		return &sub{Spec: spec, URL: spec}
+	}
+	s := &sub{Spec: spec, URL: w.hub + spec, Hub: true}
+	if u, err := url.Parse(s.URL); err == nil && w.secret != "" {
+		q := u.Query()
+		q.Set("key", w.secret)
+		u.RawQuery = q.Encode()
+		s.URL = u.String()
+	}
+	return s
+}
+
+// watch sets what the rules ask for beside the settings' own subscriptions.
+// It returns the subscriptions that are new, and what is wrong with the
+// triggers that could not be read.
+func (w *watcher) watch(list []cat.Trigger) (added []*sub, errs map[string]string) {
+	specs, by, errs := w.kind.asked(list)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	have := map[string]*sub{}
+	for _, s := range w.subs {
+		have[s.Spec] = s
+	}
+	var subs []*sub
+	for _, spec := range append(slices.Clone(w.fixed), specs...) {
+		s := have[spec]
+		if s == nil {
+			s = w.newSub(spec)
+			added = append(added, s)
+		} else if slices.Contains(subs, s) {
+			continue // in the settings and asked for by a rule
+		}
+		have[spec] = s
+		subs = append(subs, s)
+	}
+	w.subs, w.asked = subs, by
+	return added, errs
+}
+
+// watched lists the subscriptions as they are now.
+func (w *watcher) watched() []*sub {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.subs)
+}
+
+// askedBy lists the triggers that ask for a subscription.
+func (w *watcher) askedBy(spec string) []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.asked[spec])
 }
 
 func stateKey(spec string) string { return "feed:" + hash(spec) }
@@ -416,6 +493,7 @@ func (w *watcher) event(s *sub, f *feed, it item) cat.Event {
 		Type:         "feed.item",
 		Conversation: &cat.Conversation{ID: s.Spec, Kind: "channel", Name: name},
 		Payload:      payload,
+		Triggers:     w.askedBy(s.Spec), // the rules that asked for this feed take it as theirs
 	}
 	if it.Author != "" {
 		ev.Actor = &cat.Actor{ID: it.Author, Name: it.Author}
@@ -476,14 +554,15 @@ func (w *watcher) poll(ctx context.Context, h *cat.Host) {
 	tick := time.NewTicker(w.interval)
 	defer tick.Stop()
 	for {
-		res := w.round(ctx, h, w.subs)
+		subs := w.watched()
+		res := w.round(ctx, h, subs)
 		if ctx.Err() != nil {
 			return
 		}
 		// The instance is only "in error" when nothing works; a single broken
 		// feed is reported in the log and shouldn't hide the healthy ones.
 		next := ""
-		if len(res.Errors) == len(w.subs) {
+		if len(subs) > 0 && len(res.Errors) == len(subs) {
 			next = "全部获取失败，将继续重试：" + res.Errors[0]
 		}
 		if next != status {
@@ -506,55 +585,90 @@ func (w *watcher) poll(ctx context.Context, h *cat.Host) {
 type Kind int
 
 const (
-	RSS    Kind = iota // feed URLs, in the "feeds" setting
-	RSSHub             // routes on one RSSHub instance, in the "routes" setting
+	RSS    Kind = iota // feed URLs, in "feeds"
+	RSSHub             // routes on one RSSHub instance, in "routes"
 )
 
-// New builds a plugin of the given kind. Its "check" action takes the
-// subscription to check in "feed" (RSS) or "route" (RSSHub).
+// New builds a plugin of the given kind. What it watches is listed in the
+// instance's settings and in the trigger nodes of rules, under the same name:
+// "feeds" (RSS) or "routes" (RSSHub). Its "check" action takes the
+// subscription to check in "feed" or "route".
 func New(kind Kind) cat.Plugin {
-	var w *watcher
-	param, noun := "feed", "订阅源"
+	var (
+		mu sync.Mutex
+		w  *watcher // set once the instance has started
+	)
+	started := func() *watcher {
+		mu.Lock()
+		defer mu.Unlock()
+		return w
+	}
+	param, noun := "feed", kind.noun()
 	if kind == RSSHub {
-		param, noun = "route", "路由"
+		param = "route"
 	}
 	return cat.Plugin{
 		Start: func(ctx context.Context, h *cat.Host) error {
-			var err error
-			if w, err = newWatcher(kind, h.Config); err != nil {
+			nw, err := newWatcher(kind, h.Config)
+			if err != nil {
 				return err
 			}
-			h.Log("info", "订阅 %d 个%s，每 %s 检查一次", len(w.subs), noun, w.interval)
-			go w.poll(ctx, h)
+			nw.ctx = ctx
+			mu.Lock()
+			w = nw
+			nw.watch(h.Triggers()) // under mu: a change of triggers comes after, not in between
+			mu.Unlock()
+			if n := len(nw.watched()); n > 0 {
+				h.Log("info", "订阅 %d 个%s，每 %s 检查一次", n, noun, nw.interval)
+			} else {
+				h.Log("info", "还没有要订阅的%s：在规则的触发节点里选这个接入后填写", noun)
+			}
+			go nw.poll(ctx, h)
 			return nil
+		},
+		// The rules changed what they ask for. Before the instance has started
+		// there is only the reading of it to check; Start picks up the rest.
+		Triggers: func(_ context.Context, h *cat.Host, list []cat.Trigger) map[string]string {
+			mu.Lock()
+			defer mu.Unlock()
+			if w == nil {
+				_, _, errs := kind.asked(list)
+				return errs
+			}
+			before := len(w.watched())
+			added, errs := w.watch(list)
+			if n := len(w.watched()); len(added) > 0 || n != before {
+				h.Log("info", "规则要订阅的%s有变化：现在订阅 %d 个", noun, n)
+			}
+			if len(added) > 0 { // don't leave a new subscription waiting for the next round
+				go w.round(w.ctx, h, added)
+			}
+			return errs
 		},
 		Actions: map[string]cat.ActionFunc{
 			"check": func(ctx context.Context, h *cat.Host, p map[string]any, _ cat.ActionContext) (any, error) {
+				w := started()
 				if w == nil {
 					return nil, errors.New("实例尚未启动")
 				}
-				subs := w.subs
+				subs := w.watched()
 				if want, _ := p[param].(string); strings.TrimSpace(want) != "" {
 					want = strings.TrimSpace(want)
 					if kind == RSSHub {
 						want, _ = route(want)
 					}
-					subs = nil
-					for _, s := range w.subs {
-						if s.Spec == want {
-							subs = []*sub{s}
-						}
+					i := slices.IndexFunc(subs, func(s *sub) bool { return s.Spec == want })
+					if i < 0 {
+						return nil, fmt.Errorf("没有订阅这个%s：%s", noun, want)
 					}
-					if subs == nil {
-						return nil, fmt.Errorf("配置里没有这个%s：%s", noun, want)
-					}
+					subs = subs[i : i+1]
 				}
 				res := w.round(ctx, h, subs)
 				out := map[string]any{"checked": res.Checked, "new": res.New, "failed": len(res.Errors), "errors": res.Errors}
 				if res.Errors == nil {
 					out["errors"] = []string{}
 				}
-				if len(res.Errors) == res.Checked {
+				if res.Checked > 0 && len(res.Errors) == res.Checked {
 					return out, errors.New(strings.Join(res.Errors, "；"))
 				}
 				return out, nil

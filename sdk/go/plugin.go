@@ -34,6 +34,13 @@ type Plugin struct {
 	// someone fills in a form: a parameter of the named action, or a
 	// configuration field when action is "". It runs on a started instance.
 	Options func(ctx context.Context, h *Host, action, field string) ([]Option, error)
+	// Triggers is told what the enabled rules ask this instance to watch, for
+	// plugins whose plugin.json has trigger_params: the whole list, each time
+	// it changes. The first call comes before Start, so that Start can read
+	// the list from Host.Triggers; a plugin that only does that needs no
+	// function here. Return what is wrong with single triggers, by id (nil
+	// when all are fine): it is shown on the rules that asked for them.
+	Triggers func(ctx context.Context, h *Host, list []Trigger) map[string]string
 }
 
 // Option is one value offered for a field.
@@ -51,6 +58,17 @@ type Host struct {
 	// InstanceID identifies this instance; DataDir is its private storage.
 	InstanceID string
 	DataDir    string
+
+	mu       sync.Mutex
+	triggers []Trigger
+}
+
+// Triggers returns what the enabled rules ask this instance to watch, as of
+// the latest update. It is already filled in when Start runs.
+func (h *Host) Triggers() []Trigger {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.triggers
 }
 
 // Emit publishes an event and returns the id Cat assigned to it.
@@ -213,6 +231,25 @@ func Serve(p Plugin, r io.Reader, w io.Writer) error {
 			in.Params = map[string]any{}
 		}
 		return fn(rctx, host, in.Params, in.Context)
+	})
+	conn.Handle("triggers.set", func(_ context.Context, raw json.RawMessage) (any, error) {
+		var in struct {
+			Triggers []Trigger `json:"triggers"`
+		}
+		if err := json.Unmarshal(raw, &in); err != nil {
+			return nil, err
+		}
+		host.mu.Lock()
+		host.triggers = in.Triggers
+		host.mu.Unlock()
+		errs := map[string]string{}
+		if p.Triggers != nil {
+			// bound to the instance, not to this request: what it sets going keeps going
+			for id, msg := range p.Triggers(ctx, host, in.Triggers) {
+				errs[id] = msg
+			}
+		}
+		return map[string]any{"errors": errs}, nil
 	})
 	conn.Handle("options.list", func(rctx context.Context, raw json.RawMessage) (any, error) {
 		var in struct {

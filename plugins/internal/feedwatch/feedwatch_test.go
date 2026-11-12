@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	cat "github.com/dounx/cat/sdk/go"
 	"github.com/dounx/cat/sdk/go/cattest"
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
@@ -222,13 +223,13 @@ func TestRSSHubRoute(t *testing.T) {
 
 func TestBadConfig(t *testing.T) {
 	// Each plugin takes its own kind of subscription and points at the other.
-	for _, feeds := range []string{"", "# nothing\n", "example.com/feed", "/github/issue/DIYgod/RSSHub", "rsshub://a/b"} {
+	for _, feeds := range []string{"example.com/feed", "/github/issue/DIYgod/RSSHub", "rsshub://a/b"} {
 		h := cattest.New(t, New(RSS), cattest.Options{Config: map[string]any{"feeds": feeds}})
 		if err := h.Start(); err == nil {
 			t.Fatalf("feeds %q: expected an error", feeds)
 		}
 	}
-	for _, routes := range []string{"", "github/issue", "https://example.com/feed.xml"} {
+	for _, routes := range []string{"github/issue", "https://example.com/feed.xml"} {
 		h := cattest.New(t, New(RSSHub), cattest.Options{Config: map[string]any{"routes": routes}})
 		if err := h.Start(); err == nil {
 			t.Fatalf("routes %q: expected an error", routes)
@@ -237,6 +238,79 @@ func TestBadConfig(t *testing.T) {
 	h := cattest.New(t, New(RSSHub), cattest.Options{Config: map[string]any{"routes": "/a", "base_url": "rsshub.app"}})
 	if err := h.Start(); err == nil {
 		t.Fatal("expected an error for a base without scheme")
+	}
+}
+
+// Rules say what to watch in their trigger nodes: the instance's own settings
+// may be empty, and each event names the triggers that asked for its feed.
+func TestSubscriptionsFromRules(t *testing.T) {
+	site := newSite(t)
+	site.set("/a.xml", rss(feedItem(1)))
+	site.set("/b.xml", rss(feedItem(1)))
+	a, b := site.URL+"/a.xml", site.URL+"/b.xml"
+	h := cattest.New(t, New(RSS), cattest.Options{Config: map[string]any{"emit_existing": true}})
+	// Cat hands the triggers over before the instance starts.
+	errs, err := h.SetTriggers(
+		cat.Trigger{ID: "t-a", Params: map[string]any{"feeds": a}},
+		cat.Trigger{ID: "t-ab", Params: map[string]any{"feeds": a + "\n" + b}},
+		cat.Trigger{ID: "t-bad", Params: map[string]any{"feeds": "/not/a/feed"}},
+	)
+	if err != nil || len(errs) != 1 || !strings.Contains(errs["t-bad"], "RSSHub 路由") {
+		t.Fatalf("errs=%v err=%v", errs, err)
+	}
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]string{}
+	for range 2 { // one fetch and one event per feed, however many rules ask for it
+		ev := h.NextEvent()
+		got[ev.Conversation.ID] = ev.Triggers
+	}
+	if fmt.Sprint(got[a]) != "[t-a t-ab]" || fmt.Sprint(got[b]) != "[t-ab]" {
+		t.Fatalf("triggers: %v", got)
+	}
+
+	// A rule is added while the instance runs: its feed is looked at right
+	// away. One is removed: its feed is no longer watched.
+	site.set("/c.xml", rss(feedItem(1)))
+	c := site.URL + "/c.xml"
+	if errs, err := h.SetTriggers(cat.Trigger{ID: "t-c", Params: map[string]any{"feeds": c}}); err != nil || len(errs) != 0 {
+		t.Fatalf("errs=%v err=%v", errs, err)
+	}
+	if ev := h.NextEvent(); ev.Conversation.ID != c || fmt.Sprint(ev.Triggers) != "[t-c]" {
+		t.Fatalf("event: %+v", ev)
+	}
+	out, err := h.Invoke("check", nil, nil)
+	if err != nil || out["checked"] != float64(1) {
+		t.Fatalf("out=%v err=%v", out, err)
+	}
+	// With no rule asking and nothing in the settings there is nothing to do,
+	// which is not a failure.
+	if _, err := h.SetTriggers(); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := h.Invoke("check", nil, nil); err != nil || out["checked"] != float64(0) {
+		t.Fatalf("out=%v err=%v", out, err)
+	}
+}
+
+// A feed in the settings is watched whether a rule asks for it or not, and
+// fetched once when one does.
+func TestSettingsAndRulesShareAFeed(t *testing.T) {
+	site := newSite(t)
+	site.set("/github/a", rss(feedItem(1)))
+	h := cattest.New(t, New(RSSHub), cattest.Options{Config: map[string]any{"routes": "/github/a", "base_url": site.URL, "emit_existing": true}})
+	if _, err := h.SetTriggers(cat.Trigger{ID: "t1", Params: map[string]any{"routes": "rsshub://github/a"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if ev := h.NextEvent(); ev.Conversation.ID != "/github/a" || fmt.Sprint(ev.Triggers) != "[t1]" {
+		t.Fatalf("event: %+v", ev)
+	}
+	if out, err := h.Invoke("check", nil, nil); err != nil || out["checked"] != float64(1) {
+		t.Fatalf("out=%v err=%v", out, err)
 	}
 }
 

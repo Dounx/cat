@@ -64,7 +64,8 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 		if err == nil {
 			cfg["mode"], cfg["port"], cfg["access_key"] = mode, port, key
 			delete(cfg, "base_url")
-			return askRoutes(ctx, s, cfg, false)
+			// Nothing more to ask: which routes to subscribe to is said in rules.
+			return cfg, nil
 		}
 		if cancelled(err) || ctx.Err() != nil {
 			return nil, err
@@ -88,7 +89,7 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 	}
 	cfg["mode"] = "external"
 	delete(cfg, "port")
-	return askRoutes(ctx, s, cfg, true)
+	return askHub(ctx, s, cfg)
 }
 
 // starter runs RSSHub on a port with an access key.
@@ -172,41 +173,33 @@ func launch(ctx context.Context, s *cat.Setup, cfg map[string]any, prepare func(
 	return port, key, nil
 }
 
-// askRoutes is the last step: what to subscribe to, and for an external
-// instance, where it is.
-func askRoutes(ctx context.Context, s *cat.Setup, cfg map[string]any, external bool) (map[string]any, error) {
-	desc := "RSSHub 已经可以运行，之后会随这个接入启动和停止。\n\n每行填一个路由，以 / 开头，如 /github/issue/DIYgod/RSSHub。有哪些路由见 RSSHub 文档。"
-	order := []string{"routes"}
-	props := map[string]any{
-		"routes": map[string]any{"type": "string", "title": "路由", "format": "textarea"},
+// askHub is the last step for an instance that runs elsewhere: where it is.
+// Which routes to subscribe to is not asked here; rules say that in their
+// trigger nodes.
+func askHub(ctx context.Context, s *cat.Setup, cfg map[string]any) (map[string]any, error) {
+	key := map[string]any{"type": "string", "title": "访问密钥（可选）", "format": "password", "description": "自建实例设置了 ACCESS_KEY 时填写。"}
+	if str(cfg, "access_key") != "" {
+		key["description"] = "已保存；留空表示不修改。"
 	}
-	values := map[string]any{"routes": str(cfg, "routes")}
-	if external {
-		desc = "填写实例地址和要订阅的路由。每行一个路由，以 / 开头，如 /github/issue/DIYgod/RSSHub。有哪些路由见 RSSHub 文档。"
-		order = []string{"base_url", "access_key", "routes"}
-		props["base_url"] = map[string]any{"type": "string", "title": "实例地址", "description": "公共实例 " + publicHub + " 经常被限流，建议填自建实例。"}
-		props["access_key"] = map[string]any{"type": "string", "title": "访问密钥（可选）", "format": "password", "description": "自建实例设置了 ACCESS_KEY 时填写。"}
-		if values["base_url"] = str(cfg, "base_url"); values["base_url"] == "" {
-			values["base_url"] = publicHub
-		}
-		if str(cfg, "access_key") != "" {
-			props["access_key"].(map[string]any)["description"] = "已保存；留空表示不修改。"
-		}
+	base := str(cfg, "base_url")
+	if base == "" {
+		base = publicHub
 	}
 	out, err := s.Ask(ctx, cat.Step{
-		Kind: cat.StepForm, Title: "订阅哪些路由", Description: desc, URL: "https://docs.rsshub.app/routes/",
-		Values: values,
-		Schema: map[string]any{"type": "object", "required": []string{"routes"}, "x-order": order, "properties": props},
+		Kind: cat.StepForm, Title: "RSSHub 实例在哪里", URL: "https://docs.rsshub.app/deploy/",
+		Description: "填写实例地址。要订阅哪些路由不在这里填：接入之后，在规则的触发节点里选这个接入，再填路由。",
+		Values:      map[string]any{"base_url": base},
+		Schema: map[string]any{"type": "object", "required": []string{"base_url"}, "x-order": []string{"base_url", "access_key"}, "properties": map[string]any{
+			"base_url":   map[string]any{"type": "string", "title": "实例地址", "description": "公共实例 " + publicHub + " 经常被限流，建议填自建实例。"},
+			"access_key": key,
+		}},
 	})
 	if err != nil {
 		return nil, err
 	}
-	cfg["routes"] = str(out, "routes")
-	if external {
-		cfg["base_url"] = strings.TrimRight(str(out, "base_url"), "/")
-		if key := str(out, "access_key"); key != "" {
-			cfg["access_key"] = key
-		}
+	cfg["base_url"] = strings.TrimRight(str(out, "base_url"), "/")
+	if k := str(out, "access_key"); k != "" {
+		cfg["access_key"] = k
 	}
 	return cfg, nil
 }

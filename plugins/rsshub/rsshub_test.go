@@ -21,6 +21,7 @@ import (
 	"github.com/dounx/cat/core/engine"
 	"github.com/dounx/cat/core/plugin"
 	"github.com/dounx/cat/core/pluginhost"
+	"github.com/dounx/cat/core/rules"
 	"github.com/dounx/cat/core/store"
 )
 
@@ -181,6 +182,19 @@ func (z *wizard) done() engine.InstanceView {
 	return inst
 }
 
+// subscribe saves a rule whose trigger asks the instance for a route, which
+// is how an instance comes to watch anything.
+func (w *world) subscribe(id, routes string) rules.Rule {
+	w.t.Helper()
+	r, err := w.e.SaveRule(rules.Rule{Name: "订阅 " + routes, Enabled: true, Graph: &rules.Graph{Nodes: []rules.Node{
+		{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1", Params: map[string]any{"routes": routes}}, Sources: []string{id}},
+	}}})
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return r
+}
+
 // checkFeed has the instance fetch its route from the RSSHub it runs.
 func (w *world) checkFeed(id string) {
 	w.t.Helper()
@@ -210,18 +224,26 @@ func TestDockerEndToEnd(t *testing.T) {
 	}
 	z.answer(map[string]any{"confirmed": true})
 
-	// Once RSSHub has been seen to start, only the routes are left to ask.
-	step = z.expect("form", "订阅哪些路由")
-	if props := step["schema"].(map[string]any)["properties"].(map[string]any); props["base_url"] != nil {
-		t.Fatalf("a managed instance has no address to fill in: %+v", props)
-	}
-	z.answer(map[string]any{"routes": "/test/feed"})
-
+	// Once RSSHub has been seen to start there is nothing left to ask: the
+	// instance runs, watching nothing until a rule asks for a route.
 	inst := z.done()
 	if inst.Config["mode"] != "docker" || inst.Config["access_key"] != engine.SecretMask || inst.Config["base_url"] != nil {
 		t.Fatalf("instance: %+v", inst.Config)
 	}
+	if out, err := w.e.Invoke(context.Background(), inst.ID, "check", map[string]any{}, plugin.InvokeContext{}); err != nil || out["checked"] != float64(0) {
+		t.Fatalf("nothing should be watched yet: %v %v", out, err)
+	}
+	rule := w.subscribe(inst.ID, "/test/feed")
 	w.checkFeed(inst.ID)
+
+	// A rule that is switched off asks for nothing.
+	rule.Enabled = false
+	if _, err := w.e.SaveRule(rule); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := w.e.Invoke(context.Background(), inst.ID, "check", map[string]any{}, plugin.InvokeContext{}); err != nil || out["checked"] != float64(0) {
+		t.Fatalf("the route should be dropped with its rule: %v %v", out, err)
+	}
 
 	// The port is published on loopback only, the access key stays off the
 	// command line, and the image was pulled once.
@@ -301,12 +323,11 @@ func TestLocalEndToEnd(t *testing.T) {
 	}
 	z.answer(map[string]any{"confirmed": true})
 
-	z.expect("form", "订阅哪些路由")
-	z.answer(map[string]any{"routes": "/test/feed"})
 	inst := z.done()
 	if inst.Config["mode"] != "local" || inst.Config["access_key"] != engine.SecretMask {
 		t.Fatalf("instance: %+v", inst.Config)
 	}
+	w.subscribe(inst.ID, "/test/feed")
 	w.checkFeed(inst.ID)
 
 	// Installed and built once, without downloading a browser...
@@ -319,15 +340,12 @@ func TestLocalEndToEnd(t *testing.T) {
 		t.Fatalf("RSSHub was started as:\n%s", got)
 	}
 
-	// Re-running the wizard keeps the port and the routes, and builds nothing.
+	// Re-running the wizard keeps the port and builds nothing, and the
+	// restarted instance is told again what the rule asks for.
 	port := inst.Config["port"]
 	z = w.setup(inst.ID)
 	z.expect("form", "用哪个 RSSHub 实例")
 	z.answer(map[string]any{"mode": "local"})
-	if v, _ := z.expect("form", "订阅哪些路由")["values"].(map[string]any); v["routes"] != "/test/feed" {
-		t.Fatalf("routes should be kept: %+v", v)
-	}
-	z.answer(map[string]any{"routes": "/test/feed"})
 	if inst = z.done(); inst.Config["port"] != port || downloads != 1 || strings.Count(w.log("pnpm.log"), "\n") != 2 {
 		t.Fatalf("re-run: port %v -> %v, downloads=%d, pnpm:\n%s", port, inst.Config["port"], downloads, w.log("pnpm.log"))
 	}
@@ -377,7 +395,7 @@ func TestFallsBackToExternal(t *testing.T) {
 			t.Fatalf("%s: explanation %q should mention %q", c.mode, desc, c.why)
 		}
 		z.answer(map[string]any{"confirmed": true})
-		step = z.expect("form", "订阅哪些路由")
+		step = z.expect("form", "RSSHub 实例在哪里")
 		if v, _ := step["values"].(map[string]any); v["base_url"] != publicHub {
 			t.Fatalf("%s: the external form should offer the public instance: %+v", c.mode, v)
 		}

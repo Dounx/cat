@@ -1,22 +1,21 @@
 {
   "id": "rss",
   "name": "RSS",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "protocol": 1,
-  "description": "订阅 RSS / Atom 源，有新条目时发出事件。定时轮询，不需要公网地址。",
+  "description": "订阅 RSS / Atom 源，有新条目时发出事件。订阅哪些源在规则的触发节点里填。定时轮询，不需要公网地址。",
   "command": ["./cat-plugin-rss"],
   "category": "monitor",
   "capabilities": ["source", "action"],
   "config_schema": {
     "type": "object",
-    "required": ["feeds"],
-    "x-order": ["feeds", "interval", "emit_existing"],
+    "x-order": ["interval", "emit_existing", "feeds"],
     "properties": {
       "feeds": {
         "type": "string",
-        "title": "订阅源",
+        "title": "始终订阅的源（可选）",
         "format": "textarea",
-        "description": "每行一个 RSS / Atom 源的完整地址（https://…）。# 开头的行是注释。"
+        "description": "一般不用填：要订阅的源写在规则的触发节点里。这里填的源不管有没有规则用到都会订阅，每行一个完整地址（https://…）。# 开头的行是注释。"
       },
       "interval": {
         "type": "integer",
@@ -34,6 +33,18 @@
   "events": [
     { "type": "feed.item", "title": "新条目" }
   ],
+  "trigger_params": {
+    "type": "object",
+    "x-order": ["feeds"],
+    "properties": {
+      "feeds": {
+        "type": "string",
+        "title": "订阅源",
+        "format": "textarea",
+        "description": "这条规则要订阅的 RSS / Atom 源，每行一个完整地址（https://…）。填了以后只接收这些源的新条目；留空则接收这个接入的全部条目。"
+      }
+    }
+  },
   "actions": [
     {
       "name": "check",
@@ -43,7 +54,7 @@
         "type": "object",
         "x-order": ["feed"],
         "properties": {
-          "feed": { "type": "string", "title": "订阅源（可选）", "description": "和配置里的写法一致；留空检查全部。" }
+          "feed": { "type": "string", "title": "订阅源（可选）", "description": "和订阅时的写法一致；留空检查全部。" }
         }
       }
     }

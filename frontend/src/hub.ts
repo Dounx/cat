@@ -79,6 +79,8 @@ export const useHub = defineStore('hub', {
         if (i >= 0) this.instances[i] = inst
         else this.instances.push(inst)
       })
+      // a rule has something new to show, e.g. a subscription its source cannot read
+      es.addEventListener('rules', () => void this.reloadRules())
       // Other kinds (setup, download, ...) are exposed as the latest payload per kind.
       for (const kind of ['setup', 'download', 'plugins']) {
         es.addEventListener(kind, (m) => {

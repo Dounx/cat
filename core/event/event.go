@@ -33,6 +33,10 @@ type Event struct {
 	Actor        *Actor         `json:"actor,omitempty"`
 	Payload      map[string]any `json:"payload"`
 	Raw          any            `json:"raw,omitempty"`
+	// Triggers names the triggers the source emitted this event for: the ids
+	// it was given with their parameters (see rules.TriggerID). Empty for an
+	// event that no rule asked for in particular.
+	Triggers []string `json:"triggers,omitempty"`
 }
 
 // Map converts the event into plain maps using its JSON field names, which is

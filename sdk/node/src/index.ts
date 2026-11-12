@@ -34,6 +34,22 @@ export interface CatEvent {
   actor?: Actor
   payload?: Record<string, unknown>
   raw?: unknown
+  /**
+   * The ids of the triggers this event is emitted for (see Trigger). Leave it
+   * out for an event no rule asked for in particular.
+   */
+  triggers?: string[]
+}
+
+/**
+ * Something a rule asks this instance to watch: the parameters filled in on
+ * the rule's trigger node, shaped by plugin.json's trigger_params. Put its id
+ * in CatEvent.triggers on the events emitted for it; the rule that asked takes
+ * only those. The same parameters always come under the same id.
+ */
+export interface Trigger {
+  id: string
+  params: Record<string, any>
 }
 
 export interface ActionContext {
@@ -203,6 +219,11 @@ export class Host {
   instanceId = ''
   /** A private, persistent directory for this instance. */
   dataDir = ''
+  /**
+   * What the enabled rules ask this instance to watch, as of the latest
+   * update. Already filled in when start() runs.
+   */
+  triggers: Trigger[] = []
 
   /** @internal */
   constructor(private conn: Conn) {}
@@ -303,6 +324,14 @@ export interface Plugin {
    * `action` is "". Runs on a started instance.
    */
   options?(action: string, field: string, host: Host, signal: AbortSignal): Option[] | Promise<Option[]>
+  /**
+   * Told what the enabled rules ask this instance to watch, for plugins whose
+   * plugin.json has trigger_params: the whole list, each time it changes. The
+   * first call comes before start(), which can read host.triggers instead.
+   * Return what is wrong with single triggers, by id; it is shown on the
+   * rules that asked for them.
+   */
+  triggers?(list: Trigger[], host: Host): void | Record<string, string> | Promise<void | Record<string, string>>
 }
 
 /** One value offered for a field. `title` is what people read, `note` a few words more. */
@@ -343,6 +372,10 @@ export function run(
     const fn = plugin.actions?.[p.action]
     if (!fn) throw new RpcError(CODE_METHOD_NOT_FOUND, 'unknown action: ' + p.action)
     return (await fn(p.params ?? {}, p.context ?? {}, host, signal)) ?? {}
+  })
+  conn.handle('triggers.set', async (p) => {
+    host.triggers = p.triggers ?? []
+    return { errors: (await plugin.triggers?.(host.triggers, host)) ?? {} }
   })
   conn.handle('options.list', async (p, signal) => ({
     options: (await plugin.options?.(p.action ?? '', p.field ?? '', host, signal)) ?? [],

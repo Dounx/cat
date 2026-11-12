@@ -232,6 +232,10 @@ type instance struct {
 	mu      sync.Mutex
 	p       *proc
 	stopped bool
+	// what the rules ask the plugin to watch, and how many times that changed
+	triggers []plugin.Trigger
+	trigVer  int
+	pushMu   sync.Mutex // one triggers.set at a time, so the last one sent is the latest
 }
 
 func (i *instance) handlers(conn *jsonrpc.Conn) {
@@ -295,6 +299,16 @@ func (i *instance) boot() error {
 	if err != nil {
 		return fail(fmt.Errorf("插件初始化失败：%w", err))
 	}
+	// The plugin knows what the rules ask of it before it starts.
+	sent := -1
+	if i.m.TriggerParams != nil {
+		ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+		sent, err = i.pushTriggers(ctx, p.conn)
+		cancel()
+		if err != nil {
+			return fail(fmt.Errorf("插件不接受触发参数：%w", err))
+		}
+	}
 	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Minute)
 	err = p.conn.Call(ctx, "start", nil, nil)
 	cancel()
@@ -306,12 +320,54 @@ func (i *instance) boot() error {
 	if !stopped {
 		i.p = p
 	}
+	behind := i.trigVer != sent
 	i.mu.Unlock()
 	if stopped { // stopped while (re)starting
 		p.shutdown()
 		return errors.New("实例已停止")
 	}
+	if behind && i.m.TriggerParams != nil { // the rules changed while it was starting
+		ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+		if _, err := i.pushTriggers(ctx, p.conn); err != nil {
+			i.host.Log("warn", "更新触发参数失败："+err.Error())
+		}
+		cancel()
+	}
 	return nil
+}
+
+// pushTriggers sends the plugin the triggers as they are now and passes on
+// what it finds wrong with them. It returns which version it sent.
+func (i *instance) pushTriggers(ctx context.Context, conn *jsonrpc.Conn) (int, error) {
+	i.pushMu.Lock()
+	defer i.pushMu.Unlock()
+	i.mu.Lock()
+	list, ver := i.triggers, i.trigVer
+	i.mu.Unlock()
+	if list == nil {
+		list = []plugin.Trigger{}
+	}
+	var out struct {
+		Errors map[string]string `json:"errors"`
+	}
+	if err := conn.Call(ctx, "triggers.set", map[string]any{"triggers": list}, &out); err != nil {
+		return ver, err
+	}
+	i.host.TriggerErrors(out.Errors)
+	return ver, nil
+}
+
+func (i *instance) SetTriggers(ctx context.Context, list []plugin.Trigger) error {
+	i.mu.Lock()
+	i.triggers = list
+	i.trigVer++
+	p := i.p
+	i.mu.Unlock()
+	if p == nil || i.m.TriggerParams == nil {
+		return nil // not running yet: boot sends them
+	}
+	_, err := i.pushTriggers(ctx, p.conn)
+	return err
 }
 
 func (i *instance) Start(ctx context.Context, host plugin.Host) error {

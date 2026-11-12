@@ -37,6 +37,19 @@ type Event struct {
 	Actor        *Actor         `json:"actor,omitempty"`
 	Payload      map[string]any `json:"payload,omitempty"`
 	Raw          any            `json:"raw,omitempty"`
+	// Triggers lists the ids of the triggers this event is emitted for (see
+	// Trigger). Leave it empty for an event no rule asked for in particular.
+	Triggers []string `json:"triggers,omitempty"`
+}
+
+// Trigger is something a rule asks this instance to watch: the parameters
+// filled in on the rule's trigger node, shaped by plugin.json's
+// trigger_params. Put its ID in Event.Triggers on the events emitted for it;
+// the rule that asked takes only those. The same parameters always come under
+// the same id, also across restarts and from several rules at once.
+type Trigger struct {
+	ID     string         `json:"id"`
+	Params map[string]any `json:"params"`
 }
 
 // ActionContext says what triggered an action.

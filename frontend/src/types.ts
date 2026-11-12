@@ -31,6 +31,8 @@ export interface Plugin {
   config_schema?: Schema
   actions?: ActionSpec[]
   events?: { type: string; title: string }[]
+  // what a rule's trigger node can ask of an instance: which feeds to watch, say
+  trigger_params?: Schema
   singleton?: boolean
   ingress?: boolean
   setup?: boolean
@@ -65,8 +67,9 @@ export interface Step {
   timeout_seconds?: number
 }
 // A rule drawn as a graph: trigger, condition and action nodes wired together.
-// A trigger node names the events that start there, and a throttle node
-// lets an event past once per window. An edge leaving a
+// A trigger node names the events that start there, and with `params` asks
+// its sources for something of its own (a feed to watch) and takes only the
+// events emitted for that. A throttle node lets an event past once per window. An edge leaving a
 // condition with branch "else" is taken when the condition does not hold; one
 // whose `from` is "trigger" starts at the rule's own sources and types, in a
 // graph saved without trigger nodes. A condition with `instance` set is put to

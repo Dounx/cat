@@ -68,6 +68,8 @@ type running struct {
 	cancel context.CancelFunc
 	status string
 	err    string
+	// what the rules ask this instance to watch, as last handed to it
+	triggers []plugin.Trigger
 }
 
 type Engine struct {
@@ -83,6 +85,11 @@ type Engine struct {
 	rules    []*rules.Compiled
 	ruleErrs map[string]string
 	throttle map[string]time.Time
+	// trigErrs holds what each instance found wrong with its triggers, by
+	// instance id and then trigger id.
+	trigErrs map[string]map[string]string
+	// trigMu orders the handing over of triggers to instances.
+	trigMu sync.Mutex
 
 	subMu sync.Mutex
 	subs  map[chan Message]struct{}
@@ -102,6 +109,7 @@ func New(st *store.Store, dataDir string, log *slog.Logger) *Engine {
 		running:  map[string]*running{},
 		ruleErrs: map[string]string{},
 		throttle: map[string]time.Time{},
+		trigErrs: map[string]map[string]string{},
 		subs:     map[chan Message]struct{}{},
 		sem:      make(chan struct{}, 16),
 	}
@@ -239,8 +247,16 @@ func (e *Engine) launch(rec store.Instance) {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.mu.Lock()
 	r.inst, r.cancel = inst, cancel
+	delete(e.trigErrs, rec.ID)
 	e.mu.Unlock()
 	e.setStatus(r, StatusStarting, "")
+	// what the rules ask it to watch is there before it starts
+	e.trigMu.Lock()
+	e.mu.RLock()
+	asked := e.triggersFor(rec.ID)
+	e.mu.RUnlock()
+	e.giveTriggers(r, inst, asked)
+	e.trigMu.Unlock()
 	go func() {
 		if err := inst.Start(ctx, &host{e: e, rec: rec}); err != nil {
 			e.setStatus(r, StatusError, err.Error())
@@ -333,6 +349,7 @@ func (e *Engine) DeleteInstance(instanceID string) error {
 	e.mu.Lock()
 	r := e.running[instanceID]
 	delete(e.running, instanceID)
+	delete(e.trigErrs, instanceID)
 	e.mu.Unlock()
 	if r != nil {
 		e.halt(r)
@@ -425,6 +442,8 @@ func (h *host) StateSet(key, value string) error {
 func (h *host) InstanceID() string { return h.rec.ID }
 
 func (h *host) SetStatus(status, message string) { h.e.ReportStatus(h.rec.ID, status, message) }
+
+func (h *host) TriggerErrors(errs map[string]string) { h.e.triggerErrors(h.rec.ID, errs) }
 
 func (h *host) DataDir() string {
 	return h.e.InstanceDir(h.rec.ID)

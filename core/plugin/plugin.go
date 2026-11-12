@@ -55,6 +55,14 @@ type ActionSpec struct {
 	Params      map[string]any `json:"params,omitempty"` // JSON Schema
 }
 
+// Trigger is something a rule asks an instance to watch: the parameters
+// filled in on a trigger node, shaped by the manifest's TriggerParams, under
+// an id the instance puts on the events it emits for it.
+type Trigger struct {
+	ID     string         `json:"id"`
+	Params map[string]any `json:"params"`
+}
+
 // EventSpec describes one event type a plugin emits.
 type EventSpec struct {
 	Type  string `json:"type"`
@@ -74,6 +82,10 @@ type Manifest struct {
 	ConfigSchema map[string]any `json:"config_schema,omitempty"` // JSON Schema
 	Actions      []ActionSpec   `json:"actions,omitempty"`
 	Events       []EventSpec    `json:"events,omitempty"`
+	// TriggerParams (a JSON Schema) is what a rule's trigger node can ask of
+	// an instance: which feeds to watch, say. Plugins that set it are told
+	// what the enabled rules ask through Instance.SetTriggers.
+	TriggerParams map[string]any `json:"trigger_params,omitempty"`
 	// Singleton plugins need no configuration; one instance whose id equals
 	// the plugin id is created automatically.
 	Singleton bool `json:"singleton,omitempty"`
@@ -127,6 +139,9 @@ type Host interface {
 	InstanceID() string
 	// SetStatus reports a status change after Start has returned.
 	SetStatus(status, message string)
+	// TriggerErrors reports what is wrong with the triggers last given to the
+	// instance, by trigger id; empty when all of them are fine.
+	TriggerErrors(errs map[string]string)
 }
 
 // Instance is one configured, running copy of a plugin.
@@ -138,6 +153,11 @@ type Instance interface {
 	// Options lists what may go in a field while someone fills in a form: a
 	// parameter of the named action, or a configuration field when action is "".
 	Options(ctx context.Context, action, field string) ([]Option, error)
+	// SetTriggers gives the instance everything the enabled rules ask it to
+	// watch, replacing what it was given before. It is called before Start
+	// and again whenever the list changes. Problems with single triggers
+	// are reported through Host.TriggerErrors.
+	SetTriggers(ctx context.Context, list []Trigger) error
 }
 
 // Factory builds an instance from its stored configuration.
@@ -156,6 +176,7 @@ func (Base) HandleIngress(context.Context, IngressRequest) (IngressResponse, err
 }
 
 func (Base) Options(context.Context, string, string) ([]Option, error) { return nil, nil }
+func (Base) SetTriggers(context.Context, []Trigger) error              { return nil }
 
 // ErrUnknownAction is returned when an instance is asked for an action it lacks.
 type ErrUnknownAction string

@@ -7,6 +7,7 @@
 - [传输](#传输)
 - [生命周期](#生命周期)
 - [方法一览](#方法一览)
+- [触发参数](#触发参数)
 - [聊天平台约定](#聊天平台约定)
 - [Harness 约定](#harness-约定)
 - [接入向导](#接入向导)
@@ -26,11 +27,12 @@
   "conversation": { "id": "-1001", "kind": "group", "name": "Ops" }, // kind: private | group | channel
   "actor": { "id": "42", "name": "Ann", "is_bot": false },
   "payload": { "text": "…", "message_id": "7" },
-  "raw": { }                 // 平台原始数据，原样保留
+  "raw": { },                // 平台原始数据，原样保留
+  "triggers": [ "9f2c…" ]    // 可选：这个事件是为哪些触发发的，见「触发参数」
 }
 ```
 
-插件只需要填 `type`，以及有意义时的 `conversation`、`actor`、`payload`、`raw`、`time`。`id`、`source`、`plugin` 由 Cat 决定，插件填了也会被覆盖。
+插件只需要填 `type`，以及有意义时的 `conversation`、`actor`、`payload`、`raw`、`time`、`triggers`。`id`、`source`、`plugin` 由 Cat 决定，插件填了也会被覆盖。
 
 ## plugin.json
 
@@ -50,6 +52,7 @@
   "setup": true,               // true：提供接入向导
   "config_schema": { },        // JSON Schema，界面据此渲染配置表单
   "events": [ { "type": "message.created", "title": "收到消息" } ],
+  "trigger_params": { },       // JSON Schema，可选：规则的触发节点里要填的东西，见「触发参数」
   "actions": [
     { "name": "reply", "title": "回复", "description": "…", "params": { /* JSON Schema */ } }
   ],
@@ -94,6 +97,7 @@
 Cat                                   插件
  │ ── initialize ───────────────────▶ │  保存配置
  │ ◀─────────────── { protocol: 1 } ─ │
+ │ ── triggers.set ─────────────────▶ │  仅当声明了 trigger_params；之后规则一变就再发
  │ ── start ────────────────────────▶ │  连接平台；就绪后才返回
  │ ◀──────────────────────── null ─── │  （返回错误 = 启动失败，Cat 不重试）
  │ ◀── event.emit / log / status ──── │  运行期间
@@ -115,6 +119,7 @@ Cat                                   插件
 | `start` | — | — |
 | `stop` | — | — |
 | `action.invoke` | `{ action, params, context: { event?, rule_id?, run_id? } }` | 一个对象，成为该动作的输出 |
+| `triggers.set` | `{ triggers: [{ id, params }] }`：启用的规则要这个实例盯的全部东西，每次都是完整列表 | `{ errors?: { "<id>": "原因" } }`：看不懂的触发各自的原因。见「触发参数」 |
 | `options.list` | `{ action, field }`：`action` 是动作名，问的是配置字段时为空串 | `{ options: [{ value, title?, note? }] }`。`title` 是给人看的名字，`note` 是旁边的一小段补充。只在实例启动后调用；没有实现这个方法等于没有可选项 |
 | `ingress.request` | `{ method, path, query, headers, body }`（`body` 为 base64） | `{ status, headers?, body? }`（`body` 为 base64） |
 | `setup.run` | `{ existing }`（已有配置，新建时为空对象） | `{ config }` |
@@ -133,6 +138,34 @@ Cat                                   插件
 | `setup.show` | 请求 | 一个向导步骤 | 立即返回 |
 | `setup.ask` | 请求 | 一个 `form` 或 `confirm` 步骤 | 用户的回答；用户关闭向导时返回错误 `-32800` |
 | `host.dependency` | 请求 | `{ name }` | `{ path }` |
+
+## 触发参数
+
+有些来源盯什么要由用户说：订阅哪个 RSS 源、盯哪个页面。这些可以写在实例的配置里，但那样用户要先去接入里填一遍，再回规则里按会话筛一遍。更顺手的做法是让规则自己说：插件在 `plugin.json` 里用 `trigger_params`（一个 JSON Schema，和 `config_schema` 同样的写法）声明触发节点里要填什么，用户在规则的触发节点里选中这个接入后，界面就把表单显示出来。
+
+```jsonc
+"trigger_params": {
+  "type": "object",
+  "properties": {
+    "feeds": { "type": "string", "title": "订阅源", "format": "textarea", "description": "每行一个地址" }
+  }
+}
+```
+
+Cat 把所有**启用的**规则里指向这个实例的触发参数汇总起来，通过 `triggers.set` 交给插件：
+
+```jsonc
+{ "triggers": [ { "id": "9f2c41d07a3e", "params": { "feeds": "https://go.dev/blog/feed.atom" } } ] }
+```
+
+- 每次都是完整列表，替换上一次的。第一次在 `initialize` 之后、`start` 之前发，所以 `start` 时插件已经知道要盯什么；之后规则保存、启用、停用、删除，只要列表变了就再发一次。进程重启后也会重新发。
+- `id` 只由参数决定：字符串去掉首尾空白、空值丢掉之后，同样的参数在任何规则里、重启前后都是同一个 `id`。几条规则填了一样的参数，插件只会看到一项。
+- 插件为某个触发发事件时，把它的 `id` 写进事件的 `triggers`。填了参数的触发节点只接收 `triggers` 里有自己 `id` 的事件；没填参数的触发节点照旧接收这个实例的所有事件。两个触发要的是同一样东西时（比如各自的列表里有同一个源），只抓取一次、只发一个事件，`triggers` 里写上两个 `id`。
+- 看不懂某个触发的参数时不要让整个调用失败，在返回的 `errors` 里按 `id` 写明原因，其余的照常生效。原因会显示在提出这个触发的规则上。
+- 列表为空是正常情况：还没有规则用到这个实例。此时 `start` 不应该报错。
+- 记住看过什么（`state.set`）请按盯的东西本身来记，不要按 `id` 或规则来记，这样用户改规则时不会把旧内容再收到一遍。
+
+没有声明 `trigger_params` 的插件不会收到 `triggers.set`。
 
 ## 聊天平台约定
 

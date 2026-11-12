@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/dounx/cat/core/builtin"
 	"github.com/dounx/cat/core/engine"
+	"github.com/dounx/cat/core/event"
 	"github.com/dounx/cat/core/plugin"
 	"github.com/dounx/cat/core/rules"
 	"github.com/dounx/cat/core/store"
@@ -596,5 +598,163 @@ func TestGraphJudgedCondition(t *testing.T) {
 	defer mu.Unlock()
 	if asked != 4 {
 		t.Fatalf("asked %d times, want 4", asked)
+	}
+}
+
+// watcher is a source that watches what the rules ask it to: it remembers
+// the triggers it is given, finds fault with those that ask for "bad", and
+// emits an event for a trigger on request.
+type watcher struct {
+	plugin.Base
+	mu   sync.Mutex
+	host plugin.Host
+	sets [][]plugin.Trigger
+}
+
+func (w *watcher) Start(_ context.Context, h plugin.Host) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.host = h
+	return nil
+}
+
+func (w *watcher) SetTriggers(_ context.Context, list []plugin.Trigger) error {
+	w.mu.Lock()
+	w.sets = append(w.sets, list)
+	h := w.host
+	w.mu.Unlock()
+	errs := map[string]string{}
+	for _, t := range list {
+		if t.Params["feed"] == "bad" {
+			errs[t.ID] = "看不懂的订阅源「bad」"
+		}
+	}
+	if h != nil {
+		h.TriggerErrors(errs)
+	}
+	return nil
+}
+
+// last gives the feeds asked for at the latest hand-over, and how many
+// hand-overs there were.
+func (w *watcher) last() (feeds string, n int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.sets) == 0 {
+		return "", 0
+	}
+	var list []string
+	for _, t := range w.sets[len(w.sets)-1] {
+		list = append(list, t.Params["feed"].(string))
+	}
+	sort.Strings(list)
+	return strings.Join(list, ","), len(w.sets)
+}
+
+func (w *watcher) emit(t *testing.T, triggers ...string) {
+	t.Helper()
+	if _, err := w.host.Emit(&event.Event{Type: "feed.item", Triggers: triggers}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// What a rule's trigger node asks of its source reaches the source before it
+// starts and whenever the rules change, and the node takes only the events
+// emitted for it.
+func TestTriggerParams(t *testing.T) {
+	e := newEngine(t)
+	w := &watcher{}
+	e.RegisterPlugin(plugin.Manifest{ID: "feeds", Name: "feeds", Category: "monitor", TriggerParams: map[string]any{"type": "object"}},
+		func(map[string]any) (plugin.Instance, error) { return w, nil })
+	src, err := e.SaveInstance(store.Instance{Plugin: "feeds", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, e, src.ID)
+	waitRunning(t, e, "shell")
+	if feeds, n := w.last(); feeds != "" || n != 1 {
+		t.Fatalf("a new instance is told that nothing is asked of it: %q after %d", feeds, n)
+	}
+
+	watch := func(name, feed string) rules.Rule {
+		t.Helper()
+		r, err := e.SaveRule(rules.Rule{Name: name, Enabled: true, Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1", Params: map[string]any{"feed": feed, "note": "  "}}, Sources: []string{src.ID}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s1", Instance: "shell", Action: "run", Params: map[string]any{"command": "echo " + name}}},
+			},
+			Edges: []rules.Edge{{From: "t1", To: "s1"}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	a := watch("a", "one")
+	b := watch("b", " one ") // the same thing, asked once
+	c := watch("c", "two")
+	if feeds, _ := w.last(); feeds != "one,two" {
+		t.Fatalf("asked for %q", feeds)
+	}
+	// a rule that takes whatever the source emits
+	all, err := e.SaveRule(rules.Rule{Name: "all", Enabled: true, Sources: []string{src.ID}, Steps: []rules.Step{
+		{Instance: "shell", Action: "run", Params: map[string]any{"command": "echo all"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, n := w.last(); n != 3 { // at the start, then for "one" and for "two"
+		t.Fatalf("a rule that asks nothing should change nothing: %d hand-overs", n)
+	}
+
+	runs := func(r rules.Rule) int {
+		list, _ := e.Store.ListRuns(r.ID, "", 10)
+		return len(list)
+	}
+	one := rules.TriggerID(map[string]any{"feed": "one"})
+	w.emit(t, one)
+	waitFor(t, "the rules that asked", func() bool { return runs(a) == 1 && runs(b) == 1 && runs(all) == 1 })
+	w.emit(t) // an event nobody asked for in particular
+	waitFor(t, "the rule that takes everything", func() bool { return runs(all) == 2 })
+	if runs(a) != 1 || runs(b) != 1 || runs(c) != 0 {
+		t.Fatalf("runs: a=%d b=%d c=%d", runs(a), runs(b), runs(c))
+	}
+
+	// Switched off or deleted, a rule no longer asks.
+	c.Enabled = false
+	if _, err := e.SaveRule(c); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.DeleteRule(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if feeds, _ := w.last(); feeds != "one" { // b still asks
+		t.Fatalf("asked for %q", feeds)
+	}
+
+	// What the source cannot make sense of shows on the rule.
+	bad := watch("bad", "bad")
+	list, _ := e.Rules()
+	for _, r := range list {
+		if want := r.ID == bad.ID; (r.Error != "") != want || (want && !strings.Contains(r.Error, "看不懂")) {
+			t.Fatalf("rule %s: error %q", r.Name, r.Error)
+		}
+	}
+
+	// A restarted instance is told again.
+	if _, err := e.SaveInstance(src); err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, e, src.ID)
+	if feeds, _ := w.last(); feeds != "bad,one" {
+		t.Fatalf("after a restart: %q", feeds)
+	}
+
+	// A trigger that asks for something has to say of whom.
+	_, err = e.SaveRule(rules.Rule{Name: "nobody", Enabled: true, Graph: &rules.Graph{Nodes: []rules.Node{
+		{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1", Params: map[string]any{"feed": "x"}}},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "选定来源") {
+		t.Fatalf("err = %v", err)
 	}
 }

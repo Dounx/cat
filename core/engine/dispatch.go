@@ -35,6 +35,7 @@ func (e *Engine) reloadRules() error {
 	e.mu.Lock()
 	e.rules, e.ruleErrs = compiled, errs
 	e.mu.Unlock()
+	e.syncTriggers()
 	return nil
 }
 
@@ -48,6 +49,19 @@ func (e *Engine) Rules() ([]RuleView, error) {
 	out := make([]RuleView, len(list))
 	for i, r := range list {
 		out[i] = RuleView{Rule: r, Error: e.ruleErrs[r.ID]}
+		if out[i].Error != "" || !r.Enabled {
+			continue
+		}
+		// a trigger its source could not make sense of
+	asks:
+		for _, a := range r.Asks() {
+			for _, src := range a.Sources {
+				if msg := e.trigErrs[src][a.ID]; msg != "" {
+					out[i].Error = msg
+					break asks
+				}
+			}
+		}
 	}
 	return out, nil
 }

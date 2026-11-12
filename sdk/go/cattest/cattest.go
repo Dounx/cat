@@ -156,6 +156,20 @@ func (h *Harness) Invoke(action string, params map[string]any, trigger *cat.Even
 	return out, err
 }
 
+// SetTriggers tells the plugin what rules ask it to watch, as Cat does before
+// Start and whenever the rules change. It returns what the plugin found wrong
+// with single triggers, by id.
+func (h *Harness) SetTriggers(list ...cat.Trigger) (map[string]string, error) {
+	if list == nil {
+		list = []cat.Trigger{}
+	}
+	var out struct {
+		Errors map[string]string `json:"errors"`
+	}
+	err := h.call("triggers.set", map[string]any{"triggers": list}, &out)
+	return out.Errors, err
+}
+
 // Options asks what the plugin offers for a field, as a form would.
 func (h *Harness) Options(action, field string) ([]cat.Option, error) {
 	var out struct {

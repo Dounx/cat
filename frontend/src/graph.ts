@@ -34,7 +34,8 @@ export interface ENode {
   ask: boolean
   // what the condition can come to; empty means yes or no
   choices: string[]
-  // action, and a condition that is asked
+  // action, and a condition that is asked; for a trigger, what it asks of
+  // its sources (the routes to subscribe to, say)
   instance: string
   action: string
   params: Record<string, unknown>
@@ -109,9 +110,16 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
     nodes: [],
     edges: [],
   }
-  const trigger = (id: string, sources?: string[], types?: string[], at?: { x?: number; y?: number }) => {
+  const trigger = (
+    id: string,
+    sources?: string[],
+    types?: string[],
+    at?: { x?: number; y?: number },
+    params?: Record<string, unknown>,
+  ) => {
     const t = blankNode('trigger', id, at?.x, at?.y)
     t.sources = [...(sources || [])]
+    t.params = { ...params }
     t.pickedTypes = (types || []).filter((x) => declared.has(x))
     t.otherTypes = (types || []).filter((x) => !declared.has(x)).join(', ')
     doc.nodes.push(t)
@@ -133,7 +141,7 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
     for (const n of stored) {
       if (folded.has(n.id)) continue
       if (n.kind === 'trigger') {
-        trigger(n.id, n.sources, n.types, n.meta)
+        trigger(n.id, n.sources, n.types, n.meta, n.params)
         continue
       }
       const node = blankNode(n.kind, n.id, n.meta?.x, n.meta?.y)
@@ -214,8 +222,9 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
   return doc
 }
 
-// The rule as the hub stores it.
-export function toRule(doc: Doc, base: Rule): Rule {
+// The rule as the hub stores it. `asks` says whether a trigger's sources take
+// parameters at all: what was filled in for other sources is not kept.
+export function toRule(doc: Doc, base: Rule, asks: (t: ENode) => boolean = () => true): Rule {
   // A trigger with a rate limit is followed by a throttle node that every
   // wire leaving the trigger goes through.
   const limited = new Map<string, string>()
@@ -247,7 +256,16 @@ export function toRule(doc: Doc, base: Rule): Rule {
   const nodes: GraphNode[] = doc.nodes.map((n) => {
     const at = { x: n.x, y: n.y }
     if (n.kind === 'trigger')
-      return { id: n.id, kind: n.kind, instance: '', action: '', sources: n.sources, types: typesOf(n), meta: at }
+      return {
+        id: n.id,
+        kind: n.kind,
+        instance: '',
+        action: '',
+        sources: n.sources,
+        types: typesOf(n),
+        ...(Object.keys(n.params).length && asks(n) ? { params: n.params } : {}),
+        meta: at,
+      }
     if (n.kind === 'throttle')
       return {
         id: n.id,

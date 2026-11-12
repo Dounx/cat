@@ -41,8 +41,10 @@ const (
 // Node is one trigger, condition or action of a graph. An action node is a
 // Step, and later nodes refer to its output as steps.<id>. A trigger node
 // names the events that start a walk there, as a rule's Sources and Types do.
-// A throttle node lets a walk past once per ThrottleSeconds for each value of
-// ThrottleKey (an expression; empty = one window for the node).
+// With Params set, a trigger node asks its sources for something of its own
+// (a feed to watch, say) and takes only the events they emit for it; see
+// Trigger. A throttle node lets a walk past once per ThrottleSeconds for each
+// value of ThrottleKey (an expression; empty = one window for the node).
 //
 // A condition node decides by its Condition expression or, with Instance
 // set, by asking that instance (a model, say) through Action and Params, as
@@ -76,14 +78,15 @@ type Graph struct {
 }
 
 type compiledGraph struct {
-	triggers []*Node // in the order listed; empty when the rule's own trigger is used
+	triggers []*Node           // in the order listed; empty when the rule's own trigger is used
+	asks     map[string]string // trigger node → the id of what it asks, if anything
 	nodes    map[string]*Node
 	conds    map[string]*vm.Program
 	next     map[string][]Edge // outgoing edges, in the order they were listed
 }
 
 func compileGraph(g *Graph) (*compiledGraph, error) {
-	c := &compiledGraph{nodes: map[string]*Node{}, conds: map[string]*vm.Program{}, next: map[string][]Edge{}}
+	c := &compiledGraph{nodes: map[string]*Node{}, conds: map[string]*vm.Program{}, next: map[string][]Edge{}, asks: map[string]string{}}
 	for i := range g.Nodes {
 		n := &g.Nodes[i]
 		if n.ID == "" || n.ID == TriggerNode {
@@ -122,6 +125,12 @@ func compileGraph(g *Graph) (*compiledGraph, error) {
 				}
 			}
 		case KindTrigger:
+			if id := n.TriggerID(); id != "" {
+				if len(n.Sources) == 0 {
+					return nil, fmt.Errorf("触发 %s 填了要订阅的内容，需要选定来源", n.ID)
+				}
+				c.asks[n.ID] = id
+			}
 			c.triggers = append(c.triggers, n)
 		default:
 			return nil, fmt.Errorf("节点 %s 的类型无效：%q", n.ID, n.Kind)
@@ -175,6 +184,15 @@ func compileGraph(g *Graph) (*compiledGraph, error) {
 // Judged reports whether a condition node is decided by asking an instance
 // rather than by an expression.
 func (n *Node) Judged() bool { return n.Kind == KindCondition && n.Instance != "" }
+
+// TriggerID is the id of what a trigger node asks of its sources, or "" when
+// it asks nothing and takes whatever they emit.
+func (n *Node) TriggerID() string {
+	if n.Kind != KindTrigger {
+		return ""
+	}
+	return TriggerID(n.Params)
+}
 
 // validBranch reports whether an edge leaving from may carry the branch:
 // none, unless from is a condition; then "else", and either no branch (yes
@@ -291,7 +309,8 @@ func (c *compiledGraph) walk(from, branch string, env func() map[string]any, see
 }
 
 // starts lists where a walk for the event begins: the trigger nodes it falls
-// within, or the rule's own trigger when the graph has no trigger nodes (the
+// within (and, for those that ask their sources for something, was emitted
+// for), or the rule's own trigger when the graph has no trigger nodes (the
 // rule's scope has been checked by then).
 func (c *compiledGraph) starts(ev *event.Event) []string {
 	if len(c.triggers) == 0 {
@@ -299,7 +318,11 @@ func (c *compiledGraph) starts(ev *event.Event) []string {
 	}
 	var ids []string
 	for _, t := range c.triggers {
-		if inScope(t.Sources, t.Types, ev) {
+		if !inScope(t.Sources, t.Types, ev) {
+			continue
+		}
+		// a trigger that asked for something takes only what was emitted for it
+		if ask := c.asks[t.ID]; ask == "" || contains(ev.Triggers, ask) {
 			ids = append(ids, t.ID)
 		}
 	}

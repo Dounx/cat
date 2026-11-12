@@ -3,6 +3,9 @@
 package rules
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"path"
 	"strings"
@@ -44,6 +47,71 @@ type Rule struct {
 	ThrottleKey     string `json:"throttle_key,omitempty"`
 	// Meta is opaque UI state (for example the visual condition builder's rows).
 	Meta map[string]any `json:"meta,omitempty"`
+}
+
+// Trigger is what a trigger node asks of a source: the parameters filled in
+// on the node (which feed to watch, say), under an id that depends on nothing
+// but them. The source tags the events it emits for a trigger with that id,
+// and the node takes only those.
+type Trigger struct {
+	ID     string         `json:"id"`
+	Params map[string]any `json:"params"`
+}
+
+// Asked is a Trigger together with the node that carries it and the
+// instances it is asked of.
+type Asked struct {
+	Trigger
+	Node    string
+	Sources []string
+}
+
+// TriggerParams tidies the parameters of a trigger node: strings are trimmed
+// and whatever is left empty is dropped. It gives nil when nothing remains,
+// which is a trigger that asks nothing of its sources.
+func TriggerParams(params map[string]any) map[string]any {
+	var out map[string]any
+	for k, v := range params {
+		if s, ok := v.(string); ok {
+			v = strings.TrimSpace(s)
+		}
+		if v == nil || v == "" {
+			continue
+		}
+		if out == nil {
+			out = map[string]any{}
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// TriggerID identifies a set of trigger parameters: the same parameters give
+// the same id in every rule, so a source asked twice for one thing sees it
+// once. It is empty when there are no parameters.
+func TriggerID(params map[string]any) string {
+	params = TriggerParams(params)
+	if params == nil {
+		return ""
+	}
+	b, _ := json.Marshal(params) // keys come out sorted
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:6])
+}
+
+// Asks lists what the rule's trigger nodes ask of their sources.
+func (r *Rule) Asks() []Asked {
+	if r.Graph == nil {
+		return nil
+	}
+	var out []Asked
+	for i := range r.Graph.Nodes {
+		n := &r.Graph.Nodes[i]
+		if id := n.TriggerID(); id != "" {
+			out = append(out, Asked{Trigger: Trigger{ID: id, Params: TriggerParams(n.Params)}, Node: n.ID, Sources: n.Sources})
+		}
+	}
+	return out
 }
 
 // Env builds the variables visible to expressions: the event under "event"

@@ -140,10 +140,28 @@ function toggle(list: string[], value: string) {
   if (i >= 0) list.splice(i, 1)
   else list.push(value)
 }
+// What a trigger can ask of its sources, e.g. the routes to subscribe to: the
+// form their plugin gives for it, when the chosen sources are all of one
+// plugin that has one.
+function triggerSchema(t: ENode) {
+  const plugins = new Set(t.sources.map((id) => hub.instanceOf(id)?.plugin || ''))
+  return plugins.size === 1 ? hub.pluginOf([...plugins][0])?.trigger_params : undefined
+}
+// What it asks for, line by line, to show on the node.
+const asked = (t: ENode) =>
+  triggerSchema(t)
+    ? Object.values(t.params)
+        .filter((v): v is string => typeof v === 'string')
+        .flatMap((v) => v.split('\n'))
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith('#'))
+    : []
 const triggerTitle = (t: ENode) => (t.sources.length ? t.sources.map(hub.instanceName).join('、') : '所有接入')
 const triggerSummary = (t: ENode) => {
   const types = typesOf(t)
-  const what = types.length ? types.map((x) => typeTitle(x) || x).join('、') : '任何事件'
+  const lines = asked(t)
+  const of = lines.length ? `${lines[0]}${lines.length > 1 ? ` 等 ${lines.length} 个` : ''} · ` : ''
+  const what = of + (types.length ? types.map((x) => typeTitle(x) || x).join('、') : '任何事件')
   return Number(t.limit) > 0 ? `${what} · ${t.limit} 秒内一次` : what
 }
 
@@ -468,7 +486,10 @@ async function tryOut() {
   settle()
   tryBusy.value = true
   const out = await hub.run(() =>
-    post<{ run: Run | null; error?: string }>('/rules/try', { rule: toRule(doc, props.rule), event_id: id }),
+    post<{ run: Run | null; error?: string }>('/rules/try', {
+      rule: toRule(doc, props.rule, (t) => !!triggerSchema(t)),
+      event_id: id,
+    }),
   )
   tryBusy.value = false
   if (!out) return
@@ -819,7 +840,7 @@ function close() {
 }
 async function save() {
   settle()
-  const body = toRule(doc, props.rule)
+  const body = toRule(doc, props.rule, (t) => !!triggerSchema(t))
   const ok = await hub.run(
     () => (props.rule.id ? put(`/rules/${props.rule.id}`, body) : post('/rules', body)),
     '规则已保存',
@@ -1050,6 +1071,13 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
             </label>
           </div>
           <p v-if="!node.sources.length" class="mt-1 text-xs text-warn">还没有选。一个都不选时，按「所有接入」处理。</p>
+          <SchemaForm
+            v-if="triggerSchema(node)"
+            class="mt-3"
+            :model-value="node.params"
+            :schema="triggerSchema(node)"
+            @update:model-value="node.params = $event"
+          />
         </template>
         <p v-if="!sourceInstances.length" class="text-xs text-mute">
           还没有能发出事件的接入，请先到「接入」添加渠道或监控。
