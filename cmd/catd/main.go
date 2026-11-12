@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -29,14 +28,15 @@ func main() {
 
 	a, err := app.New(opts)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "catd:", err)
+		// Through the logger, so it reaches the log file when the failure
+		// came after that was opened.
+		slog.Error("catd cannot start", "err", err)
 		os.Exit(1)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	slog.Info("cat listening", "url", a.URL(), "data", a.DataDir)
 	if err := a.Run(ctx); err != nil && err != http.ErrServerClosed {
-		fmt.Fprintln(os.Stderr, "catd:", err)
+		slog.Error("catd stopped", "err", err)
 		os.Exit(1)
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"context"
 	_ "embed"
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -59,8 +58,6 @@ func main() {
 	var secrets engine.Secrets
 	if k := (keychain{service: "Cat Event Hub"}); k.usable() {
 		secrets = k
-	} else {
-		slog.Warn("no system credential store; secrets are kept in a private file instead")
 	}
 	hub, err := app.New(app.Options{
 		Addr: *addr, DataDir: *data, PluginDirs: filepath.SplitList(*plugins),
@@ -68,8 +65,14 @@ func main() {
 		OpenURL: func(url string) error { return wails.Browser.OpenURL(url) },
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cat:", err)
+		// Through the logger, so it reaches the log file when the failure
+		// came after that was opened.
+		slog.Error("cat cannot start", "err", err)
 		os.Exit(1)
+	}
+	// Said only now: app.New is what opens the log file.
+	if secrets == nil {
+		slog.Warn("no system credential store; secrets are kept in a private file instead")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -114,7 +117,7 @@ func main() {
 	cancel()
 	<-done
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cat:", err)
+		slog.Error("cat stopped", "err", err)
 		os.Exit(1)
 	}
 }

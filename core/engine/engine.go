@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -398,8 +399,22 @@ func (h *host) Emit(ev *event.Event) (string, error) {
 }
 
 func (h *host) Log(level, msg string) {
-	h.e.log.Info("plugin", "instance", h.rec.ID, "level", level, "msg", msg)
+	h.e.log.Log(context.Background(), logLevel(level), "plugin: "+msg, "instance", h.rec.ID, "plugin", h.rec.Plugin)
 	h.e.publish(Message{Kind: "log", Data: LogEntry{Instance: h.rec.ID, Level: level, Message: msg, Time: time.Now()}})
+}
+
+// logLevel maps a plugin's level name onto the hub's own; anything it does
+// not recognise is logged as info.
+func logLevel(level string) slog.Level {
+	switch strings.ToLower(level) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	}
+	return slog.LevelInfo
 }
 
 func (h *host) StateGet(key string) (string, bool) { return h.e.Store.KVGet("instance:"+h.rec.ID, key) }

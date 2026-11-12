@@ -12,11 +12,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"github.com/dounx/cat/core/api"
 	"github.com/dounx/cat/core/builtin"
 	"github.com/dounx/cat/core/engine"
+	"github.com/dounx/cat/core/logfile"
 	"github.com/dounx/cat/core/pluginhost"
 	"github.com/dounx/cat/core/store"
 	"github.com/dounx/cat/frontend"
@@ -48,6 +50,9 @@ type App struct {
 	Server  *api.Server
 	Plugins *pluginhost.Host
 	DataDir string
+	// LogPath is the file the log is also written to; empty when it could
+	// not be opened.
+	LogPath string
 	opts    Options
 
 	listener net.Listener
@@ -68,6 +73,9 @@ func New(opts Options) (*App, error) {
 	if err := os.MkdirAll(opts.DataDir, 0o700); err != nil {
 		return nil, err
 	}
+	// Before anything else logs: the engine and the plugins take the default
+	// logger as it is when they are created.
+	logPath := logToFile(opts.DataDir)
 	ln, err := net.Listen("tcp", opts.Addr)
 	if err != nil {
 		return nil, err
@@ -100,13 +108,58 @@ func New(opts Options) (*App, error) {
 		}
 		srv.UIDev = dev
 	}
-	a := &App{Engine: eng, Store: st, Server: srv, DataDir: opts.DataDir, listener: ln, opts: opts}
+	a := &App{Engine: eng, Store: st, Server: srv, DataDir: opts.DataDir, LogPath: logPath, listener: ln, opts: opts}
 	if err := a.extend(); err != nil {
 		ln.Close()
 		st.Close()
 		return nil, err
 	}
 	return a, nil
+}
+
+// logToFile makes the default logger write to <data>/logs/cat.log as well as
+// stderr, and returns the file's path. The desktop app has no terminal to
+// show stderr, so the file is the only place its log can be read afterwards.
+// The file also takes debug lines, which stderr leaves out. A log file that
+// cannot be opened is reported and otherwise ignored: the hub still runs.
+func logToFile(dataDir string) string {
+	path := filepath.Join(dataDir, "logs", "cat.log")
+	w, err := logfile.Open(path)
+	if err != nil {
+		slog.Warn("log file", "err", err)
+		return ""
+	}
+	slog.SetDefault(slog.New(slog.NewMultiHandler(
+		slog.NewTextHandler(os.Stderr, nil),
+		slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}),
+	)))
+	keepCrashes(filepath.Dir(path))
+	return path
+}
+
+// keepCrashes has the Go runtime write the stack of a panic or fatal error to
+// <logs>/crash.log as well as stderr. That report never goes through the
+// logger, so without this a crash of the desktop app leaves nothing behind.
+// A report left by the previous run is set aside under the time it was
+// written and announced in the log, so it is noticed and not overwritten.
+func keepCrashes(dir string) {
+	path := filepath.Join(dir, "crash.log")
+	if st, err := os.Stat(path); err == nil && st.Size() > 0 {
+		kept := filepath.Join(dir, "crash-"+st.ModTime().Format("20060102-150405")+".log")
+		if err := os.Rename(path, kept); err == nil {
+			slog.Warn("the previous run crashed", "at", st.ModTime().Format(time.RFC3339), "report", kept)
+		}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		slog.Warn("crash file", "err", err)
+		return
+	}
+	// The runtime keeps its own handle on the file.
+	defer f.Close()
+	if err := debug.SetCrashOutput(f, debug.CrashOptions{}); err != nil {
+		slog.Warn("crash file", "err", err)
+	}
 }
 
 // URL is where the UI and API are reachable locally.
@@ -124,6 +177,7 @@ func (a *App) Run(ctx context.Context) error {
 	if err := a.Engine.Start(); err != nil {
 		return err
 	}
+	slog.Info("cat listening", "url", a.URL(), "data", a.DataDir, "log", a.LogPath)
 	a.http = &http.Server{Handler: a.Server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- a.http.Serve(a.listener) }()
