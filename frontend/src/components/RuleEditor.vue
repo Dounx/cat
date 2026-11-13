@@ -34,7 +34,7 @@ import {
 import { useHub, clock, summarize, timeAgo } from '../hub'
 import { del, post, put } from '../api'
 import type { ActionSpec, Plugin, Rule, Run, Schema } from '../types'
-import { eventTitle, fieldLabel } from '../labels'
+import { eventTitle, fieldLabel, isKnownField } from '../labels'
 import { picksFor } from '../picks'
 import { commonFields, operators } from '../condition'
 import {
@@ -188,7 +188,7 @@ const fieldHints = computed(() => {
 function conditionTitle(n: ENode): string {
   if (n.ask)
     return (
-      String(n.params?.prompt || '')
+      named(String(n.params?.prompt || ''), n)
         .replace(/\s+/g, ' ')
         .trim() || '还没写要判断什么'
     )
@@ -332,7 +332,7 @@ const actionTitle = (n: ENode) => specOf(n)?.title || n.action || '未选择动�
 function actionSummary(n: ENode): string {
   const props = specOf(n)?.params?.properties || {}
   const text = Object.entries(n.params || {}).find(([k, v]) => typeof v === 'string' && v.trim() && !props[k]?.enum)
-  return text ? String(text[1]).replace(/\s+/g, ' ') : ''
+  return text ? named(String(text[1]), n).replace(/\s+/g, ' ') : ''
 }
 
 // Start an action's parameters from the defaults its schema declares.
@@ -482,6 +482,19 @@ function variablesFor(n: ENode): VarGroup[] {
   return groups
 }
 
+// A template as the canvas shows it: each placeholder by the name the fields
+// of the panel give it, 「内容」 rather than {{ payload.text }}. One nothing
+// has a name for stays as typed.
+function named(text: string, n: ENode): string {
+  if (!text.includes('{{')) return text
+  const names = new Map<string, string>()
+  for (const g of variablesFor(n)) for (const v of g.items) if (v.label) names.set(v.expr, v.label)
+  return text.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (raw, expr: string) => {
+    const label = names.get(expr) || (isKnownField(expr) ? fieldLabel(expr) : '')
+    return label ? `「${label}」` : raw
+  })
+}
+
 // ---- trying the rule out ----
 // Run the rule as it stands, saved or not, for one event that came in, and
 // show on each action what became of it.
@@ -541,7 +554,7 @@ const nodes = computed<CanvasNode[]>(() =>
         icon: Timer,
         label: '节流',
         title: throttleTitle(n),
-        sub: n.key.trim() ? `按 ${n.key.trim()} 分别计` : '',
+        sub: n.key.trim() ? `按 ${fieldLabel(n.key)} 分别计` : '',
       }
     return {
       ...at,
