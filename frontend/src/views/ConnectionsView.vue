@@ -1,7 +1,18 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Check, ChevronRight, Copy, Download, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import {
+  Check,
+  ChevronRight,
+  Copy,
+  Download,
+  LoaderCircle,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+} from 'lucide-vue-next'
 import { useHub } from '../hub'
 import { del, get, post, put } from '../api'
 import type { Instance, Plugin } from '../types'
@@ -58,6 +69,30 @@ const offered = computed(() =>
     (p) => p.category,
   ),
 )
+// The sheet lists a dozen plugins and more with a market: it is searched by
+// name and by what a plugin says it does, and narrowed to one kind.
+const query = ref('')
+const kind = ref<Category | ''>('')
+const kinds: { id: Category | ''; title: string }[] = [
+  { id: '', title: '全部' },
+  { id: 'channel', title: '渠道' },
+  { id: 'monitor', title: '监控' },
+  { id: 'processor', title: 'AI' },
+]
+const searchEl = ref<HTMLInputElement | null>(null)
+watch(picking, (now, was) => {
+  if (now === 'add' && !was) query.value = kind.value = ''
+  // typing searches at once, coming back from the installed plugins as well
+  if (now === 'add') nextTick(() => searchEl.value?.focus())
+})
+function sought(p: { id: string; name: string; description?: string; category: Category }) {
+  if (kind.value && p.category !== kind.value) return false
+  const q = query.value.trim().toLowerCase()
+  return !q || [p.name, p.id, p.description || ''].some((t) => t.toLowerCase().includes(q))
+}
+const foundAddable = computed(() => addable.value.filter(sought))
+const foundOffered = computed(() => offered.value.filter(sought))
+
 const installed = computed(() => market.value.plugins.filter((p) => p.installed_version && !p.bundled))
 const outdated = computed(() => installed.value.filter((p) => p.installed_version !== p.version))
 
@@ -271,23 +306,36 @@ async function remove(i: Instance) {
       <!-- One sheet for both, so that going from one to the other swaps what
            is on it and nothing slides. -->
       <Drawer v-if="picking" :title="picking === 'add' ? '添加接入' : '装上的插件'" @close="picking = false">
+        <template v-if="picking === 'add'" #top>
+          <div class="flex items-center gap-2 border-b border-line px-5 py-3">
+            <div class="relative min-w-0 flex-1">
+              <Search :size="14" class="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-mute" />
+              <input ref="searchEl" v-model="query" class="input !pl-8" placeholder="搜索名称或用途" />
+            </div>
+            <div class="seg shrink-0">
+              <button v-for="k in kinds" :key="k.id" :class="{ on: kind === k.id }" @click="kind = k.id">
+                {{ k.title }}
+              </button>
+            </div>
+          </div>
+        </template>
         <template v-if="picking === 'add'">
-          <div v-if="addable.length || offered.length" class="list">
+          <div v-if="foundAddable.length || foundOffered.length" class="list">
             <button
-              v-for="p in addable"
+              v-for="p in foundAddable"
               :key="p.id"
               class="row link flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left"
               @click="add(p)"
             >
               <div class="min-w-0 flex-1">
                 <div class="text-sm font-medium">{{ p.name }}</div>
-                <p class="mt-0.5 text-xs text-mute">{{ p.description }}</p>
+                <p class="mt-0.5 truncate text-xs text-mute" :title="p.description">{{ p.description }}</p>
               </div>
               <ChevronRight :size="16" class="shrink-0 text-faint" />
             </button>
             <!-- From the market: installed first, then connected. -->
             <button
-              v-for="p in offered"
+              v-for="p in foundOffered"
               :key="p.id"
               class="row flex w-full items-center gap-3 px-4 py-3 text-left"
               :class="p.supported ? 'link cursor-pointer' : 'cursor-default'"
@@ -298,7 +346,7 @@ async function remove(i: Instance) {
                 <div class="flex items-center gap-2 text-sm font-medium">
                   {{ p.name }}<span class="chip">{{ p.version }}</span>
                 </div>
-                <p class="mt-0.5 text-xs text-mute">{{ p.description }}</p>
+                <p class="mt-0.5 truncate text-xs text-mute" :title="p.description">{{ p.description }}</p>
               </div>
               <span v-if="installing === p.id" class="flex shrink-0 items-center gap-1.5 text-xs text-mute tabular-nums"
                 ><LoaderCircle :size="14" class="spin" />下载中 {{ progress }}</span
@@ -309,6 +357,7 @@ async function remove(i: Instance) {
               >
             </button>
           </div>
+          <p v-else-if="query.trim() || kind" class="text-sm text-mute">没有找到这样的插件。</p>
           <p v-else class="text-sm text-mute">还没有能接入的插件。</p>
           <p v-if="market.error" class="mt-4 text-xs text-mute">
             这里只有已经装好的插件。插件市场用不了：{{ market.error }}
