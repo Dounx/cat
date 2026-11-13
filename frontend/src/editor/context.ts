@@ -2,22 +2,14 @@
 // picked on the canvas, and how a node reads. The canvas draws each node from
 // it, and the panel that edits a node fills its fields from it.
 import { computed, inject, provide, reactive, ref, type Component, type InjectionKey, type Ref } from 'vue'
-import { Bot, MessageSquare, Play, Radar, Reply, Wrench } from 'lucide-vue-next'
+import { Play, Reply, Wrench } from 'lucide-vue-next'
 import { useHub } from '../hub'
 import { commonFields, operators } from '../condition'
 import { typesOf, upstreamActions, type Doc, type ENode } from '../graph'
 import { fieldLabel, isKnownField } from '../labels'
-import type { ActionSpec, Plugin, Run } from '../types'
+import type { ActionSpec, Run } from '../types'
 import type { VarGroup } from '../components/VarPicker.vue'
-
-// An action sent here replies through whichever instance emitted the event.
-export const SOURCE = '$source'
-export const kindTitle: Record<Plugin['category'], string> = { processor: 'AI', channel: '渠道', monitor: '监控' }
-export const kindIcon: Record<Plugin['category'], Component> = {
-  processor: Bot,
-  channel: MessageSquare,
-  monitor: Radar,
-}
+import { SOURCE, kindIcon, usePicking } from './picking'
 
 const brief = (v: unknown) =>
   v === undefined || v === null ? '' : (typeof v === 'string' ? v : JSON.stringify(v)).replace(/\s+/g, ' ').slice(0, 40)
@@ -47,7 +39,6 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
   // to "only some" with nothing ticked yet is a state of the panel alone,
   // kept here so that it is still so when the node is picked again.
   const narrowed = reactive(new Set<string>())
-  const anySource = (t: ENode) => !t.sources.length && !narrowed.has(t.id + ':from')
   const anyType = (t: ENode) => !typesOf(t).length && !narrowed.has(t.id + ':type')
   // What a trigger can ask of its sources, e.g. the routes to subscribe to: the
   // form their plugin gives for it, when the chosen sources are all of one
@@ -209,19 +200,7 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
   }
 
   // ---- the dialogs over the editor ----
-  // An action node is told apart by what it uses: Claude Code, QQ, an HTTP
-  // request. Adding one, or changing what one uses, opens a list of exactly
-  // those things: what needs no setting up, what is set up, and what could
-  // be, which is then set up here without leaving the editor.
-  const picker = ref<null | { title: string; then: (instance: string) => void }>(null)
-  const connecting = ref<null | { plugin: Plugin; then: (instance: string) => void }>(null)
-  function pickAction(title: string, then: (instance: string) => void) {
-    picker.value = { title, then }
-  }
-  // Set up an instance of a plugin, then go on with it.
-  function connect(plugin: Plugin, then: (instance: string) => void) {
-    connecting.value = { plugin, then }
-  }
+  const picking = usePicking(sourceInstances, targetIcon)
 
   return {
     doc,
@@ -234,7 +213,6 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
     eventsOf,
     typeTitle,
     narrowed,
-    anySource,
     anyType,
     triggerSchema,
     triggerTitle,
@@ -256,10 +234,7 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
     trialStep,
     trialSteps,
     variablesFor,
-    picker,
-    connecting,
-    pickAction,
-    connect,
+    ...picking,
   }
 }
 

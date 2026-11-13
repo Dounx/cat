@@ -1,18 +1,30 @@
 <script setup lang="ts">
 // The panel of a trigger node: where events come from, which of them start
 // the rule, and how often at most.
-import { computed } from 'vue'
+import { ref } from 'vue'
+import { Zap } from 'lucide-vue-next'
 import { useHub, summarize, timeAgo } from '../../hub'
 import { useEditor } from '../../editor/context'
 import { typesOf, type ENode } from '../../graph'
 import SchemaForm from '../SchemaForm.vue'
 import PanelHead from './PanelHead.vue'
 
-defineProps<{ node: ENode }>()
+const props = defineProps<{ node: ENode }>()
 defineEmits<{ remove: [] }>()
 const hub = useHub()
-const { triggers, sourceInstances, listening, eventsOf, typeTitle, narrowed, anySource, anyType, triggerSchema } =
-  useEditor()
+const {
+  triggers,
+  sourceInstances,
+  listening,
+  eventsOf,
+  typeTitle,
+  narrowed,
+  anyType,
+  triggerSchema,
+  triggerTitle,
+  targetIcon,
+  pickSource,
+} = useEditor()
 
 // The events on offer for a trigger: what its sources say they emit, each with
 // who emits it and the latest one actually received, so it reads as a real thing.
@@ -35,45 +47,54 @@ function offered(t: ENode) {
     last: hub.events.find((e) => e.type === r.type && ids.has(e.source)),
   }))
 }
-function widen(t: ENode, what: 'from' | 'type') {
-  narrowed.delete(t.id + ':' + what)
-  if (what === 'from') t.sources = []
-  else Object.assign(t, { pickedTypes: [], otherTypes: '' })
+function anyOfThem(t: ENode) {
+  narrowed.delete(t.id + ':type')
+  Object.assign(t, { pickedTypes: [], otherTypes: '' })
 }
 function toggle(list: string[], value: string) {
   const i = list.indexOf(value)
   if (i >= 0) list.splice(i, 1)
   else list.push(value)
 }
-// The sources that are told what to watch in the trigger itself (a time, a
-// feed, a page): offered up front, since choosing one is how that gets said.
-const askable = computed(() => sourceInstances.value.filter((i) => hub.pluginOf(i.plugin)?.trigger_params))
-function listenOnly(t: ENode, id: string) {
-  narrowed.add(t.id + ':from')
-  t.sources = [id]
+// Where the events come from is picked from a list, as what an action uses
+// is: everything, or one instance. Listening to several at once is ticked
+// below it.
+function resource() {
+  pickSource('换一个来源', (instance) => (props.node.sources = instance ? [instance] : []))
 }
+const several = ref(props.node.sources.length > 1)
 </script>
 
 <template>
   <PanelHead title="触发：什么事件会启动这条规则" :removable="triggers.length > 1" @remove="$emit('remove')" />
   <label class="label">从哪里来</label>
-  <div class="seg mb-2">
-    <button :class="{ on: anySource(node) }" @click="widen(node, 'from')">所有接入</button>
-    <button :class="{ on: !anySource(node) }" @click="narrowed.add(node.id + ':from')">只听指定的</button>
-  </div>
-  <template v-if="anySource(node) && askable.length">
-    <p class="mb-1.5 text-xs text-mute">定时、订阅和监控要先选中，才能填它什么时候触发、盯什么：</p>
-    <div class="flex flex-wrap gap-1.5">
-      <button v-for="s in askable" :key="s.id" class="btn text-xs" @click="listenOnly(node, s.id)">
-        {{ s.name }}
-      </button>
-    </div>
-  </template>
-  <template v-if="!anySource(node)">
-    <div v-if="sourceInstances.length" class="list">
+  <button class="input flex w-full cursor-pointer items-center gap-2 text-left" title="换一个来源" @click="resource">
+    <component
+      :is="node.sources.length === 1 ? targetIcon(node.sources[0]) : Zap"
+      :size="14"
+      class="shrink-0 text-mute"
+    />
+    <span class="min-w-0 flex-1 truncate">{{ triggerTitle(node) }}</span>
+    <span class="shrink-0 text-xs text-mute">更换</span>
+  </button>
+  <SchemaForm
+    v-if="triggerSchema(node)"
+    class="mt-3"
+    :model-value="node.params"
+    :schema="triggerSchema(node)"
+    @update:model-value="node.params = $event"
+  />
+  <details
+    v-if="sourceInstances.length > 1"
+    class="mt-3 text-xs text-mute"
+    :open="several"
+    @toggle="several = ($event.target as HTMLDetailsElement).open"
+  >
+    <summary class="cursor-pointer">同时听多个接入</summary>
+    <div class="list mt-2">
       <label v-for="s in sourceInstances" :key="s.id" class="row link flex cursor-pointer items-center gap-3 px-3 py-2">
         <div class="min-w-0 flex-1">
-          <div class="text-sm font-medium">{{ s.name }}</div>
+          <div class="text-sm font-medium text-ink">{{ s.name }}</div>
           <div class="truncate text-xs text-mute">
             会发出：{{
               eventsOf(s.plugin)
@@ -85,20 +106,15 @@ function listenOnly(t: ENode, id: string) {
         <input type="checkbox" :checked="node.sources.includes(s.id)" @change="toggle(node.sources, s.id)" />
       </label>
     </div>
-    <p v-if="!node.sources.length" class="mt-1 text-xs text-warn">还没有选。一个都不选时，按「所有接入」处理。</p>
-    <SchemaForm
-      v-if="triggerSchema(node)"
-      class="mt-3"
-      :model-value="node.params"
-      :schema="triggerSchema(node)"
-      @update:model-value="node.params = $event"
-    />
-  </template>
-  <p v-if="!sourceInstances.length" class="text-xs text-mute">还没有能发出事件的接入，请先到「接入」添加渠道或监控。</p>
+    <p class="mt-1">一个都不选时，听所有接入。</p>
+  </details>
+  <p v-if="!sourceInstances.length" class="mt-1 text-xs text-mute">
+    还没有能发出事件的接入，点上面的「更换」接入一个。
+  </p>
 
   <label class="label mt-5">发生什么事时触发</label>
   <div class="seg mb-2">
-    <button :class="{ on: anyType(node) }" @click="widen(node, 'type')">任何事件</button>
+    <button :class="{ on: anyType(node) }" @click="anyOfThem(node)">任何事件</button>
     <button :class="{ on: !anyType(node) }" @click="narrowed.add(node.id + ':type')">只在指定的事发生时</button>
   </div>
   <template v-if="!anyType(node)">

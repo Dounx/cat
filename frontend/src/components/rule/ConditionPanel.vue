@@ -2,14 +2,15 @@
 // The panel of a condition node: how it is worked out (rows, an expression,
 // or a model that is asked) and what it can come to.
 import { computed, ref, watch } from 'vue'
-import { Plus, Trash2 } from 'lucide-vue-next'
+import { BrainCircuit, Filter, Plus, SquareFunction, Trash2 } from 'lucide-vue-next'
 import { useHub, clock, summarize } from '../../hub'
 import { post } from '../../api'
 import { operators } from '../../condition'
 import { useEditor } from '../../editor/context'
+import { EXPR, ROWS } from '../../editor/picking'
 import { ELSE, JUDGE, conditionOf, onLoop, type ENode } from '../../graph'
 import { eventTitle, fieldLabel } from '../../labels'
-import type { Plugin, Schema } from '../../types'
+import type { Schema } from '../../types'
 import SchemaForm from '../SchemaForm.vue'
 import PanelHead from './PanelHead.vue'
 import TrialResult from './TrialResult.vue'
@@ -18,8 +19,7 @@ const props = defineProps<{ node: ENode }>()
 defineEmits<{ remove: [] }>()
 const hub = useHub()
 const editor = useEditor()
-const { doc, scopedEvents, testEventId, typedRows, specOf, resetParams, variablesFor, trialStep, trialSteps, connect } =
-  editor
+const { doc, scopedEvents, testEventId, typedRows, specOf, resetParams, variablesFor, trialStep, trialSteps } = editor
 // A condition on a loop can also go by how many times the rule has gone back.
 const fieldHints = computed(() =>
   onLoop(doc, props.node.id) ? [...editor.fieldHints.value, 'loop'] : editor.fieldHints.value,
@@ -50,12 +50,6 @@ function showBuilder(n: ENode) {
 }
 
 // ---- put to a model ----
-// Whatever offers a "judge" action can be asked: it is given the question
-// and the choices, and picks one.
-const judges = computed(() =>
-  hub.instances.filter((i) => hub.pluginOf(i.plugin)?.actions?.some((a) => a.name === JUDGE)),
-)
-const judgePlugins = computed(() => hub.plugins.filter((p) => p.actions?.some((a) => a.name === JUDGE)))
 // The question's form, without the choices: those are the node's own.
 function judgeSchema(n: ENode): Schema | undefined {
   const params = specOf(n)?.params
@@ -63,18 +57,26 @@ function judgeSchema(n: ENode): Schema | undefined {
   const { choices: _, ...properties } = params.properties || {}
   return { ...params, properties, 'x-order': params['x-order']?.filter((k) => k !== 'choices') }
 }
-function showAsk(n: ENode) {
-  if (n.ask) return
-  n.ask = true
-  n.action = JUDGE
-  if (!judges.value.some((i) => i.id === n.instance)) n.instance = judges.value[0]?.id || ''
+// Whatever offers a "judge" action can be asked: it is given the question
+// and the choices, and picks one.
+function showAsk(n: ENode, instance: string) {
+  Object.assign(n, { ask: true, action: JUDGE, instance })
   if (!n.params?.prompt) resetParams(n)
 }
-function connectJudge(n: ENode, plugin: Plugin) {
-  connect(plugin, (id) => {
-    n.instance = id
-    n.action = JUDGE
-    if (!n.params?.prompt) resetParams(n)
+
+// ---- how it is worked out ----
+// Picked from the same list a new condition is, and changed there too.
+const way = computed(() => {
+  const n = props.node
+  if (n.ask) return { icon: BrainCircuit, name: `模型判断 · ${hub.instanceName(n.instance) || '未选择'}` }
+  return n.builder.mode === 'expr' ? { icon: SquareFunction, name: '表达式' } : { icon: Filter, name: '按字段判断' }
+})
+function rework() {
+  editor.pickCondition('换一种方式来判断', (pick) => {
+    const n = props.node
+    if (pick === ROWS) showBuilder(n)
+    else if (pick === EXPR) showExpression(n)
+    else showAsk(n, pick)
   })
 }
 
@@ -130,25 +132,16 @@ async function test(n: ENode) {
 </script>
 
 <template>
-  <PanelHead title="条件" @remove="$emit('remove')">
-    <div class="seg mr-1">
-      <button
-        class="!py-0.5 !text-xs"
-        :class="{ on: !node.ask && node.builder.mode === 'builder' }"
-        @click="showBuilder(node)"
-      >
-        可视化
-      </button>
-      <button
-        class="!py-0.5 !text-xs"
-        :class="{ on: !node.ask && node.builder.mode === 'expr' }"
-        @click="showExpression(node)"
-      >
-        表达式
-      </button>
-      <button class="!py-0.5 !text-xs" :class="{ on: node.ask }" @click="showAsk(node)">模型判断</button>
-    </div>
-  </PanelHead>
+  <PanelHead :title="`条件 · ${way.name}`" @remove="$emit('remove')" />
+  <button
+    class="input mb-3 flex w-full cursor-pointer items-center gap-2 text-left"
+    title="换一种方式来判断"
+    @click="rework"
+  >
+    <component :is="way.icon" :size="14" class="shrink-0 text-mute" />
+    <span class="min-w-0 flex-1 truncate">{{ way.name }}</span>
+    <span class="shrink-0 text-xs text-mute">更换</span>
+  </button>
   <p class="mb-3 text-xs text-mute">
     <template v-if="node.choices.length">结果是哪个选项，就走哪个选项那一头接出去的节点；都不是就走「其他」。</template>
     <template v-else>成立时走「是」那一头接出去的节点，不成立时走「否」。</template>
@@ -156,35 +149,23 @@ async function test(n: ENode) {
   </p>
 
   <template v-if="node.ask">
-    <template v-if="judges.length">
-      <label class="label">由谁来判断</label>
-      <select v-model="node.instance" class="input mb-3">
-        <option v-if="!judges.some((i) => i.id === node.instance)" value="" disabled>请选择</option>
-        <option v-for="i in judges" :key="i.id" :value="i.id">{{ i.name }}</option>
-      </select>
-      <SchemaForm
-        :model-value="node.params || {}"
-        :schema="judgeSchema(node)"
-        :variables="variablesFor(node)"
-        :options-from="node.instance ? `/instances/${node.instance}/options?action=judge` : undefined"
-        templated
-        @update:model-value="node.params = $event"
-      />
-      <p class="mt-2 text-xs text-mute">
-        把要判断的内容和标准写清楚。模型只会回答{{
-          node.choices.length ? '下面的选项之一' : '是或否'
-        }}，它的答案后面的节点可以用
-        <code class="chip" v-text="`{{ steps.${node.id}.choice }}`" />
-        引用。事件走到这个节点才会去问，每次问一回。
-      </p>
-    </template>
-    <div v-else class="rounded-lg bg-sunken px-3 py-3 text-sm">
-      <p class="mb-2 text-mute">还没有接入能做判断的大模型。</p>
-      <button v-for="p in judgePlugins" :key="p.id" class="btn mr-2" @click="connectJudge(node, p)">
-        <Plus :size="14" />接入{{ p.name }}
-      </button>
-      <span v-if="!judgePlugins.length" class="text-xs text-mute">没有找到带「判断」动作的插件。</span>
-    </div>
+    <p v-if="!specOf(node)" class="text-xs text-warn">判断它的接入已经不在了，点上面的「更换」另选一个。</p>
+    <SchemaForm
+      v-else
+      :model-value="node.params || {}"
+      :schema="judgeSchema(node)"
+      :variables="variablesFor(node)"
+      :options-from="node.instance ? `/instances/${node.instance}/options?action=judge` : undefined"
+      templated
+      @update:model-value="node.params = $event"
+    />
+    <p v-if="specOf(node)" class="mt-2 text-xs text-mute">
+      把要判断的内容和标准写清楚。模型只会回答{{
+        node.choices.length ? '下面的选项之一' : '是或否'
+      }}，它的答案后面的节点可以用
+      <code class="chip" v-text="`{{ steps.${node.id}.choice }}`" />
+      引用。事件走到这个节点才会去问，每次问一回。
+    </p>
   </template>
   <template v-else-if="node.builder.mode === 'builder'">
     <div

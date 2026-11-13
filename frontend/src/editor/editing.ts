@@ -2,9 +2,21 @@
 // removed.
 import { nextTick, type Ref } from 'vue'
 import { useHub } from '../hub'
-import { NODE_H, NODE_W, blankNode, clipboard, edgeKey, freshId, layout, endlessLoop, type ENode } from '../graph'
+import {
+  JUDGE,
+  NODE_H,
+  NODE_W,
+  blankNode,
+  clipboard,
+  edgeKey,
+  freshId,
+  layout,
+  endlessLoop,
+  type ENode,
+} from '../graph'
 import type { Point } from '../components/FlowCanvas.vue'
 import type { Editor } from './context'
+import { EXPR, ROWS } from './picking'
 
 interface Canvas {
   center(): Point
@@ -28,13 +40,21 @@ export function useGraphEditing(editor: Editor, canvas: Ref<Canvas | undefined>)
     while (taken(p)) p.y += NODE_H + 24
     return p
   }
-  // Add a node, wired from `from` when given, and open it for editing.
-  function addNode(kind: ENode['kind'], at?: Point, from?: { id: string; branch: string }, instance = ''): ENode {
+  // Add a node, wired from `from` when given, and open it for editing. `pick`
+  // is what was picked for it: the instance a trigger listens to (none for
+  // all of them), the way a condition is worked out, what carries an action out.
+  function addNode(kind: ENode['kind'], at?: Point, from?: { id: string; branch: string }, pick = ''): ENode {
     const c = canvas.value!.center()
     const p = clear(at || { x: c.x - NODE_W / 2, y: c.y - NODE_H / 2 })
     const n = blankNode(kind, freshId(doc, kind), p.x, p.y)
+    if (kind === 'trigger' && pick) n.sources = [pick]
+    if (kind === 'condition' && pick === EXPR) n.builder.mode = 'expr'
+    else if (kind === 'condition' && pick && pick !== ROWS) {
+      Object.assign(n, { ask: true, instance: pick, action: JUDGE })
+      resetParams(n)
+    }
     if (kind === 'action') {
-      n.instance = instance
+      n.instance = pick
       const list = actionsFor(n)
       n.action = (list.find((a) => a.name === 'reply') || list[0])?.name || ''
       resetParams(n)
@@ -52,7 +72,7 @@ export function useGraphEditing(editor: Editor, canvas: Ref<Canvas | undefined>)
     doc.edges.push({ from, to, ...(branch ? { branch } : {}) })
   }
   // Put a new node in the middle of a wire.
-  function splice(key: string, kind: ENode['kind'], at: Point, instance?: string) {
+  function splice(key: string, kind: ENode['kind'], at: Point, pick?: string) {
     const i = doc.edges.findIndex((e) => edgeKey(e) === key)
     if (i < 0) return
     const [e] = doc.edges.splice(i, 1)
@@ -60,7 +80,7 @@ export function useGraphEditing(editor: Editor, canvas: Ref<Canvas | undefined>)
       kind,
       { x: at.x - NODE_W / 2, y: at.y - NODE_H / 2 },
       { id: e.from, branch: e.branch || '' },
-      instance,
+      pick,
     )
     doc.edges.push({ from: n.id, to: e.to })
   }

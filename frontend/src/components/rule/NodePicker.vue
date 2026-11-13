@@ -1,75 +1,20 @@
 <script setup lang="ts">
-// The list an action is picked from: what can carry one out as it is, what
-// is connected, and what could be connected first.
-import { computed, ref, type Component } from 'vue'
-import { Reply, Search, X } from 'lucide-vue-next'
-import { useHub } from '../../hub'
-import { SOURCE, kindIcon, kindTitle, useEditor } from '../../editor/context'
-import type { Plugin } from '../../types'
+// The list a node is picked from, by name: what it offers comes in groups,
+// and each entry is used as it is or stands for something to connect first.
+import { computed, ref } from 'vue'
+import { Search, X } from 'lucide-vue-next'
+import type { Choice, ChoiceGroup } from '../../editor/picking'
 
-defineProps<{ title: string }>()
-const emit = defineEmits<{ pick: [instance: string]; connect: [plugin: Plugin]; close: [] }>()
-const hub = useHub()
-const { targetIcon } = useEditor()
+const props = defineProps<{ title: string; groups: ChoiceGroup[] }>()
+const emit = defineEmits<{ pick: [choice: Choice]; close: [] }>()
 
-const actionInstances = computed(() => hub.instances.filter((i) => hub.pluginOf(i.plugin)?.actions?.length))
-const does = (p?: Plugin) => p?.actions?.map((a) => a.title).join('、') || ''
-
-interface Choice {
-  key: string
-  name: string
-  about: string
-  icon: Component
-  tag?: string
-  instance?: string // something usable as it is
-  plugin?: Plugin // something to set up first
-}
 const search = ref('')
 const choices = computed(() => {
-  const ready: Choice[] = [
-    {
-      key: SOURCE,
-      name: '原路回复',
-      about: '回复到事件来的地方，不管它来自哪个渠道',
-      icon: Reply,
-      instance: SOURCE,
-    },
-  ]
-  const connected: Choice[] = []
-  for (const i of actionInstances.value) {
-    const p = hub.pluginOf(i.plugin)!
-    const c = { key: i.id, name: i.name, icon: targetIcon(i.id), instance: i.id }
-    if (p.singleton) ready.push({ ...c, about: p.description || does(p) })
-    else if (hub.given(i)) ready.push({ ...c, about: does(p), tag: kindTitle[p.category] })
-    else
-      connected.push({ ...c, about: (p.name !== i.name ? p.name + ' · ' : '') + does(p), tag: kindTitle[p.category] })
-  }
-  const order = ['processor', 'channel', 'monitor']
-  const more: Choice[] = hub.plugins
-    .filter((p) => !p.singleton && !p.default_instance && p.actions?.length)
-    .sort((a, b) => order.indexOf(a.category) - order.indexOf(b.category))
-    .map((p) => ({
-      key: 'new:' + p.id,
-      name: p.name,
-      // a monitor's own description is about what it watches; as an action
-      // it only offers to be told to check now
-      about: p.category === 'monitor' ? `接入后可以让它：${does(p)}` : p.description || does(p),
-      icon: kindIcon[p.category],
-      tag: kindTitle[p.category],
-      plugin: p,
-    }))
   const q = search.value.trim().toLowerCase()
   const hit = (c: Choice) => !q || (c.name + c.about + (c.tag || '')).toLowerCase().includes(q)
-  return [
-    { title: '直接可用', items: ready.filter(hit) },
-    { title: '已接入', items: connected.filter(hit) },
-    { title: '接入新的', items: more.filter(hit) },
-  ].filter((g) => g.items.length)
+  return props.groups.map((g) => ({ title: g.title, items: g.items.filter(hit) })).filter((g) => g.items.length)
 })
-function choose(c: Choice) {
-  if (c.instance) emit('pick', c.instance)
-  else emit('connect', c.plugin!)
-}
+const choose = (c: Choice) => emit('pick', c)
 
 // Put the cursor in the search field as soon as it shows.
 const vFocus = { mounted: (el: HTMLElement) => el.focus() }

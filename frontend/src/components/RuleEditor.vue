@@ -24,7 +24,7 @@ import {
 } from 'lucide-vue-next'
 import { useHub, clock, summarize } from '../hub'
 import { del, post, put } from '../api'
-import type { Plugin, Rule, Run } from '../types'
+import type { Rule, Run } from '../types'
 import { eventTitle } from '../labels'
 import { picksFor } from '../picks'
 import { ELSE, NODE_H, NODE_W, choicesOf, clipboard, fromRule, outcomes, toRule, type Doc, type ENode } from '../graph'
@@ -36,8 +36,8 @@ import ContextMenu, { type MenuItem } from './ContextMenu.vue'
 import FlowCanvas, { type CanvasNode, type Point } from './FlowCanvas.vue'
 import ConnectDialog from './ConnectDialog.vue'
 import ActionPanel from './rule/ActionPanel.vue'
-import ActionPicker from './rule/ActionPicker.vue'
 import ConditionPanel from './rule/ConditionPanel.vue'
+import NodePicker from './rule/NodePicker.vue'
 import TriggerPanel from './rule/TriggerPanel.vue'
 
 const props = defineProps<{ rule: Rule }>()
@@ -57,30 +57,23 @@ const panels = { trigger: TriggerPanel, condition: ConditionPanel, action: Actio
 
 const editor = createEditor(doc, sel)
 provideEditor(editor)
-const { node, scopedEvents, testEventId, trial, trialStep, picker, connecting, pickAction, triggerSchema, specOf } =
-  editor
+const { node, scopedEvents, testEventId, trial, trialStep, picker, connecting, triggerSchema, specOf } = editor
 const { onMove, addNode, connect, splice, removeNode, removeEdge, unlink, removeSelected, paste, copy, tidy } =
   useGraphEditing(editor, canvas)
 const { state, settle, undo, redo } = useHistory(doc, () => {
   if (sel.value && !doc.nodes.some((n) => n.id === sel.value)) sel.value = null
 })
 
-// ---- the dialogs over the editor ----
-// What was picked to carry an action out is used as it is, or set up first.
-function picked(instance: string) {
-  const then = picker.value!.then
-  picker.value = null
-  then(instance)
+// ---- adding a node ----
+// Every kind of node is first picked from a list: where a trigger's events
+// come from, how a condition is worked out, what carries an action out.
+const adding = {
+  trigger: { name: '触发…', icon: Zap, pick: editor.pickSource, title: '添加触发：事件从哪里来' },
+  condition: { name: '条件…', icon: Filter, pick: editor.pickCondition, title: '添加条件：怎么判断' },
+  action: { name: '动作…', icon: Play, pick: editor.pickAction, title: '添加动作：用什么来执行' },
 }
-function pickedNew(plugin: Plugin) {
-  const then = picker.value!.then
-  picker.value = null
-  connecting.value = { plugin, then }
-}
-function connected(id: string) {
-  const then = connecting.value!.then
-  connecting.value = null
-  then(id)
+function add(kind: ENode['kind'], make: (pick: string) => void = (pick) => addNode(kind, undefined, undefined, pick)) {
+  adding[kind].pick(adding[kind].title, make)
 }
 
 // ---- trying the rule out ----
@@ -174,16 +167,19 @@ function nextItems(from: string, branch: string, at?: Point): MenuItem[] {
           : '满足时 '
   return makers(
     (name) => `${lead}→ ${name}`,
-    (kind, instance) => addNode(kind, where, { id: from, branch }, instance),
+    (kind, pick) => addNode(kind, where, { id: from, branch }, pick),
   )
 }
-// One menu entry for each kind of node that can be put after another. An
-// action first asks what is to carry it out.
-function makers(label: (name: string) => string, make: (kind: ENode['kind'], instance?: string) => void): MenuItem[] {
-  return [
-    { label: label('动作…'), icon: Play, run: () => pickAction('添加动作：用什么来执行', (i) => make('action', i)) },
-    { label: label('条件'), icon: Filter, run: () => make('condition') },
-  ]
+// One menu entry for each kind of node that can be put after another.
+function makers(label: (name: string) => string, make: (kind: ENode['kind'], pick: string) => void): MenuItem[] {
+  return (['action', 'condition'] as const).map((kind) => maker(kind, label, make))
+}
+function maker(
+  kind: ENode['kind'],
+  label: (name: string) => string,
+  make: (kind: ENode['kind'], pick: string) => void,
+): MenuItem {
+  return { label: label(adding[kind].name), icon: adding[kind].icon, run: () => add(kind, (pick) => make(kind, pick)) }
 }
 function onSpawn(from: string, branch: string, at: Point, e: MouseEvent) {
   show(e, nextItems(from, branch, at))
@@ -195,7 +191,7 @@ function onMenu(target: { node?: string; edge?: string } | null, at: Point, e: M
     return show(e, [
       ...makers(
         (name) => `插入：${name}`,
-        (kind, instance) => splice(target.edge!, kind, at, instance),
+        (kind, pick) => splice(target.edge!, kind, at, pick),
       ),
       {
         label: '删除连线',
@@ -218,12 +214,10 @@ function onMenu(target: { node?: string; edge?: string } | null, at: Point, e: M
     ])
   }
   const here = { x: at.x - NODE_W / 2, y: at.y - NODE_H / 2 }
+  const putHere = (kind: ENode['kind'], pick: string) => addNode(kind, here, undefined, pick)
   show(e, [
-    ...makers(
-      (name) => `添加：${name}`,
-      (kind, instance) => addNode(kind, here, undefined, instance),
-    ),
-    { label: '添加：触发', icon: Zap, run: () => addNode('trigger', here) },
+    ...makers((name) => `添加：${name}`, putHere),
+    maker('trigger', (name) => `添加：${name}`, putHere),
     {
       label: '粘贴',
       icon: ClipboardPaste,
@@ -326,18 +320,17 @@ async function remove() {
             <Redo2 :size="15" />
           </button>
           <i />
-          <button title="再添加一个触发节点：另一批来源和事件，走自己的流程" @click="addNode('trigger')">
+          <button title="再添加一个触发节点：另一批来源和事件，走自己的流程" @click="add('trigger')">
             <Zap :size="14" />触发
           </button>
           <i />
-          <button
-            title="添加一个动作节点：交给 AI、发消息、发请求、跑脚本…"
-            @click="pickAction('添加动作：用什么来执行', (i) => addNode('action', undefined, undefined, i))"
-          >
+          <button title="添加一个动作节点：交给 AI、发消息、发请求、跑脚本…" @click="add('action')">
             <Play :size="14" />动作
           </button>
           <i />
-          <button title="添加一个条件节点" @click="addNode('condition')"><Filter :size="14" />条件</button>
+          <button title="添加一个条件节点：按字段、按表达式，或者交给模型判断" @click="add('condition')">
+            <Filter :size="14" />条件
+          </button>
           <i />
           <button title="自动排列所有节点" @click="tidy"><LayoutGrid :size="14" />整理</button>
           <i />
@@ -392,13 +385,19 @@ async function remove() {
 
     <Teleport to="body">
       <Transition name="modal">
-        <ActionPicker v-if="picker" :title="picker.title" @pick="picked" @connect="pickedNew" @close="picker = null" />
+        <NodePicker
+          v-if="picker"
+          :title="picker.title"
+          :groups="picker.groups"
+          @pick="editor.choose"
+          @close="picker = null"
+        />
         <ConnectDialog
           v-else-if="connecting"
           :plugin="connecting.plugin"
           :picks="picksFor(hub.events)"
           ok-text="接入并选用"
-          @done="connected"
+          @done="editor.connected"
           @close="connecting = null"
         />
         <div
