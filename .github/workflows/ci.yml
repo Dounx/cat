@@ -41,6 +41,9 @@ jobs:
       - name: Build the web UI
         run: make frontend
 
+      - name: Test the web UI
+        run: cd frontend && pnpm test
+
       - name: Install TypeScript dependencies
         run: |
           cd sdk/node && pnpm install --frozen-lockfile
