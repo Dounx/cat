@@ -216,6 +216,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 | HTTP 请求、运行脚本（内置） | 动作 |
 | Telegram | Bot，长轮询 |
 | Discord | Bot，Gateway |
+| QQ（官方机器人） | QQ 开放平台的官方机器人，收发群聊和单聊消息。手机 QQ 扫码接入，WebSocket 收消息，不需要公网地址；只能在收到消息后回复，主动发消息 QQ 限制很严 |
 | QQ（OneBot） | OneBot 11。连接你自己运行的 OneBot 服务（正向 WebSocket） |
 | 企业微信 | 自建应用的消息回调 |
 | RSS | 订阅 RSS / Atom 源，有新条目时发出 `feed.item` 事件 |

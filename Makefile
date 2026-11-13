@@ -1,7 +1,7 @@
 # Cat event hub — build entry points.
 GOOS := $(shell go env GOOS)
 EXE := $(if $(filter windows,$(GOOS)),.exe,)
-GO_PLUGINS := telegram onebot wecom rss rsshub webwatch apiwatch schedule claude-desktop codex-desktop deepseek-harness llm magpie jev
+GO_PLUGINS := telegram onebot qqbot wecom rss rsshub webwatch apiwatch schedule claude-desktop codex-desktop deepseek-harness llm magpie jev
 NODE_PLUGINS := discord
 
 .PHONY: all frontend plugins catd desktop app test fmt fmt-check run dev clean

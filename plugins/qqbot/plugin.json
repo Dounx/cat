@@ -1,0 +1,61 @@
+{
+  "id": "qqbot",
+  "name": "QQ（官方机器人）",
+  "version": "0.1.0",
+  "protocol": 1,
+  "description": "通过 QQ 开放平台的官方机器人收发群聊和单聊消息。手机 QQ 扫码就能接入；使用 WebSocket，不需要公网地址。",
+  "command": ["./cat-plugin-qqbot"],
+  "capabilities": ["source", "action"],
+  "setup": true,
+  "config_schema": {
+    "type": "object",
+    "required": ["app_id", "secret"],
+    "x-order": ["app_id", "secret", "sandbox", "api_base"],
+    "properties": {
+      "app_id": { "type": "string", "title": "AppID", "description": "QQ 开放平台 → 机器人 → 开发 → 开发设置。" },
+      "secret": { "type": "string", "title": "AppSecret", "format": "password" },
+      "sandbox": { "type": "boolean", "title": "沙箱环境", "description": "机器人还没上线、只在沙箱里调试时打开。" },
+      "api_base": { "type": "string", "title": "API 地址（可选）", "description": "经代理访问 QQ 开放平台时填写，获取凭证和调用接口都走这个地址。留空用官方地址。" }
+    }
+  },
+  "events": [
+    { "type": "message.created", "title": "收到消息" },
+    { "type": "notice", "title": "通知（被拉进群、被加好友等）" }
+  ],
+  "actions": [
+    {
+      "name": "reply",
+      "title": "回复（原会话）",
+      "description": "在触发事件所在的群或单聊里回复。QQ 只允许在收到消息后的一段时间内回复（群 5 分钟，单聊 60 分钟），每条消息最多回复 5 次。输出：message_id。",
+      "params": {
+        "type": "object",
+        "required": ["text"],
+        "x-order": ["text", "markdown"],
+        "properties": {
+          "text": { "type": "string", "title": "内容", "format": "textarea" },
+          "markdown": { "type": "boolean", "title": "按 Markdown 渲染（失败时退回纯文本）", "description": "需要机器人有原生 Markdown 权限。" }
+        }
+      }
+    },
+    {
+      "name": "send",
+      "title": "发送到指定会话",
+      "description": "QQ 对机器人主动发消息限制很严，可能被拒绝；发到触发事件所在的会话时会自动按回复发送。",
+      "params": {
+        "type": "object",
+        "required": ["conversation_id", "text"],
+        "x-order": ["conversation_id", "text", "markdown"],
+        "properties": {
+          "conversation_id": { "type": "string", "title": "发到哪个会话", "x-pick": "conversation", "description": "从最近的会话里选，或直接写 group:群的 openid、user:用户的 openid。" },
+          "text": { "type": "string", "title": "内容", "format": "textarea" },
+          "markdown": { "type": "boolean", "title": "按 Markdown 渲染（失败时退回纯文本）", "description": "需要机器人有原生 Markdown 权限。" }
+        }
+      }
+    },
+    {
+      "name": "typing",
+      "title": "显示「正在输入」",
+      "description": "在触发事件所在的单聊里显示输入状态；QQ 群不支持，在群里此动作什么也不做。"
+    }
+  ]
+}
