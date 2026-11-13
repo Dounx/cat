@@ -64,19 +64,25 @@ function curve(a: Point, b: Point): string {
   const bend = Math.max(36, Math.abs(b.x - a.x) / 2)
   return `M ${a.x} ${a.y} C ${a.x + bend} ${a.y}, ${b.x - bend} ${b.y}, ${b.x} ${b.y}`
 }
+// A wire to a node that is not to the right, as one that loops back is, goes
+// round underneath (at `under`) rather than across what lies between.
+function around(a: Point, b: Point, under: number): string {
+  const r = 44
+  return (
+    `M ${a.x} ${a.y} C ${a.x + r} ${a.y}, ${a.x + r} ${under}, ${a.x} ${under} ` +
+    `L ${b.x} ${under} C ${b.x - r} ${under}, ${b.x - r} ${b.y}, ${b.x} ${b.y}`
+  )
+}
 const wires = computed(() =>
   props.edges.flatMap((e) => {
     const from = byId.value.get(e.from)
     const to = byId.value.get(e.to)
     if (!from || !to) return []
     const port = ports(from).find((p) => p.branch === (e.branch || '')) || ports(from)[0]
-    return [
-      {
-        key: edgeKey(e),
-        d: curve({ x: from.x + W, y: from.y + port.y }, { x: to.x - 2, y: to.y + heightOf(to) / 2 }),
-        no: e.branch === ELSE,
-      },
-    ]
+    const a = { x: from.x + W, y: from.y + port.y }
+    const b = { x: to.x - 2, y: to.y + heightOf(to) / 2 }
+    const under = Math.max(from.y + heightOf(from), to.y + heightOf(to)) + 28
+    return [{ key: edgeKey(e), d: b.x < a.x + 24 ? around(a, b, under) : curve(a, b), no: e.branch === ELSE }]
   }),
 )
 

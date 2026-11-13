@@ -3,18 +3,20 @@ import {
   ELSE,
   JUDGE,
   NODE_W,
+  backWires,
   blankNode,
   choicesOf,
   conditionOf,
   edgeKey,
+  endlessLoop,
   freshId,
   fromRule,
   layout,
+  onLoop,
   outcomes,
   toRule,
   typesOf,
   upstreamActions,
-  wouldLoop,
   type Doc,
 } from './graph'
 import type { GraphEdge, GraphNode, Rule } from './types'
@@ -214,16 +216,37 @@ describe('freshId', () => {
   })
 })
 
-describe('wouldLoop', () => {
-  const doc = sketch({ t1: 'trigger', a: 'action', b: 'action', c: 'action' }, 't1>a', 'a>b', 'b>c')
+describe('loops', () => {
+  // t1 → a → b → ok? ─ yes → c
+  //      ↑           └ else ┐
+  //      └──────────────────┘
+  const doc = sketch(
+    { t1: 'trigger', a: 'action', b: 'action', ok: 'condition', c: 'action' },
+    't1>a',
+    'a>b',
+    'b>ok',
+    'ok>c',
+    'ok>a:else',
+  )
 
-  it('finds a wire back to an earlier node', () => {
-    expect(wouldLoop(doc, 'c', 'a')).toBe(true)
-    expect(wouldLoop(doc, 'b', 'b')).toBe(true)
+  it('refuses a loop of actions alone, which nothing could end', () => {
+    expect(endlessLoop(doc, 'b', 'a')).toBe(true)
+    expect(endlessLoop(doc, 'b', 'b')).toBe(true)
   })
 
-  it('allows a second wire forward', () => {
-    expect(wouldLoop(doc, 'a', 'c')).toBe(false)
+  it('allows a loop that goes through a condition, and any wire forward', () => {
+    expect(endlessLoop(doc, 'c', 'a')).toBe(false)
+    expect(endlessLoop(doc, 'ok', 'b')).toBe(false)
+    expect(endlessLoop(doc, 'a', 'c')).toBe(false)
+  })
+
+  it('tells the wire that leads back, and what is on the loop', () => {
+    expect([...backWires(doc)]).toEqual(['ok|a|else'])
+    expect(['a', 'b', 'ok', 'c', 't1'].map((id) => onLoop(doc, id))).toEqual([true, true, true, false, false])
+  })
+
+  it('offers a node on a loop what the last time round left', () => {
+    expect(upstreamActions(doc, 'a').map((n) => n.id)).toEqual(['a', 'b'])
   })
 })
 
@@ -260,7 +283,20 @@ describe('layout', () => {
     expect(y('t1')).toBe(0)
   })
 
-  it('does not hang on a loop', () => {
+  it('leaves a node that is looped back to where the rule first comes to it', () => {
+    const doc = sketch(
+      { t1: 'trigger', a: 'action', ok: 'condition', c: 'action' },
+      't1>a',
+      'a>ok',
+      'ok>a:else',
+      'ok>c',
+    )
+    layout(doc)
+    const col = (id: string) => doc.nodes.find((n) => n.id === id)!.x / (NODE_W + 88)
+    expect(['t1', 'a', 'ok', 'c'].map(col)).toEqual([0, 1, 2, 3])
+  })
+
+  it('does not hang on a loop with no way in', () => {
     const doc = sketch({ a: 'action', b: 'action' }, 'a>b', 'b>a')
     expect(() => layout(doc)).not.toThrow()
   })

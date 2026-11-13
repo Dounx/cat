@@ -12,8 +12,18 @@ import TrialResult from './TrialResult.vue'
 const props = defineProps<{ node: ENode }>()
 defineEmits<{ remove: [] }>()
 const hub = useHub()
-const { actionsFor, specOf, targetName, actionTitle, targetIcon, resetParams, variablesFor, trialStep, pickAction } =
-  useEditor()
+const {
+  actionsFor,
+  specOf,
+  targetName,
+  actionTitle,
+  targetIcon,
+  resetParams,
+  variablesFor,
+  trialStep,
+  trialSteps,
+  pickAction,
+} = useEditor()
 
 // Change what the node uses, keeping its action if the new one can do it too.
 function retarget() {
@@ -68,5 +78,5 @@ function retarget() {
     </div>
   </details>
   <p class="mt-3 text-xs text-mute">用「插入变量」把事件的内容、前面动作的结果放进参数里。</p>
-  <TrialResult :step="trialStep(node.id)" />
+  <TrialResult :step="trialStep(node.id)" :times="trialSteps(node.id).length" />
 </template>

@@ -155,7 +155,9 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
   // ---- trying the rule out ----
   // What became of the rule the last time it was tried, shown on each node.
   const trial = ref<null | { run: Run | null; error?: string }>(null)
-  const trialStep = (id: string) => trial.value?.run?.steps.find((s) => s.id === id)
+  // A node on a loop may have run several times; the last is the one shown.
+  const trialSteps = (id: string) => trial.value?.run?.steps.filter((s) => s.id === id) || []
+  const trialStep = (id: string) => trialSteps(id).pop()
 
   // ---- what a parameter may refer to ----
   // The event, and the outputs of the actions that run before the node.
@@ -252,6 +254,7 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
     targetIcon,
     trial,
     trialStep,
+    trialSteps,
     variablesFor,
     picker,
     connecting,

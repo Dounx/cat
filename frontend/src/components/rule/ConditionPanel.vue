@@ -7,7 +7,7 @@ import { useHub, clock, summarize } from '../../hub'
 import { post } from '../../api'
 import { operators } from '../../condition'
 import { useEditor } from '../../editor/context'
-import { ELSE, JUDGE, conditionOf, type ENode } from '../../graph'
+import { ELSE, JUDGE, conditionOf, onLoop, type ENode } from '../../graph'
 import { eventTitle, fieldLabel } from '../../labels'
 import type { Plugin, Schema } from '../../types'
 import SchemaForm from '../SchemaForm.vue'
@@ -17,8 +17,13 @@ import TrialResult from './TrialResult.vue'
 const props = defineProps<{ node: ENode }>()
 defineEmits<{ remove: [] }>()
 const hub = useHub()
-const { doc, fieldHints, scopedEvents, testEventId, typedRows, specOf, resetParams, variablesFor, trialStep, connect } =
-  useEditor()
+const editor = useEditor()
+const { doc, scopedEvents, testEventId, typedRows, specOf, resetParams, variablesFor, trialStep, trialSteps, connect } =
+  editor
+// A condition on a loop can also go by how many times the rule has gone back.
+const fieldHints = computed(() =>
+  onLoop(doc, props.node.id) ? [...editor.fieldHints.value, 'loop'] : editor.fieldHints.value,
+)
 
 // ---- rows ----
 // A row's field is chosen by name; one not on the list is typed as it is
@@ -274,7 +279,7 @@ async function test(n: ENode) {
     <p class="mt-1 text-xs text-mute">每个选项在节点右边有一个出口，另有一个「其他」。</p>
   </template>
 
-  <TrialResult :step="trialStep(node.id)" />
+  <TrialResult :step="trialStep(node.id)" :times="trialSteps(node.id).length" />
   <p v-if="node.ask || node.choices.length" class="mt-4 text-xs text-mute">
     用上面的「试运行」拿一个收到过的事件走一遍，看它在这里{{ node.ask ? '被判断成什么' : '走哪个选项' }}。
   </p>

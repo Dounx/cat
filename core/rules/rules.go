@@ -111,10 +111,12 @@ func (r *Rule) Asks() []Asked {
 }
 
 // Env builds the variables visible to expressions: the event under "event"
-// plus its top-level fields as shortcuts, and step outputs under "steps".
+// plus its top-level fields as shortcuts, step outputs under "steps", and
+// under "loop" how many times the walk of a graph has gone back round a loop
+// (the walk counts; it is 0 here).
 func Env(ev *event.Event, steps map[string]any) map[string]any {
 	m := ev.Map()
-	env := map[string]any{"event": m, "steps": steps}
+	env := map[string]any{"event": m, "steps": steps, "loop": 0}
 	if steps == nil {
 		env["steps"] = map[string]any{}
 	}

@@ -221,12 +221,12 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 	outputs := map[string]any{}
 	failed := false
 	// act runs one step and reports whether what follows it may run.
-	act := func(step rules.Step) bool {
+	act := func(step rules.Step, env map[string]any) bool {
 		if !recorded {
 			recorded = true
 			e.saveRun(run)
 		}
-		res := e.runStep(step, ev, r.ID, run.ID, outputs)
+		res := e.runStep(step, ev, r.ID, run.ID, env)
 		run.Steps = append(run.Steps, res)
 		if res.Output != nil {
 			outputs[step.ID] = res.Output
@@ -246,13 +246,17 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 		// A failed action ends its own branch; the other branches still run.
 		r.Walk(ev, outputs, act, func(nodeID string, err error) {
 			failed, recorded = true, true
-			run.Steps = append(run.Steps, store.StepResult{ID: nodeID, Action: "condition", Error: "条件求值失败：" + err.Error()})
+			res := store.StepResult{ID: nodeID, Action: "condition", Error: "条件求值失败：" + err.Error()}
+			if errors.Is(err, rules.ErrLoops) {
+				res.Action, res.Error = "loop", err.Error()
+			}
+			run.Steps = append(run.Steps, res)
 			e.saveRun(run)
-		}, func(n *rules.Node, _ map[string]any) (any, error) {
+		}, func(n *rules.Node, env map[string]any) (any, error) {
 			// Asking is real work, so the run shows from here on, and what
 			// the instance said is there for later nodes as steps.<id>.
 			recorded = true
-			res, verdict := e.judge(n, ev, r.ID, run.ID, outputs)
+			res, verdict := e.judge(n, ev, r.ID, run.ID, env)
 			if res.Error != "" {
 				return nil, errors.New(res.Error)
 			}
@@ -263,7 +267,7 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 		})
 	} else {
 		for _, step := range r.Steps {
-			if !act(step) {
+			if !act(step, rules.Env(ev, outputs)) {
 				break
 			}
 		}
@@ -308,7 +312,7 @@ func (e *Engine) TryRule(r rules.Rule, eventID string) (*store.Run, error) {
 // choices to pick from (yes or no when the node lists none). The instance
 // answers with the one it picked under "choice". The verdict is that choice,
 // or for a yes-or-no condition whether it was yes.
-func (e *Engine) judge(n *rules.Node, ev *event.Event, ruleID, runID string, outputs map[string]any) (store.StepResult, any) {
+func (e *Engine) judge(n *rules.Node, ev *event.Event, ruleID, runID string, env map[string]any) (store.StepResult, any) {
 	step := n.Step
 	if step.Action == "" {
 		step.Action = rules.JudgeAction
@@ -326,7 +330,7 @@ func (e *Engine) judge(n *rules.Node, ev *event.Event, ruleID, runID string, out
 		list[i] = c
 	}
 	step.Params["choices"] = list
-	res := e.runStep(step, ev, ruleID, runID, outputs)
+	res := e.runStep(step, ev, ruleID, runID, env)
 	if res.Error != "" {
 		return res, nil
 	}
@@ -350,7 +354,8 @@ func (e *Engine) saveRun(run *store.Run) {
 	e.publish(Message{Kind: "run", Data: copied})
 }
 
-func (e *Engine) runStep(step rules.Step, ev *event.Event, ruleID, runID string, outputs map[string]any) store.StepResult {
+// runStep carries out one step, its parameters rendered with env.
+func (e *Engine) runStep(step rules.Step, ev *event.Event, ruleID, runID string, env map[string]any) store.StepResult {
 	target := step.Instance
 	if target == rules.SourceInstance {
 		target = ev.Source
@@ -359,7 +364,7 @@ func (e *Engine) runStep(step rules.Step, ev *event.Event, ruleID, runID string,
 	start := time.Now()
 	defer func() { res.DurationMS = time.Since(start).Milliseconds() }()
 
-	rendered, err := rules.Render(map[string]any(step.Params), rules.Env(ev, outputs))
+	rendered, err := rules.Render(map[string]any(step.Params), env)
 	if err != nil {
 		res.Error = "参数模板错误：" + err.Error()
 		res.DurationMS = time.Since(start).Milliseconds()

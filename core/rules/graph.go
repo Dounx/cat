@@ -13,7 +13,10 @@ import (
 // A rule may describe what it does as a graph instead of one condition and a
 // list of steps: trigger, condition and action nodes wired together.
 // A walk begins at the triggers the event falls within. Conditions may lead
-// to conditions, actions to actions, and any node to several others.
+// to conditions, actions to actions, and any node to several others. A wire
+// may lead back to a node the walk has come through, which makes a loop: the
+// walk starts over from that node, as long as a condition on the way round
+// can end it.
 const (
 	KindTrigger   = "trigger"
 	KindCondition = "condition"
@@ -35,7 +38,14 @@ const (
 	// the instance that judges it.
 	JudgeYes = "yes"
 	JudgeNo  = "no"
+
+	// MaxLoops is how many times one walk may go back round its loops before
+	// it is stopped.
+	MaxLoops = 100
 )
+
+// ErrLoops is what a walk fails with when it has gone round MaxLoops times.
+var ErrLoops = fmt.Errorf("循环超过 %d 次，已停下", MaxLoops)
 
 // Node is one trigger, condition or action of a graph. An action node is a
 // Step, and later nodes refer to its output as steps.<id>. A trigger node
@@ -142,19 +152,23 @@ func compileGraph(g *Graph) (*compiledGraph, error) {
 		}
 		c.next[e.From] = append(c.next[e.From], e)
 	}
-	// A walk visits each node once, so a loop could never run; say so up front.
+	// A loop ends when a condition in it sends the walk another way, so one
+	// made of actions alone would never end; say so up front.
 	const visiting, done = 1, 2
 	state := map[string]int{}
 	var visit func(id string) error
 	visit = func(id string) error {
 		switch state[id] {
 		case visiting:
-			return fmt.Errorf("连线形成了循环（经过 %s）", id)
+			return fmt.Errorf("循环里需要一个条件来决定何时停下（经过 %s）", id)
 		case done:
 			return nil
 		}
 		state[id] = visiting
 		for _, e := range c.next[id] {
+			if c.nodes[e.To].Kind == KindCondition {
+				continue
+			}
 			if err := visit(e.To); err != nil {
 				return err
 			}
@@ -162,9 +176,11 @@ func compileGraph(g *Graph) (*compiledGraph, error) {
 		state[id] = done
 		return nil
 	}
-	for id := range c.nodes {
-		if err := visit(id); err != nil {
-			return nil, err
+	for i := range g.Nodes {
+		if n := &g.Nodes[i]; n.Kind != KindCondition {
+			if err := visit(n.ID); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return c, nil
@@ -240,56 +256,174 @@ func (c *compiledGraph) branches(id string) []string {
 	return list
 }
 
-// walk follows the edges leaving `from` on the given branch, depth first and
-// in order. Each node is entered at most once. act runs an action and reports
-// whether to go on past it; with act nil the walk only looks for an action
-// and stops at the first one. fail is told of a condition that cannot be
-// evaluated, and that branch ends there. judge decides the
-// conditions that are put to an instance; with judge nil nothing is asked,
-// and the walk goes on by every way out of such a condition.
-func (c *compiledGraph) walk(from, branch string, env func() map[string]any, seen map[string]bool,
-	act func(Step) bool, fail func(id string, err error), judge Judge) (found bool) {
-	for _, e := range c.next[from] {
-		if e.Branch != branch || seen[e.To] {
+// A walker carries one walk of a graph for an event. act runs an action,
+// given the variables its parameters may refer to, and reports whether to go
+// on past it; with act nil the walk only looks for an
+// action and stops at the first one. fail is told of a condition that cannot
+// be evaluated, and that branch ends there. judge decides the conditions that
+// are put to an instance; with judge nil nothing is asked, and the walk goes
+// on by every way out of such a condition.
+type walker struct {
+	c     *compiledGraph
+	env   func() map[string]any
+	act   func(Step, map[string]any) bool
+	fail  func(id string, err error)
+	judge Judge
+
+	seen  map[string]bool // nodes entered since the walk last started over from them
+	path  []string        // the nodes the walk is on its way out of, outermost first
+	jumps []jump          // wires back that were taken, waiting for the pass to end
+	loops int             // how many times the walk has gone back so far
+}
+
+// A jump is a wire back to a node the walk came through, and the way it had
+// come to that node.
+type jump struct {
+	to   string
+	path []string
+}
+
+// follow takes the edges leaving `from` on the given branch, depth first and
+// in order, and reports whether an action was reached. A node is entered at
+// most once in a pass: where two ways meet, the second stops. A wire back to
+// a node the walk is still on its way out of is a loop, taken once the rest
+// of the pass is done.
+func (w *walker) follow(from, branch string) (found bool) {
+	for _, e := range w.c.next[from] {
+		if e.Branch != branch {
 			continue
 		}
-		seen[e.To] = true
-		n := c.nodes[e.To]
-		if n.Kind == KindAction {
-			if act == nil {
-				return true
+		if w.seen[e.To] {
+			if w.act != nil {
+				w.back(e.To)
 			}
+			continue
+		}
+		w.seen[e.To] = true
+		if w.enter(e.To) {
 			found = true
-			if act(n.Step) {
-				c.walk(n.ID, "", env, seen, act, fail, judge)
-			}
-			continue
-		}
-		next := []string{""}
-		switch {
-		case n.Kind != KindCondition:
-		case n.Judged() && judge == nil:
-			next = c.branches(n.ID)
-		default:
-			b, err := c.decide(n, env(), judge)
-			if err != nil {
-				if fail != nil {
-					fail(n.ID, err)
-				}
-				continue
-			}
-			next[0] = b
-		}
-		for _, b := range next {
-			if c.walk(n.ID, b, env, seen, act, fail, judge) {
-				found = true
-				if act == nil {
-					return true
-				}
+			if w.act == nil {
+				return true
 			}
 		}
 	}
 	return found
+}
+
+// back notes a wire that leads back to id, if the walk came through it.
+func (w *walker) back(id string) {
+	for i, at := range w.path {
+		if at != id {
+			continue
+		}
+		for _, j := range w.jumps {
+			if j.to == id {
+				return
+			}
+		}
+		w.jumps = append(w.jumps, jump{to: id, path: append([]string(nil), w.path[:i]...)})
+		return
+	}
+}
+
+// enter runs an action, or decides a condition, and goes on from it.
+func (w *walker) enter(id string) (found bool) {
+	w.path = append(w.path, id)
+	defer func() { w.path = w.path[:len(w.path)-1] }()
+	n := w.c.nodes[id]
+	if n.Kind == KindAction {
+		if w.act == nil {
+			return true
+		}
+		if w.act(n.Step, w.vars()) {
+			w.follow(id, "")
+		}
+		return true
+	}
+	next := []string{""}
+	switch {
+	case n.Kind != KindCondition:
+	case n.Judged() && w.judge == nil:
+		next = w.c.branches(id)
+	default:
+		b, err := w.c.decide(n, w.vars(), w.judge)
+		if err != nil {
+			if w.fail != nil {
+				w.fail(id, err)
+			}
+			return false
+		}
+		next[0] = b
+	}
+	for _, b := range next {
+		if w.follow(id, b) {
+			found = true
+			if w.act == nil {
+				return true
+			}
+		}
+	}
+	return found
+}
+
+// vars gives the variables as they stand: the event, what the nodes run so
+// far have left, and how many times the walk has gone back.
+func (w *walker) vars() map[string]any {
+	env := w.env()
+	env["loop"] = w.loops
+	return env
+}
+
+// run walks from each of the starts, then goes back round the loops that
+// were taken: each starts the walk over from the node its wire leads to, so
+// that node and whatever follows it may run again.
+func (w *walker) run(starts []string) (found bool) {
+	for _, start := range starts {
+		if w.follow(start, "") {
+			found = true
+			if w.act == nil {
+				return true
+			}
+		}
+	}
+	for len(w.jumps) > 0 {
+		j := w.jumps[0]
+		w.jumps = w.jumps[1:]
+		if w.loops >= MaxLoops {
+			if w.fail != nil {
+				w.fail(j.to, ErrLoops)
+			}
+			return found
+		}
+		w.loops++
+		w.forget(j.to)
+		// what the walk is still on its way out of stays entered, so that a
+		// wire back to it is seen for the loop it is
+		for _, id := range j.path {
+			w.seen[id] = true
+		}
+		w.seen[j.to] = true
+		w.path = j.path
+		w.enter(j.to)
+	}
+	return found
+}
+
+// forget lets the nodes that follow id be entered again.
+func (w *walker) forget(id string) {
+	todo := []string{id}
+	gone := map[string]bool{id: true}
+	for len(todo) > 0 {
+		at := todo[len(todo)-1]
+		todo = todo[:len(todo)-1]
+		delete(w.seen, at)
+		for _, e := range w.c.next[at] {
+			if !gone[e.To] {
+				gone[e.To] = true
+				todo = append(todo, e.To)
+			}
+		}
+	}
 }
 
 // starts lists where a walk for the event begins: the trigger nodes it falls
@@ -319,32 +453,27 @@ func (c *compiledGraph) starts(ev *event.Event) []string {
 func (c *compiledGraph) reaches(ev *event.Event) (bool, error) {
 	env := Env(ev, nil)
 	var first error
-	seen := map[string]bool{}
-	for _, start := range c.starts(ev) {
-		ok := c.walk(start, "", func() map[string]any { return env }, seen, nil,
-			func(id string, err error) {
-				if first == nil {
-					first = fmt.Errorf("条件 %s: %w", id, err)
-				}
-			}, nil)
-		if ok {
-			return true, first
-		}
-	}
-	return false, first
+	w := &walker{c: c, env: func() map[string]any { return env }, seen: map[string]bool{},
+		fail: func(id string, err error) {
+			if first == nil {
+				first = fmt.Errorf("条件 %s: %w", id, err)
+			}
+		}}
+	return w.run(c.starts(ev)), first
 }
 
 // Walk runs a graph rule for an event. act is called for each action reached,
-// in order; it runs the step, records its output in outputs (where later
-// nodes read it as steps.<id>) and reports whether the walk may go on past
-// it. fail is called for a condition that cannot be evaluated, and judge
-// answers the conditions that are put to an instance.
-func (c *Compiled) Walk(ev *event.Event, outputs map[string]any, act func(Step) bool, fail func(id string, err error), judge Judge) {
+// in order, with the variables its parameters may refer to; it runs the
+// step, records its output in outputs (where later nodes read it as
+// steps.<id>) and reports whether the walk may go on past it. fail is called for a condition that cannot be evaluated, or with
+// ErrLoops for the node a loop was stopped at, and judge answers the
+// conditions that are put to an instance. Among the variables, "loop" is how
+// many times the walk has gone back round a loop so far.
+func (c *Compiled) Walk(ev *event.Event, outputs map[string]any, act func(Step, map[string]any) bool, fail func(id string, err error), judge Judge) {
 	if c.graph == nil {
 		return
 	}
-	seen := map[string]bool{}
-	for _, start := range c.graph.starts(ev) {
-		c.graph.walk(start, "", func() map[string]any { return Env(ev, outputs) }, seen, act, fail, judge)
-	}
+	w := &walker{c: c.graph, env: func() map[string]any { return Env(ev, outputs) }, seen: map[string]bool{},
+		act: act, fail: fail, judge: judge}
+	w.run(c.graph.starts(ev))
 }

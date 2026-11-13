@@ -386,7 +386,7 @@ func TestGraphRuleBranches(t *testing.T) {
 		Nodes: []rules.Node{echo("a", "x"), echo("b", "y")},
 		Edges: []rules.Edge{{From: "a", To: "b"}, {From: "b", To: "a"}},
 	}}); err == nil {
-		t.Fatal("a graph with a loop should be rejected")
+		t.Fatal("a loop with no condition to end it should be rejected")
 	}
 }
 
@@ -425,6 +425,69 @@ func TestTryRuleRunsUnsavedRule(t *testing.T) {
 	rule.Graph.Nodes[0].Sources = []string{"someone-else"}
 	if run, err := e.TryRule(rule, eventID); err != nil || run != nil {
 		t.Fatalf("want no run, got %v, err %v", run, err)
+	}
+}
+
+func TestGraphRuleLoops(t *testing.T) {
+	e := newEngine(t)
+	hook, _ := e.SaveInstance(store.Instance{Plugin: "webhook", Enabled: true})
+	waitRunning(t, e, hook.ID)
+	waitRunning(t, e, "shell")
+	post(t, e, hook.ID, `{"text":"hi"}`, nil)
+	var eventID string
+	waitFor(t, "event", func() bool {
+		list, _ := e.Store.ListEvents(store.EventFilter{Limit: 1})
+		if len(list) == 1 {
+			eventID = list[0].ID
+		}
+		return eventID != ""
+	})
+	// trigger → say → enough? ─ yes → done
+	//            ↑             └ else ─┐
+	//            └─────────────────────┘
+	// Each time round, "say" is given what it printed the time before.
+	loop := func(enough string) rules.Rule {
+		echo := func(id, text string) rules.Node {
+			return rules.Node{Kind: rules.KindAction, Step: rules.Step{
+				ID: id, Instance: "shell", Action: "run", Params: map[string]any{"command": "echo " + text},
+			}}
+		}
+		return rules.Rule{Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				echo("say", `{{ trim(steps.say?.stdout ?? "") }}x`), echo("done", "{{ loop }}:{{ steps.say.stdout }}"),
+				{Kind: rules.KindCondition, Step: rules.Step{ID: "enough"}, Condition: enough},
+			},
+			Edges: []rules.Edge{
+				{From: rules.TriggerNode, To: "say"},
+				{From: "say", To: "enough"},
+				{From: "enough", To: "done"},
+				{From: "enough", To: "say", Branch: rules.BranchElse},
+			},
+		}}
+	}
+	run, err := e.TryRule(loop(`steps.say.stdout contains "xxx"`), eventID)
+	if err != nil || run == nil {
+		t.Fatalf("run %v, err %v", run, err)
+	}
+	var ids []string
+	for _, s := range run.Steps {
+		ids = append(ids, s.ID)
+	}
+	if got := strings.Join(ids, ","); got != "say,say,say,done" || run.Status != "ok" {
+		t.Fatalf("ran %q, status %s", got, run.Status)
+	}
+	if out, _ := run.Steps[3].Output["stdout"].(string); strings.TrimSpace(out) != "2:xxx" {
+		t.Fatalf("done printed %q", out)
+	}
+
+	// a loop that never has enough is stopped, and the run says so
+	run, err = e.TryRule(loop(`loop > 1000`), eventID)
+	if err != nil || run == nil {
+		t.Fatalf("run %v, err %v", run, err)
+	}
+	last := run.Steps[len(run.Steps)-1]
+	if run.Status != "error" || len(run.Steps) != rules.MaxLoops+2 || last.Action != "loop" || last.ID != "say" {
+		t.Fatalf("status %s after %d steps, the last %+v", run.Status, len(run.Steps), last)
 	}
 }
 

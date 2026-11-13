@@ -251,9 +251,13 @@ export function toRule(doc: Doc, base: Rule, asks: (t: ENode) => boolean = () =>
   }
 }
 
-// Would an edge from → to close a loop? It would if `from` can already be
-// reached from `to`.
-export function wouldLoop(doc: Doc, from: string, to: string): boolean {
+// Would an edge from → to close a loop that nothing could end? A wire may
+// lead back to an earlier node, but some condition on the way round has to be
+// able to send the rule another way. So it would if neither end is a
+// condition and `from` can already be reached from `to` past actions alone.
+export function endlessLoop(doc: Doc, from: string, to: string): boolean {
+  const plain = (id: string) => doc.nodes.find((n) => n.id === id)?.kind !== 'condition'
+  if (!plain(from) || !plain(to)) return false
   const todo = [to]
   const seen = new Set<string>()
   while (todo.length) {
@@ -261,13 +265,47 @@ export function wouldLoop(doc: Doc, from: string, to: string): boolean {
     if (id === from) return true
     if (seen.has(id)) continue
     seen.add(id)
-    for (const e of doc.edges) if (e.from === id) todo.push(e.to)
+    for (const e of doc.edges) if (e.from === id && plain(e.to)) todo.push(e.to)
+  }
+  return false
+}
+
+// The wires that lead back to a node the rule has come through on its way
+// there, going from the triggers and taking the wires in order.
+export function backWires(doc: Doc): Set<string> {
+  const back = new Set<string>()
+  const state = new Map<string, 'on' | 'done'>()
+  const visit = (id: string) => {
+    state.set(id, 'on')
+    for (const e of doc.edges) {
+      if (e.from !== id) continue
+      if (state.get(e.to) === 'on') back.add(edgeKey(e))
+      else if (!state.has(e.to)) visit(e.to)
+    }
+    state.set(id, 'done')
+  }
+  for (const n of doc.nodes) if (n.kind === 'trigger') visit(n.id)
+  for (const n of doc.nodes) if (!state.has(n.id)) visit(n.id)
+  return back
+}
+
+// Is the node on a loop: can it be come back to?
+export function onLoop(doc: Doc, id: string): boolean {
+  const todo = doc.edges.filter((e) => e.from === id).map((e) => e.to)
+  const seen = new Set<string>()
+  while (todo.length) {
+    const at = todo.pop()!
+    if (at === id) return true
+    if (seen.has(at)) continue
+    seen.add(at)
+    for (const e of doc.edges) if (e.from === at) todo.push(e.to)
   }
   return false
 }
 
 // The nodes that leave an output before `id` on some path, nearest last:
-// actions, and conditions that were put to a model.
+// actions, and conditions that were put to a model. On a loop that takes in
+// the node itself and what comes after it, as they were the last time round.
 export function upstreamActions(doc: Doc, id: string): ENode[] {
   const seen = new Set<string>()
   const order: string[] = []
@@ -286,15 +324,15 @@ export function upstreamActions(doc: Doc, id: string): ENode[] {
 }
 
 // Lay the graph out in columns: triggers on the left, and every other node
-// one column right of its furthest predecessor. Each column is stacked around
-// the same middle row.
+// one column right of its furthest predecessor. A wire that leads back does
+// not count: the node it leads to stays where the rule first comes to it.
+// Each column is stacked around the same middle row.
 export function layout(doc: Doc) {
+  const back = backWires(doc)
   const depth = new Map<string, number>()
-  const depthOf = (id: string, trail: Set<string>): number => {
+  const depthOf = (id: string): number => {
     if (depth.has(id)) return depth.get(id)!
-    if (trail.has(id)) return 1
-    trail.add(id)
-    const before = doc.edges.filter((e) => e.to === id).map((e) => depthOf(e.from, trail))
+    const before = doc.edges.filter((e) => e.to === id && !back.has(edgeKey(e))).map((e) => depthOf(e.from))
     const own = doc.nodes.find((n) => n.id === id)?.kind === 'trigger' ? 0 : 1
     const d = before.length ? Math.max(...before) + 1 : own
     depth.set(id, d)
@@ -311,7 +349,7 @@ export function layout(doc: Doc) {
   for (const n of doc.nodes) if (n.kind === 'trigger') walk(n.id)
   for (const n of doc.nodes) walk(n.id)
   const cols: string[][] = []
-  for (const id of order) (cols[depthOf(id, new Set())] ||= []).push(id)
+  for (const id of order) (cols[depthOf(id)] ||= []).push(id)
   const gapX = 88
   const gapY = 32
   cols.forEach((ids, c) =>

@@ -21,6 +21,7 @@ const known: Record<string, string> = {
   'conversation.kind': '会话类型（群聊 / 私聊）',
   type: '事件类型',
   source: '来自哪个接入',
+  loop: '已经绕回的次数',
 }
 
 // A field nobody named is still shown by what it is called in the data.

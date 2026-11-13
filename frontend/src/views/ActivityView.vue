@@ -66,6 +66,7 @@ function duration(r: Run): string {
 // "Claude Code · 对话" for a step, in the words of the plugin behind it.
 function stepTitle(s: StepResult): string {
   if (s.action === 'condition' && !s.instance) return '条件'
+  if (s.action === 'loop' && !s.instance) return '循环'
   const action = hub.pluginOf(hub.instanceOf(s.instance)?.plugin || '')?.actions?.find((a) => a.name === s.action)
   return `${hub.instanceName(s.instance)} · ${action?.title || s.action}`
 }

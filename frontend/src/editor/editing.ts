@@ -2,7 +2,7 @@
 // removed.
 import { nextTick, type Ref } from 'vue'
 import { useHub } from '../hub'
-import { NODE_H, NODE_W, blankNode, clipboard, edgeKey, freshId, layout, wouldLoop, type ENode } from '../graph'
+import { NODE_H, NODE_W, blankNode, clipboard, edgeKey, freshId, layout, endlessLoop, type ENode } from '../graph'
 import type { Point } from '../components/FlowCanvas.vue'
 import type { Editor } from './context'
 
@@ -47,7 +47,8 @@ export function useGraphEditing(editor: Editor, canvas: Ref<Canvas | undefined>)
   function connect(from: string, branch: string, to: string) {
     if (from === to || doc.nodes.find((n) => n.id === to)?.kind === 'trigger') return
     if (doc.edges.some((e) => e.from === from && e.to === to && (e.branch || '') === branch)) return
-    if (wouldLoop(doc, from, to)) return hub.notify('这样连会形成循环，规则不能绕回前面的节点', true)
+    if (endlessLoop(doc, from, to))
+      return hub.notify('这样连成的循环停不下来：绕回去的路上要有一个条件节点，由它决定何时不再循环', true)
     doc.edges.push({ from, to, ...(branch ? { branch } : {}) })
   }
   // Put a new node in the middle of a wire.

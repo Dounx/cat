@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ func ran(t *testing.T, r Rule, ev *event.Event, failing ...string) []string {
 	}
 	var got []string
 	outputs := map[string]any{}
-	c.Walk(ev, outputs, func(s Step) bool {
+	c.Walk(ev, outputs, func(s Step, _ map[string]any) bool {
 		got = append(got, s.ID)
 		for _, f := range failing {
 			if f == s.ID {
@@ -116,8 +117,146 @@ func TestGraphNodeRunsOnce(t *testing.T) {
 	}
 }
 
+func TestGraphLoop(t *testing.T) {
+	// trigger → draft ─┬─ good? ─ yes → send
+	//             ↑    │         └ else ─┐
+	//             │    └─ note           │
+	//             └──────────────────────┘
+	loop := func(cond string) Rule {
+		return Rule{Graph: &Graph{
+			Nodes: []Node{action("draft"), condition("good", cond), action("note"), action("send")},
+			Edges: []Edge{
+				{From: TriggerNode, To: "draft"},
+				{From: "draft", To: "good"},
+				{From: "draft", To: "note"},
+				{From: "good", To: "send"},
+				{From: "good", To: "draft", Branch: BranchElse},
+			},
+		}}
+	}
+	// Going back starts over from the node the wire leads to, once the rest
+	// of the pass is done: what follows it runs again each time round.
+	got := ran(t, loop(`loop >= 2`), &event.Event{})
+	want := []string{"draft", "note", "draft", "note", "draft", "send", "note"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ran %v, want %v", got, want)
+	}
+	// a rule that loops still matches by its first pass
+	c, err := Compile(loop(`loop >= 2`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := c.Match(&event.Event{}); !ok || err != nil {
+		t.Errorf("match = %v, %v", ok, err)
+	}
+
+	// A loop nothing ends is stopped, and the walk says where.
+	c, err = Compile(loop(`false`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	drafts, stopped := 0, ""
+	c.Walk(&event.Event{}, map[string]any{}, func(s Step, _ map[string]any) bool {
+		if s.ID == "draft" {
+			drafts++
+		}
+		return true
+	}, func(id string, err error) {
+		if !errors.Is(err, ErrLoops) {
+			t.Fatalf("%s: %v", id, err)
+		}
+		stopped = id
+	}, nil)
+	if drafts != MaxLoops+1 || stopped != "draft" {
+		t.Errorf("drafted %d times and stopped at %q", drafts, stopped)
+	}
+
+	// a failed action ends the loop with its branch
+	if got, want := ran(t, loop(`false`), &event.Event{}, "draft"), []string{"draft"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ran %v, want %v", got, want)
+	}
+}
+
+func TestGraphLoopsWithin(t *testing.T) {
+	// A loop inside a loop, with two ways through the inner one that meet:
+	// trigger → outer → a ─┬→ left ─┬→ meet → again? ─ yes → a
+	//             ↑        └→ right ┘          └ else → more? ─ yes → outer
+	//             └───────────────────────────────────────────┘  └ else → end
+	// The inner loop goes round once for each pass of the outer one, which
+	// goes round once itself.
+	outputs := map[string]any{}
+	n := map[string]int{}
+	r := Rule{Graph: &Graph{
+		Nodes: []Node{
+			action("outer"), action("a"), action("left"), action("right"), action("meet"), action("end"),
+			condition("again", `steps.a.n % 2 == 1`), condition("more", `steps.outer.n < 2`),
+		},
+		Edges: []Edge{
+			{From: TriggerNode, To: "outer"}, {From: "outer", To: "a"},
+			{From: "a", To: "left"}, {From: "a", To: "right"},
+			{From: "left", To: "meet"}, {From: "right", To: "meet"},
+			{From: "meet", To: "again"},
+			{From: "again", To: "a"},
+			{From: "again", To: "more", Branch: BranchElse},
+			{From: "more", To: "outer"},
+			{From: "more", To: "end", Branch: BranchElse},
+		},
+	}}
+	c, err := Compile(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	c.Walk(&event.Event{}, outputs, func(s Step, _ map[string]any) bool {
+		got = append(got, s.ID)
+		n[s.ID]++
+		outputs[s.ID] = map[string]any{"n": n[s.ID]}
+		return true
+	}, func(id string, err error) { t.Fatalf("%s: %v", id, err) }, nil)
+	pass := []string{"a", "left", "meet", "right"}
+	var want []string
+	for i := 0; i < 2; i++ {
+		want = append(want, "outer")
+		want = append(want, pass...)
+		want = append(want, pass...)
+	}
+	// the last time round, "end" comes as soon as the conditions let it
+	want = append(want[:len(want)-1], "end", "right")
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ran %v\nwant %v", got, want)
+	}
+}
+
+func TestGraphLoopEntered(t *testing.T) {
+	// Two triggers come into the same loop at different nodes; whichever way
+	// the event came in, the wire that closes the round is the one that
+	// leads back to a node it has been through.
+	trigger := func(id, typ string) Node {
+		return Node{Step: Step{ID: id}, Kind: KindTrigger, Types: []string{typ}}
+	}
+	r := Rule{Graph: &Graph{
+		Nodes: []Node{
+			trigger("t1", "one"), trigger("t2", "two"),
+			action("x"), action("y"), condition("on", `loop < 1`),
+		},
+		Edges: []Edge{
+			{From: "t1", To: "x"}, {From: "t2", To: "y"},
+			{From: "x", To: "y"}, {From: "y", To: "on"}, {From: "on", To: "x"},
+		},
+	}}
+	for typ, want := range map[string][]string{
+		"one": {"x", "y", "x", "y"},
+		"two": {"y", "x", "y"},
+	} {
+		if got := ran(t, r, &event.Event{Type: typ}); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: ran %v, want %v", typ, got, want)
+		}
+	}
+}
+
 func TestGraphRejected(t *testing.T) {
 	cases := map[string]Graph{
+		// a loop of actions alone could never end
 		"循环": {Nodes: []Node{action("a"), action("b")}, Edges: []Edge{{From: "a", To: "b"}, {From: "b", To: "a"}}},
 		"重复": {Nodes: []Node{action("a"), action("a")}},
 		"终点": {Nodes: []Node{action("a")}, Edges: []Edge{{From: TriggerNode, To: "gone"}}},
@@ -229,7 +368,7 @@ func TestGraphChoices(t *testing.T) {
 	for _, tc := range cases {
 		ev := &event.Event{Type: "x", Payload: map[string]any{"level": tc.level}}
 		var got []string
-		c.Walk(ev, map[string]any{}, func(s Step) bool {
+		c.Walk(ev, map[string]any{}, func(s Step, _ map[string]any) bool {
 			got = append(got, s.ID)
 			return true
 		}, func(id string, err error) { t.Fatalf("condition %s: %v", id, err) },
