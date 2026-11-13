@@ -111,7 +111,23 @@ const statusText: Record<string, string> = { running: '运行中', starting: '�
 const statusDot: Record<string, string> = { running: 'ok', starting: 'warn', stopped: '', error: 'bad' }
 
 function ingressURL(i: Instance) {
-  return `${location.origin}/ingress/${i.id}`
+  return `${hub.ingressBase}/ingress/${i.id}`
+}
+// An address is copied to be given to another service, which has to reach it.
+// The page can only tell where it was opened itself: on this machine that is
+// an address nothing outside can call, and behind a proxy or a tunnel the one
+// to hand out is another. So the address to show can be set.
+const takesCalls = computed(() => configured.value.some((i) => hub.pluginOf(i.plugin)?.ingress))
+const localOnly = computed(
+  () => !hub.publicURL && /^(localhost|127\.\d+\.\d+\.\d+|\[::1\]|.*\.localhost)$/.test(location.hostname),
+)
+const origin = location.origin
+const publicURL = ref<string | null>(null)
+async function savePublicURL() {
+  const saved = await hub.run(() => put<{ public_url: string }>('/settings', { public_url: publicURL.value }), '已保存')
+  if (!saved) return
+  hub.publicURL = saved.public_url
+  publicURL.value = null
 }
 // The copy icon turns into a tick for a moment where it was pressed.
 const copied = ref('')
@@ -310,6 +326,18 @@ async function remove(i: Instance) {
           <input type="checkbox" :checked="i.enabled" :title="i.enabled ? '停用' : '启用'" @change="toggle(i)" />
         </div>
       </TransitionGroup>
+      <p v-if="takesCalls" class="text-xs text-mute">
+        <template v-if="hub.publicURL">接收地址以对外地址 {{ hub.publicURL }} 开头。</template>
+        <template v-else-if="localOnly">
+          接收地址以 {{ hub.ingressBase }} 开头，只有这台电脑上的程序访问得到。要让外面的服务调用，
+        </template>
+        <template v-else
+          >接收地址以打开这个页面的地址 {{ hub.ingressBase }} 开头。外面访问 Cat 用的是别的地址时，</template
+        >
+        <button class="cursor-pointer text-accent hover:underline" @click="publicURL = hub.publicURL">
+          {{ hub.publicURL ? '更改' : '设置对外地址' }}
+        </button>
+      </p>
     </div>
 
     <Transition name="drawer">
@@ -451,6 +479,29 @@ async function remove(i: Instance) {
           </button>
           <button class="btn" @click="editing = null">取消</button>
           <button class="btn btn-primary" @click="save">保存</button>
+        </template>
+      </Drawer>
+    </Transition>
+
+    <Transition name="drawer">
+      <Drawer v-if="publicURL !== null" title="对外地址" @close="publicURL = null">
+        <p class="mb-4 text-sm text-mute">
+          外面的服务访问 Cat 用的地址：反向代理的域名，或内网穿透给的地址。Webhook
+          这类接入显示和复制的接收地址会以它开头。
+        </p>
+        <label class="label">对外地址</label>
+        <input
+          v-model="publicURL"
+          class="input font-mono"
+          placeholder="https://cat.example.com"
+          @keydown.enter="savePublicURL"
+        />
+        <p class="mt-2 text-xs text-mute">
+          这里只改显示的地址，Cat 监听在哪、谁能访问到它不会变。留空就用打开这个页面的地址（{{ origin }}）。
+        </p>
+        <template #footer>
+          <button class="btn" @click="publicURL = null">取消</button>
+          <button class="btn btn-primary" @click="savePublicURL">保存</button>
         </template>
       </Drawer>
     </Transition>

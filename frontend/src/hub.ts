@@ -12,6 +12,8 @@ export const useHub = defineStore('hub', {
     rules: [] as Rule[],
     events: [] as HubEvent[],
     runs: [] as Run[],
+    // where the hub is reached from outside, when set: see ingressBase
+    publicURL: '',
     connected: false,
     needAuth: false,
     loaded: false,
@@ -29,6 +31,9 @@ export const useHub = defineStore('hub', {
       const p = s.plugins.find((p) => p.id === i.plugin)
       return !!p && (!!p.singleton || (!!p.default_instance && i.id === p.id))
     },
+    // What an ingress address starts with: the address the hub was given as
+    // reachable from outside, or failing that the one this page was opened at.
+    ingressBase: (s) => s.publicURL || location.origin,
     // The connections that are not working: the ones to look at first.
     troubled(): Instance[] {
       return this.instances.filter((i) => i.status === 'error' && !this.given(i))
@@ -50,14 +55,16 @@ export const useHub = defineStore('hub', {
     },
     async reload() {
       try {
-        const [plugins, instances, rules, events, runs] = await Promise.all([
+        const [plugins, instances, rules, events, runs, settings] = await Promise.all([
           get<Plugin[]>('/plugins'),
           get<Instance[]>('/instances'),
           get<Rule[]>('/rules'),
           get<HubEvent[]>('/events?limit=200'),
           get<Run[]>('/runs?limit=200'),
+          get<{ public_url: string }>('/settings'),
         ])
         Object.assign(this, { plugins, instances, rules, events, runs, loaded: true, needAuth: false })
+        this.publicURL = settings.public_url
       } catch {
         /* 401 is surfaced through needAuth */
       }
