@@ -71,7 +71,7 @@ export interface Step {
 // A rule drawn as a graph: trigger, condition and action nodes wired together.
 // A trigger node names the events that start there, and with `params` asks
 // its sources for something of its own (a feed to watch) and takes only the
-// events emitted for that. A throttle node lets an event past once per window. An edge leaving a
+// events emitted for that. An edge leaving a
 // condition with branch "else" is taken when the condition does not hold; one
 // whose `from` is "trigger" starts at the rule's own sources and types, in a
 // graph saved without trigger nodes. A condition with `instance` set is put to
@@ -79,13 +79,11 @@ export interface Step {
 // one with `choices` comes to one of them instead of yes or no: an edge
 // leaving it names its choice as the branch.
 export interface GraphNode extends Step {
-  kind: 'trigger' | 'condition' | 'throttle' | 'action'
+  kind: 'trigger' | 'condition' | 'action'
   condition?: string
   choices?: string[]
   sources?: string[]
   types?: string[]
-  throttle_seconds?: number
-  throttle_key?: string
   meta?: Record<string, any>
 }
 export interface GraphEdge {
@@ -102,8 +100,6 @@ export interface Rule {
   condition?: string
   steps: Step[]
   graph?: { nodes: GraphNode[]; edges: GraphEdge[] }
-  throttle_seconds?: number
-  throttle_key?: string
   meta?: Record<string, any>
   error?: string
 }

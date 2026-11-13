@@ -108,11 +108,6 @@ describe('fromRule', () => {
     ])
   })
 
-  it("makes a rule's own throttle the rate limit of its triggers", () => {
-    const doc = fromRule(rule({ throttle_seconds: 30, throttle_key: 'actor.id' }), declared)
-    expect(doc.nodes[0]).toMatchObject({ kind: 'trigger', limit: 30, limitKey: 'actor.id' })
-  })
-
   it('reads a condition put to a model', () => {
     const doc = fromRule(
       rule({
@@ -131,25 +126,6 @@ describe('fromRule', () => {
 })
 
 describe('toRule', () => {
-  it('stores a rate limit as a throttle every wire of the trigger goes through, and reads it back', () => {
-    const doc = sketch({ t1: 'trigger', s1: 'action', s2: 'action' }, 't1>s1', 't1>s2')
-    Object.assign(doc.nodes[0], { limit: 60, limitKey: ' actor.id ' })
-    const out = toRule(doc, rule())
-    const nodes = out.graph!.nodes
-    expect(node(nodes, 't1_limit')).toMatchObject({
-      kind: 'throttle',
-      throttle_seconds: 60,
-      throttle_key: 'actor.id',
-      meta: { of: 't1' },
-    })
-    expect(wires(out.graph!.edges).sort()).toEqual(['t1_limit|s1|', 't1_limit|s2|', 't1|t1_limit|'])
-
-    const back = fromRule(out, declared)
-    expect(ids(back)).toEqual(['t1', 's1', 's2'])
-    expect(wires(back.edges)).toEqual(['t1|s1|', 't1|s2|'])
-    expect(back.nodes[0]).toMatchObject({ limit: 60, limitKey: 'actor.id' })
-  })
-
   it('drops a wire left on a way out its condition no longer has', () => {
     const doc = sketch(
       { t1: 'trigger', c1: 'condition', s1: 'action', s2: 'action' },
@@ -199,7 +175,7 @@ describe('toRule', () => {
 
   it('leaves the rule as before graphs empty, and what else was kept with it alone', () => {
     const out = toRule(sketch({ t1: 'trigger' }), rule({ condition: 'x', meta: { builder: {}, trigger: {}, note: 1 } }))
-    expect(out).toMatchObject({ id: 'r1', condition: '', steps: [], throttle_seconds: 0, meta: { note: 1 } })
+    expect(out).toMatchObject({ id: 'r1', condition: '', steps: [], meta: { note: 1 } })
     expect(out.meta).toEqual({ note: 1 })
   })
 })
@@ -234,7 +210,6 @@ describe('freshId', () => {
     const doc = sketch({ t1: 'trigger', s1: 'action', s3: 'action' })
     expect(freshId(doc, 'action')).toBe('s4')
     expect(freshId(doc, 'condition')).toBe('c1')
-    expect(freshId(doc, 'throttle')).toBe('r1')
     expect(freshId(sketch({ s2: 'action' }), 'action')).toBe('s3')
   })
 })

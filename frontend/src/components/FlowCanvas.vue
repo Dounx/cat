@@ -10,7 +10,7 @@ import type { GraphEdge } from '../types'
 
 export interface CanvasNode {
   id: string
-  kind: 'trigger' | 'condition' | 'throttle' | 'action'
+  kind: 'trigger' | 'condition' | 'action'
   x: number
   y: number
   icon: Component
@@ -414,10 +414,6 @@ defineExpose({ fit, zoom, center })
 .glyph.trigger {
   background: color-mix(in srgb, var(--color-warn) 16%, transparent);
   color: var(--color-warn);
-}
-.glyph.throttle {
-  background: var(--color-sunken);
-  color: var(--color-mute);
 }
 .glyph.condition {
   background: color-mix(in srgb, var(--color-ok) 16%, transparent);

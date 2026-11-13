@@ -84,7 +84,6 @@ type Engine struct {
 	running  map[string]*running
 	rules    []*rules.Compiled
 	ruleErrs map[string]string
-	throttle map[string]time.Time
 	// trigErrs holds what each instance found wrong with its triggers, by
 	// instance id and then trigger id.
 	trigErrs map[string]map[string]string
@@ -111,7 +110,6 @@ func New(st *store.Store, dataDir string, log *slog.Logger) *Engine {
 		plugins:  map[string]registered{},
 		running:  map[string]*running{},
 		ruleErrs: map[string]string{},
-		throttle: map[string]time.Time{},
 		trigErrs: map[string]map[string]string{},
 		subs:     map[chan Message]struct{}{},
 		sem:      make(chan struct{}, 16),

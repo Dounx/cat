@@ -37,7 +37,7 @@ func ran(t *testing.T, r Rule, ev *event.Event, failing ...string) []string {
 		}
 		outputs[s.ID] = map[string]any{"ok": true}
 		return true
-	}, func(id string, err error) { t.Fatalf("condition %s: %v", id, err) }, nil, nil)
+	}, func(id string, err error) { t.Fatalf("condition %s: %v", id, err) }, nil)
 	return got
 }
 
@@ -179,57 +179,6 @@ func TestGraphTriggers(t *testing.T) {
 	}
 }
 
-func TestGraphThrottle(t *testing.T) {
-	// trigger → always
-	//         → limit → limited      (the gate decides)
-	r := Rule{Graph: &Graph{
-		Nodes: []Node{
-			{Step: Step{ID: "t"}, Kind: KindTrigger},
-			{Step: Step{ID: "limit"}, Kind: KindThrottle, ThrottleSeconds: 60, ThrottleKey: "actor.id"},
-			action("limited"), action("always"),
-		},
-		Edges: []Edge{{From: "t", To: "limit"}, {From: "limit", To: "limited"}, {From: "t", To: "always"}},
-	}}
-	c, err := Compile(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ev := &event.Event{Actor: &event.Actor{ID: "u1"}}
-	for _, open := range []bool{true, false} {
-		var got, asked []string
-		c.Walk(ev, map[string]any{}, func(s Step) bool {
-			got = append(got, s.ID)
-			return true
-		}, nil, func(n *Node, env map[string]any) bool {
-			key, _ := Eval(n.ThrottleKey, env)
-			asked = append(asked, n.ID+":"+key.(string))
-			return open
-		}, nil)
-		want := []string{"always"}
-		if open {
-			want = []string{"limited", "always"}
-		}
-		if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(asked, []string{"limit:u1"}) {
-			t.Errorf("gate open=%v: ran %v (want %v), asked %v", open, got, want, asked)
-		}
-	}
-	// held back on its only way to an action, the event does not match at all
-	only := Rule{Graph: &Graph{
-		Nodes: []Node{{Step: Step{ID: "t"}, Kind: KindTrigger}, {Step: Step{ID: "limit"}, Kind: KindThrottle}, action("a")},
-		Edges: []Edge{{From: "t", To: "limit"}, {From: "limit", To: "a"}},
-	}}
-	oc, _ := Compile(only)
-	if ok, _ := oc.MatchPast(ev, func(*Node, map[string]any) bool { return false }); ok {
-		t.Error("an event every throttle holds back should not match")
-	}
-	if ok, _ := oc.Match(ev); !ok {
-		t.Error("without a gate a throttle holds nothing back")
-	}
-	if _, err := Compile(Rule{Graph: &Graph{Nodes: []Node{{Step: Step{ID: "x"}, Kind: KindThrottle, ThrottleKey: "a +"}}}}); err == nil {
-		t.Error("a throttle key that does not compile should be rejected")
-	}
-}
-
 func TestGraphChoices(t *testing.T) {
 	// trigger → level (an expression giving one of three) ─ high → page
 	//                                                      ├ low → log
@@ -283,7 +232,7 @@ func TestGraphChoices(t *testing.T) {
 		c.Walk(ev, map[string]any{}, func(s Step) bool {
 			got = append(got, s.ID)
 			return true
-		}, func(id string, err error) { t.Fatalf("condition %s: %v", id, err) }, nil,
+		}, func(id string, err error) { t.Fatalf("condition %s: %v", id, err) },
 			func(n *Node, _ map[string]any) (any, error) {
 				if n.ID == "kind" {
 					return tc.kind, nil

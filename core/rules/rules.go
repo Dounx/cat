@@ -41,10 +41,6 @@ type Rule struct {
 	// Graph, when set, replaces Condition and Steps: the rule runs as a graph
 	// of condition and action nodes (see graph.go).
 	Graph *Graph `json:"graph,omitempty"`
-	// ThrottleSeconds drops matches arriving within this window of the last
-	// accepted one sharing the same ThrottleKey (an expression; empty = rule-wide).
-	ThrottleSeconds int    `json:"throttle_seconds,omitempty"`
-	ThrottleKey     string `json:"throttle_key,omitempty"`
 	// Meta is opaque UI state (for example the visual condition builder's rows).
 	Meta map[string]any `json:"meta,omitempty"`
 }
@@ -159,11 +155,6 @@ func Compile(r Rule) (*Compiled, error) {
 	if err != nil {
 		return nil, fmt.Errorf("condition: %w", err)
 	}
-	if r.ThrottleKey != "" {
-		if _, err := expr.Compile(r.ThrottleKey, compileOpts...); err != nil {
-			return nil, fmt.Errorf("throttle_key: %w", err)
-		}
-	}
 	c := &Compiled{Rule: r, cond: p}
 	if r.Graph != nil {
 		if c.graph, err = compileGraph(r.Graph); err != nil {
@@ -203,19 +194,11 @@ func inScope(sources, types []string, ev *event.Event) bool {
 // whether the event gets past the conditions to some action. A condition
 // that fails to evaluate (e.g. a missing field) is returned as an error.
 func (c *Compiled) Match(ev *event.Event) (bool, error) {
-	return c.MatchPast(ev, nil)
-}
-
-// MatchPast is Match with a say in the throttle nodes of a graph rule: an
-// event held back by every throttle on its way does not match. gate must
-// only look, not count the event as let through. With gate nil no throttle
-// holds anything back.
-func (c *Compiled) MatchPast(ev *event.Event, gate Gate) (bool, error) {
 	if !c.Scope(ev) {
 		return false, nil
 	}
 	if c.graph != nil {
-		return c.graph.reaches(ev, gate)
+		return c.graph.reaches(ev)
 	}
 	if c.cond == nil {
 		return true, nil

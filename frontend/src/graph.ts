@@ -13,20 +13,13 @@ export const JUDGE = 'judge'
 
 export interface ENode {
   id: string
-  kind: 'trigger' | 'condition' | 'throttle' | 'action'
+  kind: 'trigger' | 'condition' | 'action'
   x: number
   y: number
   // trigger
   sources: string[]
   pickedTypes: string[] // event types the sources declare, ticked in a list
   otherTypes: string // anything else, typed: globs such as "message.*"
-  // a trigger's own rate limit: start the rule once per `limit` seconds for
-  // each value of `limitKey` (0 = no limit)
-  limit: number
-  limitKey: string
-  // throttle: let one event past per `seconds` for each value of `key`
-  seconds: number
-  key: string
   // condition
   builder: Builder
   expr: string // the expression as typed, used when the builder is switched off
@@ -63,10 +56,6 @@ export function blankNode(kind: ENode['kind'], id: string, x = 0, y = 0): ENode 
     sources: [],
     pickedTypes: [],
     otherTypes: '',
-    limit: 0,
-    limitKey: '',
-    seconds: 60,
-    key: '',
     builder: { mode: 'builder', join: 'and', rows: [] },
     expr: '',
     ask: false,
@@ -91,10 +80,10 @@ export function outcomes(n: ENode): { branch: string; label?: string }[] {
   return [...list.map((c) => ({ branch: c, label: c })), { branch: ELSE, label: '其他' }]
 }
 
-// An id no node has yet: t1… for triggers, c1… for conditions, r1… for
-// throttles, s1… for actions.
+// An id no node has yet: t1… for triggers, c1… for conditions, s1… for
+// actions.
 export function freshId(doc: Doc, kind: ENode['kind']): string {
-  const prefix = { trigger: 't', condition: 'c', throttle: 'r', action: 's' }[kind]
+  const prefix = { trigger: 't', condition: 'c', action: 's' }[kind]
   let n = doc.nodes.filter((x) => x.kind === kind).length + 1
   while (doc.nodes.some((x) => x.id === prefix + n)) n++
   return prefix + n
@@ -135,20 +124,13 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
       while (stored.some((n) => n.id === own)) own += '_'
       trigger(own, rule.sources, rule.types, rule.meta?.trigger)
     }
-    // a trigger's rate limit is stored as a throttle node right after it
-    const folded = new Map<string, GraphNode>()
-    for (const n of stored) if (n.kind === 'throttle' && n.meta?.of) folded.set(n.id, n)
     for (const n of stored) {
-      if (folded.has(n.id)) continue
       if (n.kind === 'trigger') {
         trigger(n.id, n.sources, n.types, n.meta, n.params)
         continue
       }
       const node = blankNode(n.kind, n.id, n.meta?.x, n.meta?.y)
-      if (n.kind === 'throttle') {
-        node.seconds = n.throttle_seconds || 0
-        node.key = n.throttle_key || ''
-      } else if (n.kind === 'condition') {
+      if (n.kind === 'condition') {
         node.expr = n.condition || ''
         node.builder = n.meta?.builder || { mode: n.condition ? 'expr' : 'builder', join: 'and', rows: [] }
         node.choices = [...(n.choices || [])]
@@ -171,20 +153,12 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
       }
       doc.nodes.push(node)
     }
-    doc.edges = (rule.graph.edges || [])
-      .filter((e) => !folded.has(e.to))
-      .map((e) => ({
-        from: folded.has(e.from) ? folded.get(e.from)!.meta!.of : own && e.from === IMPLICIT_TRIGGER ? own : e.from,
-        to: e.to,
-        ...(e.branch ? { branch: e.branch } : {}),
-      }))
-    for (const f of folded.values()) {
-      const t = doc.nodes.find((n) => n.id === f.meta!.of)
-      if (t) Object.assign(t, { limit: f.throttle_seconds || 0, limitKey: f.throttle_key || '' })
-    }
-    placed =
-      stored.every((n) => folded.has(n.id) || typeof n.meta?.x === 'number') &&
-      (!own || typeof rule.meta?.trigger?.x === 'number')
+    doc.edges = (rule.graph.edges || []).map((e) => ({
+      from: own && e.from === IMPLICIT_TRIGGER ? own : e.from,
+      to: e.to,
+      ...(e.branch ? { branch: e.branch } : {}),
+    }))
+    placed = stored.every((n) => typeof n.meta?.x === 'number') && (!own || typeof rule.meta?.trigger?.x === 'number')
   } else {
     let prev = trigger('t1', rule.sources, rule.types).id
     const builder: Builder | undefined = rule.meta?.builder
@@ -210,14 +184,6 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
       prev = node.id
     }
   }
-  // A throttle set on the rule as a whole, as rules had before graphs, is
-  // the rate limit of each of its triggers.
-  if (rule.throttle_seconds && !doc.nodes.some((n) => n.kind === 'throttle' || n.limit)) {
-    for (const t of doc.nodes.filter((n) => n.kind === 'trigger')) {
-      t.limit = rule.throttle_seconds
-      t.limitKey = rule.throttle_key || ''
-    }
-  }
   if (!placed) layout(doc)
   return doc
 }
@@ -225,34 +191,9 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
 // The rule as the hub stores it. `asks` says whether a trigger's sources take
 // parameters at all: what was filled in for other sources is not kept.
 export function toRule(doc: Doc, base: Rule, asks: (t: ENode) => boolean = () => true): Rule {
-  // A trigger with a rate limit is followed by a throttle node that every
-  // wire leaving the trigger goes through.
-  const limited = new Map<string, string>()
-  for (const t of doc.nodes) {
-    if (t.kind !== 'trigger' || !(Number(t.limit) > 0)) continue
-    let id = t.id + '_limit'
-    while (doc.nodes.some((n) => n.id === id)) id += '_'
-    limited.set(t.id, id)
-  }
   // a wire left on a way out its condition no longer has is not kept
   const ways = new Map(doc.nodes.map((n) => [n.id, outcomes(n).map((o) => o.branch)]))
-  const edges: GraphEdge[] = doc.edges
-    .filter((e) => ways.get(e.from)?.includes(e.branch || ''))
-    .map((e) => (limited.has(e.from) ? { ...e, from: limited.get(e.from)! } : e))
-  const limits: GraphNode[] = []
-  for (const [of, id] of limited) {
-    const t = doc.nodes.find((n) => n.id === of)!
-    limits.push({
-      id,
-      kind: 'throttle',
-      instance: '',
-      action: '',
-      throttle_seconds: Number(t.limit),
-      throttle_key: t.limitKey.trim(),
-      meta: { of },
-    })
-    edges.push({ from: of, to: id })
-  }
+  const edges: GraphEdge[] = doc.edges.filter((e) => ways.get(e.from)?.includes(e.branch || ''))
   const nodes: GraphNode[] = doc.nodes.map((n) => {
     const at = { x: n.x, y: n.y }
     if (n.kind === 'trigger')
@@ -264,16 +205,6 @@ export function toRule(doc: Doc, base: Rule, asks: (t: ENode) => boolean = () =>
         sources: n.sources,
         types: typesOf(n),
         ...(Object.keys(n.params).length && asks(n) ? { params: n.params } : {}),
-        meta: at,
-      }
-    if (n.kind === 'throttle')
-      return {
-        id: n.id,
-        kind: n.kind,
-        instance: '',
-        action: '',
-        throttle_seconds: Number(n.seconds) || 0,
-        throttle_key: n.key.trim(),
         meta: at,
       }
     if (n.kind === 'condition') {
@@ -315,9 +246,7 @@ export function toRule(doc: Doc, base: Rule, asks: (t: ENode) => boolean = () =>
     types: union(triggers.map(typesOf)),
     condition: '',
     steps: [],
-    graph: { nodes: [...nodes, ...limits], edges },
-    throttle_seconds: 0,
-    throttle_key: '',
+    graph: { nodes, edges },
     meta,
   }
 }

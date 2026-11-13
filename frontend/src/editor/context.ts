@@ -71,7 +71,7 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
     const lines = asked(t)
     const of = lines.length ? `${lines[0]}${lines.length > 1 ? ` 等 ${lines.length} 个` : ''} · ` : ''
     const what = of + (types.length ? types.map((x) => typeTitle(x) || x).join('、') : '任何事件')
-    return Number(t.limit) > 0 ? `${what} · ${t.limit} 秒内一次` : what
+    return what
   }
 
   // ---- the events to go by ----
@@ -117,9 +117,6 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
     const said = n.choices.length ? choice : choice === 'yes' ? '是' : '否'
     return `判断为：${said}`
   }
-
-  // ---- throttles ----
-  const throttleTitle = (n: ENode) => (Number(n.seconds) > 0 ? `${n.seconds} 秒内只放行一次` : '不限制')
 
   // ---- actions ----
   // Actions offered for a node. "$source" replies through whichever instance
@@ -246,7 +243,6 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
     conditionTitle,
     typedRows,
     verdict,
-    throttleTitle,
     actionsFor,
     specOf,
     targetName,

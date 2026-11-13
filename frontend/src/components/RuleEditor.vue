@@ -16,7 +16,6 @@ import {
   Maximize,
   Redo2,
   Settings2,
-  Timer,
   Trash2,
   Undo2,
   Unlink,
@@ -26,7 +25,7 @@ import {
 import { useHub, clock, summarize } from '../hub'
 import { del, post, put } from '../api'
 import type { Plugin, Rule, Run } from '../types'
-import { eventTitle, fieldLabel } from '../labels'
+import { eventTitle } from '../labels'
 import { picksFor } from '../picks'
 import { ELSE, NODE_H, NODE_W, choicesOf, clipboard, fromRule, outcomes, toRule, type Doc, type ENode } from '../graph'
 import { createEditor, provideEditor } from '../editor/context'
@@ -39,7 +38,6 @@ import ConnectDialog from './ConnectDialog.vue'
 import ActionPanel from './rule/ActionPanel.vue'
 import ActionPicker from './rule/ActionPicker.vue'
 import ConditionPanel from './rule/ConditionPanel.vue'
-import ThrottlePanel from './rule/ThrottlePanel.vue'
 import TriggerPanel from './rule/TriggerPanel.vue'
 
 const props = defineProps<{ rule: Rule }>()
@@ -55,7 +53,7 @@ const canvas = ref<InstanceType<typeof FlowCanvas>>()
 // The panel shows for a node.
 const sel = ref<string | null>(props.rule.id ? null : (doc.nodes[0]?.id ?? null))
 const PANEL_W = 468
-const panels = { trigger: TriggerPanel, condition: ConditionPanel, throttle: ThrottlePanel, action: ActionPanel }
+const panels = { trigger: TriggerPanel, condition: ConditionPanel, action: ActionPanel }
 
 const editor = createEditor(doc, sel)
 provideEditor(editor)
@@ -137,14 +135,6 @@ const nodes = computed<CanvasNode[]>(() =>
         state: ran ? (ran.error ? 'bad' : 'ok') : undefined,
       }
     }
-    if (n.kind === 'throttle')
-      return {
-        ...at,
-        icon: Timer,
-        label: '节流',
-        title: editor.throttleTitle(n),
-        sub: n.key.trim() ? `按 ${fieldLabel(n.key)} 分别计` : '',
-      }
     return {
       ...at,
       icon: editor.targetIcon(n.instance),
@@ -185,22 +175,14 @@ function nextItems(from: string, branch: string, at?: Point): MenuItem[] {
   return makers(
     (name) => `${lead}→ ${name}`,
     (kind, instance) => addNode(kind, where, { id: from, branch }, instance),
-    false,
   )
 }
 // One menu entry for each kind of node that can be put after another. An
 // action first asks what is to carry it out.
-// A throttle of its own is the rarer need (a trigger has a rate limit built
-// in), so it is offered only in the fuller menus.
-function makers(
-  label: (name: string) => string,
-  make: (kind: ENode['kind'], instance?: string) => void,
-  full = true,
-): MenuItem[] {
+function makers(label: (name: string) => string, make: (kind: ENode['kind'], instance?: string) => void): MenuItem[] {
   return [
     { label: label('动作…'), icon: Play, run: () => pickAction('添加动作：用什么来执行', (i) => make('action', i)) },
     { label: label('条件'), icon: Filter, run: () => make('condition') },
-    ...(full ? [{ label: label('节流'), icon: Timer, run: () => make('throttle') }] : []),
   ]
 }
 function onSpawn(from: string, branch: string, at: Point, e: MouseEvent) {

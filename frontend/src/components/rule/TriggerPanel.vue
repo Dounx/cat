@@ -5,7 +5,6 @@ import { computed } from 'vue'
 import { useHub, summarize, timeAgo } from '../../hub'
 import { useEditor } from '../../editor/context'
 import { typesOf, type ENode } from '../../graph'
-import { fieldLabel } from '../../labels'
 import SchemaForm from '../SchemaForm.vue'
 import PanelHead from './PanelHead.vue'
 
@@ -41,11 +40,6 @@ function widen(t: ENode, what: 'from' | 'type') {
   if (what === 'from') t.sources = []
   else Object.assign(t, { pickedTypes: [], otherTypes: '' })
 }
-const limitKeys = [
-  { value: '', label: '所有事件合在一起算' },
-  { value: 'actor.id', label: '每个发送者分别算' },
-  { value: 'conversation.id', label: '每个会话分别算' },
-]
 function toggle(list: string[], value: string) {
   const i = list.indexOf(value)
   if (i >= 0) list.splice(i, 1)
@@ -146,23 +140,4 @@ function listenOnly(t: ENode, id: string) {
       <p class="mt-1">用来匹配上面没列出的事件，支持 * 通配。</p>
     </details>
   </template>
-
-  <label class="label mt-5">触发得太频繁时</label>
-  <label class="flex cursor-pointer items-center gap-2 text-sm">
-    <input
-      type="checkbox"
-      :checked="Number(node.limit) > 0"
-      @change="node.limit = ($event.target as HTMLInputElement).checked ? 60 : 0"
-    />
-    限制频率：一段时间内只触发一次
-  </label>
-  <div v-if="Number(node.limit) > 0" class="mt-2 flex items-center gap-2 text-sm">
-    <input v-model.number="node.limit" type="number" min="1" class="input w-24" />秒内只触发一次，
-    <select v-model="node.limitKey" class="input min-w-0 flex-1">
-      <option v-for="k in limitKeys" :key="k.value" :value="k.value">{{ k.label }}</option>
-      <option v-if="!limitKeys.some((k) => k.value === node.limitKey)" :value="node.limitKey">
-        按 {{ fieldLabel(node.limitKey) }} 分别算
-      </option>
-    </select>
-  </div>
 </template>

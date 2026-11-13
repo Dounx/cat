@@ -11,13 +11,12 @@ import (
 )
 
 // A rule may describe what it does as a graph instead of one condition and a
-// list of steps: trigger, condition, throttle and action nodes wired together.
+// list of steps: trigger, condition and action nodes wired together.
 // A walk begins at the triggers the event falls within. Conditions may lead
 // to conditions, actions to actions, and any node to several others.
 const (
 	KindTrigger   = "trigger"
 	KindCondition = "condition"
-	KindThrottle  = "throttle"
 	KindAction    = "action"
 
 	// TriggerNode is the id edges use for the rule's own trigger (its Sources
@@ -43,8 +42,7 @@ const (
 // names the events that start a walk there, as a rule's Sources and Types do.
 // With Params set, a trigger node asks its sources for something of its own
 // (a feed to watch, say) and takes only the events they emit for it; see
-// Trigger. A throttle node lets a walk past once per ThrottleSeconds for each
-// value of ThrottleKey (an expression; empty = one window for the node).
+// Trigger.
 //
 // A condition node decides by its Condition expression or, with Instance
 // set, by asking that instance (a model, say) through Action and Params, as
@@ -58,9 +56,6 @@ type Node struct {
 	Choices   []string `json:"choices,omitempty"`
 	Sources   []string `json:"sources,omitempty"`
 	Types     []string `json:"types,omitempty"`
-
-	ThrottleSeconds int    `json:"throttle_seconds,omitempty"`
-	ThrottleKey     string `json:"throttle_key,omitempty"`
 	// Meta is opaque UI state (the node's place on the canvas, builder rows).
 	Meta map[string]any `json:"meta,omitempty"`
 }
@@ -118,12 +113,6 @@ func compileGraph(g *Graph) (*compiledGraph, error) {
 			}
 			c.conds[n.ID] = p
 		case KindAction:
-		case KindThrottle:
-			if n.ThrottleKey != "" {
-				if _, err := expr.Compile(n.ThrottleKey, compileOpts...); err != nil {
-					return nil, fmt.Errorf("节流 %s: %w", n.ID, err)
-				}
-			}
 		case KindTrigger:
 			if id := n.TriggerID(); id != "" {
 				if len(n.Sources) == 0 {
@@ -255,12 +244,11 @@ func (c *compiledGraph) branches(id string) []string {
 // in order. Each node is entered at most once. act runs an action and reports
 // whether to go on past it; with act nil the walk only looks for an action
 // and stops at the first one. fail is told of a condition that cannot be
-// evaluated, and that branch ends there. gate decides whether a throttle node
-// lets the walk past; with gate nil every one does. judge decides the
+// evaluated, and that branch ends there. judge decides the
 // conditions that are put to an instance; with judge nil nothing is asked,
 // and the walk goes on by every way out of such a condition.
 func (c *compiledGraph) walk(from, branch string, env func() map[string]any, seen map[string]bool,
-	act func(Step) bool, fail func(id string, err error), gate Gate, judge Judge) (found bool) {
+	act func(Step) bool, fail func(id string, err error), judge Judge) (found bool) {
 	for _, e := range c.next[from] {
 		if e.Branch != branch || seen[e.To] {
 			continue
@@ -273,16 +261,12 @@ func (c *compiledGraph) walk(from, branch string, env func() map[string]any, see
 			}
 			found = true
 			if act(n.Step) {
-				c.walk(n.ID, "", env, seen, act, fail, gate, judge)
+				c.walk(n.ID, "", env, seen, act, fail, judge)
 			}
 			continue
 		}
 		next := []string{""}
 		switch {
-		case n.Kind == KindThrottle:
-			if gate != nil && !gate(n, env()) {
-				continue
-			}
 		case n.Kind != KindCondition:
 		case n.Judged() && judge == nil:
 			next = c.branches(n.ID)
@@ -297,7 +281,7 @@ func (c *compiledGraph) walk(from, branch string, env func() map[string]any, see
 			next[0] = b
 		}
 		for _, b := range next {
-			if c.walk(n.ID, b, env, seen, act, fail, gate, judge) {
+			if c.walk(n.ID, b, env, seen, act, fail, judge) {
 				found = true
 				if act == nil {
 					return true
@@ -329,15 +313,10 @@ func (c *compiledGraph) starts(ev *event.Event) []string {
 	return ids
 }
 
-// Gate reports whether a throttle node lets a walk past; env is what the
-// node's key expression is evaluated against.
-type Gate func(n *Node, env map[string]any) bool
-
 // reaches reports whether the event gets as far as an action, judging by the
-// conditions and throttles that stand between the triggers and the first
-// actions. Nothing runs, and no instance is asked: a condition put to one
+// conditions that stand between the triggers and the first actions. Nothing runs, and no instance is asked: a condition put to one
 // counts as letting the event out by any of its ways.
-func (c *compiledGraph) reaches(ev *event.Event, gate Gate) (bool, error) {
+func (c *compiledGraph) reaches(ev *event.Event) (bool, error) {
 	env := Env(ev, nil)
 	var first error
 	seen := map[string]bool{}
@@ -347,7 +326,7 @@ func (c *compiledGraph) reaches(ev *event.Event, gate Gate) (bool, error) {
 				if first == nil {
 					first = fmt.Errorf("条件 %s: %w", id, err)
 				}
-			}, gate, nil)
+			}, nil)
 		if ok {
 			return true, first
 		}
@@ -358,15 +337,14 @@ func (c *compiledGraph) reaches(ev *event.Event, gate Gate) (bool, error) {
 // Walk runs a graph rule for an event. act is called for each action reached,
 // in order; it runs the step, records its output in outputs (where later
 // nodes read it as steps.<id>) and reports whether the walk may go on past
-// it. fail is called for a condition that cannot be evaluated, gate decides
-// whether each throttle node reached lets the walk past, and judge answers
-// the conditions that are put to an instance.
-func (c *Compiled) Walk(ev *event.Event, outputs map[string]any, act func(Step) bool, fail func(id string, err error), gate Gate, judge Judge) {
+// it. fail is called for a condition that cannot be evaluated, and judge
+// answers the conditions that are put to an instance.
+func (c *Compiled) Walk(ev *event.Event, outputs map[string]any, act func(Step) bool, fail func(id string, err error), judge Judge) {
 	if c.graph == nil {
 		return
 	}
 	seen := map[string]bool{}
 	for _, start := range c.graph.starts(ev) {
-		c.graph.walk(start, "", func() map[string]any { return Env(ev, outputs) }, seen, act, fail, gate, judge)
+		c.graph.walk(start, "", func() map[string]any { return Env(ev, outputs) }, seen, act, fail, judge)
 	}
 }

@@ -169,13 +169,7 @@ func (e *Engine) dispatch(ev *event.Event, onlyRule string, replay bool) int {
 		if !r.Enabled && !(replay && onlyRule != "") {
 			continue
 		}
-		// Replays skip throttling. Otherwise a throttle node that would hold
-		// the event back is looked at here, and counted when the rule runs.
-		var look rules.Gate
-		if !replay {
-			look = func(n *rules.Node, env map[string]any) bool { return !e.held(r.ID, n, env, false) }
-		}
-		ok, err := r.MatchPast(ev, look)
+		ok, err := r.Match(ev)
 		e.mu.Lock()
 		if err != nil {
 			e.ruleErrs[r.ID] = "条件求值失败：" + err.Error()
@@ -184,9 +178,6 @@ func (e *Engine) dispatch(ev *event.Event, onlyRule string, replay bool) int {
 		}
 		e.mu.Unlock()
 		if !ok {
-			continue
-		}
-		if !replay && e.throttled(r, ev) {
 			continue
 		}
 		matched++
@@ -199,51 +190,6 @@ func (e *Engine) dispatch(ev *event.Event, onlyRule string, replay bool) int {
 		}(r)
 	}
 	return matched
-}
-
-func (e *Engine) throttled(r *rules.Compiled, ev *event.Event) bool {
-	if r.ThrottleSeconds <= 0 {
-		return false
-	}
-	key := r.ID
-	if r.ThrottleKey != "" {
-		if v, err := rules.Eval(r.ThrottleKey, rules.Env(ev, nil)); err == nil {
-			key += "\x00" + fmt.Sprint(v)
-		}
-	}
-	now := time.Now()
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if last, ok := e.throttle[key]; ok && now.Sub(last) < time.Duration(r.ThrottleSeconds)*time.Second {
-		return true
-	}
-	e.throttle[key] = now
-	return false
-}
-
-// held reports whether a throttle node holds a walk back: whether it let one
-// past, for the same key, less than its window ago. With count set, a walk
-// that is not held starts a new window.
-func (e *Engine) held(ruleID string, n *rules.Node, env map[string]any, count bool) bool {
-	if n.ThrottleSeconds <= 0 {
-		return false
-	}
-	key := ruleID + "\x00" + n.ID
-	if n.ThrottleKey != "" {
-		if v, err := rules.Eval(n.ThrottleKey, env); err == nil {
-			key += "\x00" + fmt.Sprint(v)
-		}
-	}
-	now := time.Now()
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if last, ok := e.throttle[key]; ok && now.Sub(last) < time.Duration(n.ThrottleSeconds)*time.Second {
-		return true
-	}
-	if count {
-		e.throttle[key] = now
-	}
-	return false
 }
 
 // TestCondition evaluates a condition against a stored event without side effects.
@@ -267,8 +213,7 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 		Status: "running", StartedAt: time.Now(), Steps: []store.StepResult{}, Replay: replay,
 	}
 	// A graph rule's run is recorded from its first action on: an event that
-	// a throttle holds back after all (another got past it in the meantime),
-	// or that takes a branch leading nowhere, leaves no run behind.
+	// takes a branch leading nowhere leaves no run behind.
 	recorded := r.Graph == nil
 	if recorded {
 		e.saveRun(run)
@@ -303,8 +248,6 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 			failed, recorded = true, true
 			run.Steps = append(run.Steps, store.StepResult{ID: nodeID, Action: "condition", Error: "条件求值失败：" + err.Error()})
 			e.saveRun(run)
-		}, func(n *rules.Node, env map[string]any) bool {
-			return replay || !e.held(r.ID, n, env, true)
 		}, func(n *rules.Node, _ map[string]any) (any, error) {
 			// Asking is real work, so the run shows from here on, and what
 			// the instance said is there for later nodes as steps.<id>.
@@ -339,8 +282,7 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 }
 
 // TryRule runs a rule, saved or not, for a stored event and waits for the
-// outcome. The actions are really carried out; throttles are skipped, as in a
-// replay. It returns nil when the event starts nothing in the rule: no trigger
+// outcome. The actions are really carried out. It returns nil when the event starts nothing in the rule: no trigger
 // takes it, or every path ends before an action.
 func (e *Engine) TryRule(r rules.Rule, eventID string) (*store.Run, error) {
 	ev, err := e.Store.GetEvent(eventID)

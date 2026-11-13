@@ -185,26 +185,6 @@ func TestFailedStepStopsPipelineAndReplay(t *testing.T) {
 	})
 }
 
-func TestThrottle(t *testing.T) {
-	e := newEngine(t)
-	hook, _ := e.SaveInstance(store.Instance{Plugin: "webhook", Enabled: true})
-	waitRunning(t, e, hook.ID)
-	waitRunning(t, e, "shell")
-	rule, _ := e.SaveRule(rules.Rule{Name: "r", Enabled: true, ThrottleSeconds: 60, ThrottleKey: "payload.user",
-		Steps: []rules.Step{{Instance: "shell", Action: "run", Params: map[string]any{"command": "true"}}}})
-	for _, body := range []string{`{"user":"a"}`, `{"user":"a"}`, `{"user":"b"}`} {
-		post(t, e, hook.ID, body, nil)
-	}
-	waitFor(t, "runs", func() bool {
-		runs, _ := e.Store.ListRuns(rule.ID, "", 10)
-		return len(runs) == 2
-	})
-	time.Sleep(50 * time.Millisecond)
-	if runs, _ := e.Store.ListRuns(rule.ID, "", 10); len(runs) != 2 {
-		t.Fatalf("want 2 runs (a once, b once), got %d", len(runs))
-	}
-}
-
 func TestInvalidRuleRejected(t *testing.T) {
 	e := newEngine(t)
 	if _, err := e.SaveRule(rules.Rule{Name: "bad", Condition: "payload.text ==="}); err == nil {
@@ -407,42 +387,6 @@ func TestGraphRuleBranches(t *testing.T) {
 		Edges: []rules.Edge{{From: "a", To: "b"}, {From: "b", To: "a"}},
 	}}); err == nil {
 		t.Fatal("a graph with a loop should be rejected")
-	}
-}
-
-func TestGraphThrottleNode(t *testing.T) {
-	e := newEngine(t)
-	hook, _ := e.SaveInstance(store.Instance{Plugin: "webhook", Enabled: true})
-	waitRunning(t, e, hook.ID)
-	waitRunning(t, e, "shell")
-	// trigger → limit (once a minute per payload.user) → run
-	rule, err := e.SaveRule(rules.Rule{Name: "t", Enabled: true, Graph: &rules.Graph{
-		Nodes: []rules.Node{
-			{Kind: rules.KindTrigger, Step: rules.Step{ID: "in"}},
-			{Kind: rules.KindThrottle, Step: rules.Step{ID: "limit"}, ThrottleSeconds: 60, ThrottleKey: "payload.user"},
-			{Kind: rules.KindAction, Step: rules.Step{ID: "run", Instance: "shell", Action: "run", Params: map[string]any{"command": "echo hi"}}},
-		},
-		Edges: []rules.Edge{{From: "in", To: "limit"}, {From: "limit", To: "run"}},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	json := map[string]string{"Content-Type": "application/json"}
-	post(t, e, hook.ID, `{"user":"a"}`, json)
-	post(t, e, hook.ID, `{"user":"a"}`, json) // held back: same user, inside the window
-	post(t, e, hook.ID, `{"user":"b"}`, json)
-	waitFor(t, "two runs", func() bool {
-		runs, _ := e.Store.ListRuns(rule.ID, "", 10)
-		return len(runs) == 2 && runs[0].Status == "ok" && runs[1].Status == "ok"
-	})
-	time.Sleep(200 * time.Millisecond)
-	runs, _ := e.Store.ListRuns(rule.ID, "", 10)
-	if len(runs) != 2 {
-		t.Fatalf("the repeated event should have been held back, got %d runs", len(runs))
-	}
-	// a replay is let through whatever the throttle says
-	if n, err := e.Replay(runs[0].EventID, rule.ID); err != nil || n != 1 {
-		t.Fatalf("replay matched %d, err %v", n, err)
 	}
 }
 
