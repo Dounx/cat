@@ -125,7 +125,7 @@ function start() {
                 <ChevronRight :size="15" class="shrink-0 text-faint" />
               </button>
               <p v-if="!connectable(n).length" class="px-3 py-2 text-xs text-mute">
-                没有能用的插件，可以到「接入」的插件市场里找。
+                没有能用的插件，可以到「接入」页点「添加」，从插件市场装一个。
               </p>
             </div>
           </div>

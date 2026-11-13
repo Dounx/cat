@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Check, ChevronRight, Copy, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { Check, ChevronRight, Copy, Download, LoaderCircle, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useHub } from '../hub'
 import { del, get, post, put } from '../api'
 import type { Instance, Plugin } from '../types'
@@ -29,12 +29,12 @@ const order: Category[] = ['channel', 'monitor', 'processor']
 const byKind = <T,>(list: T[], kind: (x: T) => Category | undefined) =>
   [...list].sort((a, b) => order.indexOf(kind(a) ?? 'channel') - order.indexOf(kind(b) ?? 'channel'))
 // The page shows what is set up; what could be added waits behind the 添加
-// button, and the market behind its own tab. Singleton built-ins (HTTP 请求,
+// button: the plugins there are, and the ones the market has, which are
+// installed on the way to connecting them. Singleton built-ins (HTTP 请求,
 // 运行脚本) are plain actions with nothing to set up, and the monitors that are
 // told what to watch by the rules themselves (定时触发, 网页变动, 接口变动)
 // come ready, so both only appear where they are used: in the rule editor.
-const tab = ref<'instances' | 'market'>('instances')
-const picking = ref(false)
+const picking = ref<false | 'add' | 'plugins'>(false)
 
 const addable = computed(() =>
   byKind(
@@ -50,7 +50,16 @@ const configured = computed(() =>
 )
 // what needs no connecting: said, so that it is not looked for here
 const given = computed(() => hub.plugins.filter((p) => p.default_instance).map((p) => p.name))
-const marketPlugins = computed(() => byKind(market.value.plugins, (p) => p.category))
+// What the market has that is not here yet, and what came from it: the
+// latter can be updated and removed.
+const offered = computed(() =>
+  byKind(
+    market.value.plugins.filter((p) => !p.installed_version),
+    (p) => p.category,
+  ),
+)
+const installed = computed(() => market.value.plugins.filter((p) => p.installed_version && !p.bundled))
+const outdated = computed(() => installed.value.filter((p) => p.installed_version !== p.version))
 
 const statusText: Record<string, string> = { running: '运行中', starting: '启动中', stopped: '已停用', error: '出错' }
 const statusDot: Record<string, string> = { running: 'ok', starting: 'warn', stopped: '', error: 'bad' }
@@ -106,11 +115,19 @@ async function install(p: MarketPlugin) {
       `${verb}插件「${p.name}」${p.version}？\n\n插件以你的用户身份运行，没有沙箱，能做你能做的任何事。请只安装你信任的插件。`,
     )
   )
-    return
+    return false
   installing.value = p.id
-  await hub.run(() => post(`/market/${p.id}/install`), `已${verb} ${p.name}`)
+  const ok = await hub.run(() => post(`/market/${p.id}/install`), `已${verb} ${p.name}`)
   installing.value = ''
   await Promise.all([hub.reloadPlugins(), loadMarket()])
+  return !!ok
+}
+// Installing is a step on the way: what was asked for is the connection.
+async function installAndAdd(p: MarketPlugin) {
+  if (!p.supported || installing.value || !(await install(p))) return
+  const plugin = hub.pluginOf(p.id)
+  if (plugin && !plugin.singleton && !plugin.default_instance) add(plugin)
+  else picking.value = false
 }
 async function uninstall(p: MarketPlugin) {
   if (!confirm(`卸载插件「${p.name}」？`)) return
@@ -182,20 +199,14 @@ async function remove(i: Instance) {
 <template>
   <div class="flex h-full flex-col">
     <PageHeader title="接入" hint="把聊天软件、要盯的东西和 AI 接进来，规则才有东西可用">
-      <div class="seg">
-        <button :class="{ on: tab === 'instances' }" @click="tab = 'instances'">已接入</button>
-        <button :class="{ on: tab === 'market' }" @click="tab = 'market'">插件市场</button>
-      </div>
-      <button v-if="tab === 'instances'" class="btn btn-primary" @click="picking = true">
-        <Plus :size="15" />添加
-      </button>
+      <button class="btn btn-primary" @click="picking = 'add'"><Plus :size="15" />添加</button>
     </PageHeader>
 
-    <div v-if="tab === 'instances'" class="gutter flex-1 space-y-3 overflow-y-auto pb-8">
+    <div class="gutter flex-1 space-y-3 overflow-y-auto pb-8">
       <button
         v-if="!configured.length"
         class="card card-link w-full border-dashed px-6 py-5 text-center text-sm text-mute"
-        @click="picking = true"
+        @click="picking = 'add'"
       >
         还没有接入任何东西，<span class="text-accent">添加一个</span>
       </button>
@@ -256,59 +267,91 @@ async function remove(i: Instance) {
       <p v-if="given.length" class="text-xs text-mute">{{ given.join('、') }}不用接入，建规则时在触发节点里直接填。</p>
     </div>
 
-    <div v-else class="gutter flex-1 overflow-y-auto pb-8">
-      <p class="text-xs text-mute">插件以你的用户身份运行，没有沙箱。安装前会校验文件的 SHA-256。</p>
-      <p v-if="market.error" class="card mt-3 px-6 py-7 text-center text-sm text-mute">{{ market.error }}</p>
-      <div v-if="marketPlugins.length" class="list mt-3">
-        <div v-for="p in marketPlugins" :key="p.id" class="row flex min-h-14 items-center gap-4 px-4 py-2.5">
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2 text-sm font-medium">
-              {{ p.name }}<span class="chip">{{ p.version }}</span>
-              <span v-if="p.bundled" class="text-xs font-normal text-mute">随应用提供</span>
-              <span v-else-if="p.installed_version" class="text-xs font-normal text-ok"
-                >已安装 {{ p.installed_version }}</span
-              >
-            </div>
-            <p class="truncate text-xs text-mute">{{ p.description }}</p>
-          </div>
-          <span v-if="installing === p.id" class="flex items-center gap-1.5 text-xs text-mute tabular-nums"
-            ><LoaderCircle :size="14" class="spin" />下载中 {{ progress }}</span
-          >
-          <template v-else-if="!p.bundled">
-            <span v-if="!p.supported" class="text-xs text-mute">不支持当前系统</span>
-            <button v-else-if="!p.installed_version" class="btn" @click="install(p)">安装</button>
-            <template v-else>
-              <button v-if="p.installed_version !== p.version" class="btn btn-primary" @click="install(p)">更新</button>
-              <button class="btn btn-ghost btn-danger" @click="uninstall(p)">卸载</button>
-            </template>
-          </template>
-        </div>
-      </div>
-    </div>
-
     <Transition name="drawer">
-      <Drawer v-if="picking" title="添加接入" @close="picking = false">
-        <div v-if="addable.length" class="list">
+      <!-- One sheet for both, so that going from one to the other swaps what
+           is on it and nothing slides. -->
+      <Drawer v-if="picking" :title="picking === 'add' ? '添加接入' : '装上的插件'" @close="picking = false">
+        <template v-if="picking === 'add'">
+          <div v-if="addable.length || offered.length" class="list">
+            <button
+              v-for="p in addable"
+              :key="p.id"
+              class="row link flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left"
+              @click="add(p)"
+            >
+              <div class="min-w-0 flex-1">
+                <div class="text-sm font-medium">{{ p.name }}</div>
+                <p class="mt-0.5 text-xs text-mute">{{ p.description }}</p>
+              </div>
+              <ChevronRight :size="16" class="shrink-0 text-faint" />
+            </button>
+            <!-- From the market: installed first, then connected. -->
+            <button
+              v-for="p in offered"
+              :key="p.id"
+              class="row flex w-full items-center gap-3 px-4 py-3 text-left"
+              :class="p.supported ? 'link cursor-pointer' : 'cursor-default'"
+              :disabled="!p.supported"
+              @click="installAndAdd(p)"
+            >
+              <div class="min-w-0 flex-1" :class="{ 'opacity-55': !p.supported }">
+                <div class="flex items-center gap-2 text-sm font-medium">
+                  {{ p.name }}<span class="chip">{{ p.version }}</span>
+                </div>
+                <p class="mt-0.5 text-xs text-mute">{{ p.description }}</p>
+              </div>
+              <span v-if="installing === p.id" class="flex shrink-0 items-center gap-1.5 text-xs text-mute tabular-nums"
+                ><LoaderCircle :size="14" class="spin" />下载中 {{ progress }}</span
+              >
+              <span v-else-if="!p.supported" class="shrink-0 text-xs text-mute">不支持当前系统</span>
+              <span v-else class="flex shrink-0 items-center gap-1 text-xs text-accent"
+                ><Download :size="14" />安装并接入</span
+              >
+            </button>
+          </div>
+          <p v-else class="text-sm text-mute">还没有能接入的插件。</p>
+          <p v-if="market.error" class="mt-4 text-xs text-mute">
+            这里只有已经装好的插件。插件市场用不了：{{ market.error }}
+          </p>
           <button
-            v-for="p in addable"
-            :key="p.id"
-            class="row link flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left"
-            @click="add(p)"
+            v-if="installed.length"
+            class="mt-4 cursor-pointer text-xs text-mute hover:text-accent"
+            @click="picking = 'plugins'"
           >
-            <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium">{{ p.name }}</div>
-              <p class="mt-0.5 text-xs text-mute">{{ p.description }}</p>
-            </div>
-            <ChevronRight :size="16" class="shrink-0 text-faint" />
+            管理装上的插件<template v-if="outdated.length">（{{ outdated.length }} 个可以更新）</template>
           </button>
-        </div>
-        <p v-else class="text-sm text-mute">还没有能接入的插件。</p>
-        <button
-          class="mt-4 cursor-pointer text-xs text-mute hover:text-accent"
-          @click="((picking = false), (tab = 'market'))"
-        >
-          没有想要的？去插件市场看看
-        </button>
+        </template>
+        <template v-else>
+          <p class="mb-4 text-xs text-mute">
+            从插件市场装上的插件。插件以你的用户身份运行，没有沙箱；安装前会校验文件的 SHA-256。
+          </p>
+          <div v-if="installed.length" class="list">
+            <div v-for="p in installed" :key="p.id" class="row flex min-h-14 items-center gap-4 px-4 py-2.5">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 text-sm font-medium">
+                  {{ p.name }}<span class="chip">{{ p.installed_version }}</span>
+                  <span v-if="p.installed_version !== p.version" class="text-xs font-normal text-ok"
+                    >有新版 {{ p.version }}</span
+                  >
+                </div>
+                <p class="truncate text-xs text-mute">{{ p.description }}</p>
+              </div>
+              <span v-if="installing === p.id" class="flex items-center gap-1.5 text-xs text-mute tabular-nums"
+                ><LoaderCircle :size="14" class="spin" />下载中 {{ progress }}</span
+              >
+              <template v-else>
+                <button v-if="p.installed_version !== p.version" class="btn btn-primary" @click="install(p)">
+                  更新
+                </button>
+                <button class="btn btn-ghost btn-danger" @click="uninstall(p)">卸载</button>
+              </template>
+            </div>
+          </div>
+          <p v-else class="text-sm text-mute">没有从插件市场装上的插件。</p>
+        </template>
+        <template v-if="picking === 'plugins'" #footer>
+          <button class="btn mr-auto" @click="picking = 'add'">返回添加</button>
+        </template>
       </Drawer>
     </Transition>
 
