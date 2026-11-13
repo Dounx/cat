@@ -29,6 +29,12 @@ export const useHub = defineStore('hub', {
       const p = s.plugins.find((p) => p.id === i.plugin)
       return !!p && (!!p.singleton || (!!p.default_instance && i.id === p.id))
     },
+    // The rules that name an instance: as what a trigger listens to, or as
+    // what a condition or an action is put to.
+    rulesUsing: (s) => (id: string) => s.rules.filter((r) => named(r).has(id)),
+    // The rules with a trigger that listens to every connection: they name
+    // none, and still take what any of them sends.
+    rulesHearingAll: (s) => s.rules.filter(hearsAll),
   },
   actions: {
     async init() {
@@ -115,6 +121,16 @@ export const useHub = defineStore('hub', {
     },
   },
 })
+
+function named(r: Rule): Set<string> {
+  const ids = [...(r.sources || []), ...(r.steps || []).map((s) => s.instance)]
+  for (const n of r.graph?.nodes || []) ids.push(...(n.sources || []), n.instance)
+  return new Set(ids.filter(Boolean))
+}
+function hearsAll(r: Rule): boolean {
+  const triggers = r.graph?.nodes.filter((n) => n.kind === 'trigger') || []
+  return triggers.length ? triggers.some((t) => !t.sources?.length) : !r.sources?.length
+}
 
 export function timeAgo(iso: string): string {
   const d = new Date(iso)

@@ -129,8 +129,12 @@ async function wizardToRule() {
   await hub.reloadInstances()
   router.push({ path: '/rules', query: { new: '' } })
 }
-// Something is connected and nothing uses it yet: say what comes next.
-const idle = computed(() => !hub.rules.length && hub.instances.some((i) => !hub.given(i)))
+// What a connection is for: the rules that name it. One that only sends
+// events may be named by none and still be heard, by the rules that listen
+// to everything.
+function heardByAll(i: Instance) {
+  return hub.pluginOf(i.plugin)?.capabilities.includes('source') ? hub.rulesHearingAll.length : 0
+}
 
 function add(p: Plugin) {
   picking.value = false
@@ -165,7 +169,11 @@ async function restart(i: Instance) {
   restarting.value = ''
 }
 async function remove(i: Instance) {
-  if (!confirm(`删除「${i.name}」？用到它的规则将无法执行对应的动作。`)) return
+  const users = hub.rulesUsing(i.id).map((r) => `· ${r.name || '未命名规则'}`)
+  const what = users.length
+    ? `这些规则用到它，删除后它们的这一部分不再起作用：\n${users.join('\n')}`
+    : '没有规则指定用它。'
+  if (!confirm(`删除「${i.name}」？\n\n${what}`)) return
   await hub.run(() => del(`/instances/${i.id}`), '已删除')
   hub.reloadInstances()
 }
@@ -184,17 +192,6 @@ async function remove(i: Instance) {
     </PageHeader>
 
     <div v-if="tab === 'instances'" class="gutter flex-1 space-y-3 overflow-y-auto pb-8">
-      <RouterLink
-        v-if="idle"
-        :to="{ path: '/rules', query: { new: '' } }"
-        class="card card-link flex items-center gap-3 px-4 py-3 text-sm"
-      >
-        <span class="min-w-0 flex-1">
-          接好了，但还没有规则用到它们。<span class="text-mute">接入只负责连上，要它做事得建一条规则。</span>
-        </span>
-        <span class="shrink-0 text-accent">建一条规则</span>
-        <ChevronRight :size="15" class="shrink-0 text-faint" />
-      </RouterLink>
       <button
         v-if="!configured.length"
         class="card card-link w-full border-dashed px-6 py-5 text-center text-sm text-mute"
@@ -226,6 +223,23 @@ async function remove(i: Instance) {
                 <Copy v-else :size="12" class="shrink-0" />
               </button>
             </div>
+          </div>
+          <div class="max-w-[40%] min-w-0 truncate text-xs text-mute">
+            <template v-if="hub.rulesUsing(i.id).length">
+              用于
+              <template v-for="(r, n) in hub.rulesUsing(i.id)" :key="r.id">
+                <template v-if="n">、</template>
+                <RouterLink :to="{ path: '/rules', query: { rule: r.id } }" class="text-ink hover:text-accent">{{
+                  r.name || '未命名规则'
+                }}</RouterLink>
+              </template>
+            </template>
+            <RouterLink v-else-if="heardByAll(i)" to="/rules" class="hover:text-accent">
+              {{ heardByAll(i) }} 条听所有接入的规则在用
+            </RouterLink>
+            <RouterLink v-else :to="{ path: '/rules', query: { new: '' } }" class="hover:text-accent">
+              还没有规则用到，<span class="text-accent">建一条</span>
+            </RouterLink>
           </div>
           <div class="reveal flex items-center">
             <button class="btn btn-ghost px-2" title="编辑" @click="edit(i)"><Pencil :size="15" /></button>
