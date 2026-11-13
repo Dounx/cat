@@ -1,4 +1,4 @@
-// Package faketest provides stand-ins for agent CLIs so the agent plugins can
+// Package faketest provides stand-ins for harness CLIs so the harness plugins can
 // be tested without the real tools (or their accounts).
 package faketest
 

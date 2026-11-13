@@ -233,7 +233,7 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 	guardSchema := harness.GuardSchema()
 	out, err := s.Ask(ctx, cat.Step{
 		Kind: cat.StepForm, Title: "它能做什么、谁能用它",
-		Description: "聊天消息会原样成为给 Agent 的指令，所以默认使用只读沙箱，并且只接受白名单里的发送者。",
+		Description: "聊天消息会原样成为给 AI 的指令，所以默认使用只读沙箱，并且只接受白名单里的发送者。",
 		Values:      values,
 		Schema: map[string]any{
 			"type": "object", "x-order": []string{"cwd", "sandbox", "allowed_actors", "allow_anyone"},

@@ -8,7 +8,7 @@ import (
 )
 
 // Plugins run in their own process group so that stopping one also stops
-// whatever it spawned (a managed dependency, an agent CLI).
+// whatever it spawned (a managed dependency, a harness CLI).
 func isolate(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} }
 
 func killTree(cmd *exec.Cmd) {

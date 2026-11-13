@@ -26,7 +26,7 @@ const (
 	// message: telling someone is left to a rule and a channel.
 	CategoryMonitor = "monitor"
 	// CategoryProcessor plugins take an event and work out a result, e.g. an
-	// AI agent, an auto-responder or a hand-off to a person.
+	// AI, an auto-responder or a hand-off to a person.
 	CategoryProcessor = "processor"
 )
 

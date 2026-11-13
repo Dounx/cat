@@ -106,7 +106,7 @@ async function replay() {
   if (out) hub.notify(out.matched ? `已重放，触发了 ${out.matched} 条规则` : '已重放，没有规则被触发')
 }
 
-// An agent that turned a sender away can be told to take them, right where
+// An AI that turned a sender away can be told to take them, right where
 // the refusal shows.
 const refused = (s: StepResult) => !!s.error?.includes('不在白名单') && !!selected.value?.actor?.id
 async function allowSender(s: StepResult) {

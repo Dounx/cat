@@ -349,7 +349,7 @@ function resetParams(n: ENode) {
 // those things: what needs no setting up, what is set up, and what could be,
 // which is then set up here without leaving the editor.
 const SOURCE = '$source'
-const kindTitle: Record<Plugin['category'], string> = { processor: 'Agent', channel: '渠道', monitor: '监控' }
+const kindTitle: Record<Plugin['category'], string> = { processor: 'AI', channel: '渠道', monitor: '监控' }
 const kindIcon: Record<Plugin['category'], Component> = { processor: Bot, channel: MessageSquare, monitor: Radar }
 // The picture for whatever an action is sent to.
 function targetIcon(instance: string): Component {
@@ -903,7 +903,7 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
           </button>
           <i />
           <button
-            title="添加一个动作节点：交给 Agent、发消息、发请求、跑脚本…"
+            title="添加一个动作节点：交给 AI、发消息、发请求、跑脚本…"
             @click="pickAction('添加动作：用什么来执行', (i) => addNode('action', undefined, undefined, i))"
           >
             <Play :size="14" />动作
@@ -1030,7 +1030,7 @@ const vFocus = { mounted: (el: HTMLElement) => el.focus() }
                 <p v-else class="text-sm text-mute">触发节点选的接入还没有收到过事件。先让它来一个，比如发一条消息。</p>
               </div>
               <p class="rounded-lg bg-warn/10 px-3 py-2 text-xs text-warn">
-                动作会真的执行：消息会发出去，Agent 会被调用，请求会发出。
+                动作会真的执行：消息会发出去，AI 会被调用，请求会发出。
               </p>
             </div>
             <footer class="flex justify-end gap-2 border-t border-line px-5 py-3">

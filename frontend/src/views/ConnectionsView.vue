@@ -37,9 +37,9 @@ const categories: { id: Category; title: string; hint: string; empty: string }[]
   },
   {
     id: 'processor',
-    title: 'Agent',
+    title: 'AI',
     hint: '把事情交给谁去想、去做，再把结果拿回来',
-    empty: '还没有接入 Agent',
+    empty: '还没有接入 AI',
   },
 ]
 // The page shows what is set up; what could be added waits behind each
@@ -187,7 +187,7 @@ async function remove(i: Instance) {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="接入" hint="把聊天软件、要盯的东西和 Agent 接进来，规则才有东西可用">
+    <PageHeader title="接入" hint="把聊天软件、要盯的东西和 AI 接进来，规则才有东西可用">
       <div class="seg">
         <button :class="{ on: tab === 'instances' }" @click="tab = 'instances'">已接入</button>
         <button :class="{ on: tab === 'market' }" @click="tab = 'market'">插件市场</button>

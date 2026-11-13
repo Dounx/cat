@@ -1,6 +1,6 @@
-// Package harness holds what the conversation plugins (agents and LLMs) share:
+// Package harness holds what the conversation plugins (harnesses and LLMs) share:
 // the chat contract, session bookkeeping, the sender allow-list and a helper
-// for running agent CLIs.
+// for running harness CLIs.
 package harness
 
 import (
@@ -81,8 +81,8 @@ func SessionKey(p map[string]any, actx cat.ActionContext) string {
 	return ""
 }
 
-// Guard restricts who may trigger an agent. Chat platforms let anyone who can
-// message the bot inject a prompt, so agents that can act on this machine
+// Guard restricts who may trigger a harness. Chat platforms let anyone who can
+// message the bot inject a prompt, so harnesses that can act on this machine
 // refuse senders that are not listed, unless explicitly opened to everyone.
 type Guard struct {
 	AllowAnyone bool
@@ -219,7 +219,7 @@ func Tail(s string, n int) string {
 	return s
 }
 
-// EnsureDir resolves the working directory for an agent, creating the default
+// EnsureDir resolves the working directory for a harness, creating the default
 // (a "workspace" folder in the instance's data dir) when none is configured.
 func EnsureDir(configured, dataDir string) (string, error) {
 	dir := configured

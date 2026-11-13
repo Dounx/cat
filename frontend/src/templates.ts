@@ -1,5 +1,5 @@
 // Ready-made rules for the things people most often want. A template says
-// what it needs connected (a chat, an agent, something to watch) and, given
+// what it needs connected (a chat, an AI, something to watch) and, given
 // those, builds the rule; the editor then opens on it like on any other.
 import type { Component } from 'vue'
 import { Bell, Bot, CalendarClock, PenLine, Webhook } from 'lucide-vue-next'
@@ -23,7 +23,7 @@ export interface Template {
 const has = (p: Plugin, action: string) => !!p.actions?.some((a) => a.name === action)
 const chat: Need = { key: 'chat', title: '在哪里聊', fits: (p) => p.category === 'channel' && has(p, 'reply') }
 const notify: Need = { key: 'to', title: '发到哪里', fits: (p) => p.category === 'channel' && has(p, 'send') }
-const agent: Need = { key: 'agent', title: '交给谁处理', fits: (p) => has(p, 'chat') }
+const ai: Need = { key: 'ai', title: '交给谁处理', fits: (p) => has(p, 'chat') }
 
 const blank = (name = ''): Rule => ({ id: '', name, enabled: true, sources: [], types: [], condition: '', steps: [] })
 const trigger = (id: string, sources: string[], types: string[] = [], params?: Record<string, unknown>) => ({
@@ -53,13 +53,13 @@ function params(plugins: Plugin[], inst: Instance, name: string, own: Record<str
 
 export const templates: Template[] = [
   {
-    id: 'chat-agent',
+    id: 'chat-ai',
     title: '聊天机器人',
-    about: '在群里 @ 它或私聊它，交给 Agent 回答，答案发回原处',
+    about: '在群里 @ 它或私聊它，交给 AI 回答，答案发回原处',
     icon: Bot,
-    needs: [chat, agent],
-    build: ({ chat, agent }, plugins) => ({
-      ...blank(`${chat.name} → ${agent.name} → 回复`),
+    needs: [chat, ai],
+    build: ({ chat, ai }, plugins) => ({
+      ...blank(`${chat.name} → ${ai.name} → 回复`),
       graph: {
         nodes: [
           trigger('t1', [chat.id], ['message.created']),
@@ -78,14 +78,14 @@ export const templates: Template[] = [
             },
           },
           action('typing', '$source', 'typing', {}, { continue_on_error: true }),
-          action('agent', agent.id, 'chat', params(plugins, agent, 'chat', { prompt: '{{ payload.text }}' })),
-          action('reply', '$source', 'reply', params(plugins, chat, 'reply', { text: '{{ steps.agent.text }}' })),
+          action('ai', ai.id, 'chat', params(plugins, ai, 'chat', { prompt: '{{ payload.text }}' })),
+          action('reply', '$source', 'reply', params(plugins, chat, 'reply', { text: '{{ steps.ai.text }}' })),
         ],
         edges: [
           { from: 't1', to: 'c1' },
           { from: 'c1', to: 'typing' },
-          { from: 'typing', to: 'agent' },
-          { from: 'agent', to: 'reply' },
+          { from: 'typing', to: 'ai' },
+          { from: 'ai', to: 'reply' },
         ],
       },
     }),
@@ -115,13 +115,13 @@ export const templates: Template[] = [
     }),
   },
   {
-    id: 'schedule-agent',
-    title: '定时让 Agent 干活',
-    about: '每天几点让 Agent 做一件事，比如汇总、巡检，结果发到聊天里',
+    id: 'schedule-ai',
+    title: '定时让 AI 干活',
+    about: '每天几点让 AI 做一件事，比如汇总、巡检，结果发到聊天里',
     icon: CalendarClock,
-    needs: [{ key: 'when', title: '什么时候', fits: (p) => p.id === 'schedule' }, agent, notify],
-    build: ({ when, agent, to }, plugins) => ({
-      ...blank(`${when.name} → ${agent.name} → ${to.name}`),
+    needs: [{ key: 'when', title: '什么时候', fits: (p) => p.id === 'schedule' }, ai, notify],
+    build: ({ when, ai, to }, plugins) => ({
+      ...blank(`${when.name} → ${ai.name} → ${to.name}`),
       graph: {
         nodes: [
           // a time to start from, unless the connection has its own
@@ -129,14 +129,14 @@ export const templates: Template[] = [
             't1',
             [when.id],
             [],
-            String(when.config?.schedules || '').trim() ? undefined : { schedules: '9:00 在这里写要 Agent 做的事' },
+            String(when.config?.schedules || '').trim() ? undefined : { schedules: '9:00 在这里写要 AI 做的事' },
           ),
-          action('agent', agent.id, 'chat', params(plugins, agent, 'chat', { prompt: '{{ payload.text }}' })),
-          action('send', to.id, 'send', params(plugins, to, 'send', { text: '{{ steps.agent.text }}' })),
+          action('ai', ai.id, 'chat', params(plugins, ai, 'chat', { prompt: '{{ payload.text }}' })),
+          action('send', to.id, 'send', params(plugins, to, 'send', { text: '{{ steps.ai.text }}' })),
         ],
         edges: [
-          { from: 't1', to: 'agent' },
-          { from: 'agent', to: 'send' },
+          { from: 't1', to: 'ai' },
+          { from: 'ai', to: 'send' },
         ],
       },
     }),
