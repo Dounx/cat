@@ -1,4 +1,4 @@
-// Command cat-plugin-agent-claude hands events to Claude Code running on this machine.
+// Command cat-plugin-claude-desktop hands events to Claude Code running on this machine.
 package main
 
 import (

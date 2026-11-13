@@ -1,5 +1,5 @@
 {
-  "id": "agent-deepseek",
+  "id": "deepseek-harness",
   "name": "DeepSeek",
   "version": "0.1.0",
   "category": "processor",
@@ -155,7 +155,7 @@
   ],
   "protocol": 1,
   "command": [
-    "./cat-plugin-agent-deepseek"
+    "./cat-plugin-deepseek-harness"
   ],
   "capabilities": [
     "action"

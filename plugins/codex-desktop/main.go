@@ -1,4 +1,4 @@
-// Command cat-plugin-agent-codex hands events to the Codex CLI running on this machine.
+// Command cat-plugin-codex-desktop hands events to the Codex CLI running on this machine.
 package main
 
 import (

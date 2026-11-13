@@ -1,4 +1,4 @@
-// Command cat-plugin-agent-deepseek chats with DeepSeek models, either through
+// Command cat-plugin-deepseek-harness chats with DeepSeek models, either through
 // the API alone or by driving Claude Code against DeepSeek's
 // Anthropic-compatible endpoint for tool use.
 package main

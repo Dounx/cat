@@ -1,16 +1,15 @@
 {
-  "id": "agent-claude",
-  "name": "Claude Code",
+  "id": "codex-desktop",
+  "name": "Codex",
   "version": "0.1.0",
   "category": "processor",
   "setup": true,
-  "description": "把事件交给本机的 Claude Code 处理，可读写文件、运行命令（取决于权限设置），并按会话续接对话。",
+  "description": "把事件交给本机的 Codex CLI 处理，并按会话续接对话。",
   "config_schema": {
     "type": "object",
     "x-order": [
       "cwd",
-      "permission_mode",
-      "allowed_tools",
+      "sandbox",
       "model",
       "system_prompt",
       "allowed_actors",
@@ -21,25 +20,18 @@
       "cwd": {
         "type": "string",
         "title": "工作目录",
-        "description": "Claude Code 在这个目录里工作。留空使用 Cat 为它准备的空目录。"
+        "description": "Codex 在这个目录里工作。留空使用 Cat 为它准备的空目录。"
       },
-      "permission_mode": {
+      "sandbox": {
         "type": "string",
-        "title": "权限模式",
+        "title": "沙箱",
         "enum": [
-          "dontAsk",
-          "acceptEdits",
-          "auto",
-          "bypassPermissions"
-        ], "x-enum-titles": ["只用下面允许的工具（推荐）", "可以改文件", "由 Claude Code 自动判断", "不做任何限制（危险）"],
-        "default": "dontAsk",
+          "read-only",
+          "workspace-write",
+          "danger-full-access"
+        ], "x-enum-titles": ["只读（推荐）", "可以改工作目录里的文件", "不做任何限制（危险）"],
+        "default": "read-only",
         "description": "「不做任何限制」只在你完全信任能触发它的人时使用。"
-      },
-      "allowed_tools": {
-        "type": "string",
-        "title": "允许的工具",
-        "default": "Read,Glob,Grep",
-        "description": "逗号分隔，如 Read,Glob,Grep,WebSearch,Edit,Bash(git status)。"
       },
       "model": {
         "type": "string",
@@ -47,8 +39,9 @@
       },
       "system_prompt": {
         "type": "string",
-        "title": "附加系统提示（可选）",
-        "format": "textarea"
+        "title": "附加说明（可选）",
+        "format": "textarea",
+        "description": "在每段对话的第一条消息前附上。"
       },
       "allowed_actors": {
         "type": "string",
@@ -62,7 +55,7 @@
       },
       "bin": {
         "type": "string",
-        "title": "claude 命令路径（可选）",
+        "title": "codex 命令路径（可选）",
         "description": "留空自动查找。"
       }
     }
@@ -71,7 +64,7 @@
     {
       "name": "chat",
       "title": "对话",
-      "description": "输出：text（回复）、session_id、cost_usd、turns。",
+      "description": "输出：text（回复）、session_id。",
       "params": {
         "type": "object",
         "required": [
@@ -111,7 +104,7 @@
   ],
   "protocol": 1,
   "command": [
-    "./cat-plugin-agent-claude"
+    "./cat-plugin-codex-desktop"
   ],
   "capabilities": [
     "action"
