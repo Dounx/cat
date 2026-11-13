@@ -1,5 +1,5 @@
 // Package sidecar runs the programs some plugins manage on the user's behalf
-// (NapCat for OneBot, an RSSHub instance for RSSHub): as a local process or in
+// (an RSSHub instance for RSSHub): as a local process or in
 // a Docker container, with the console output collected line by line.
 package sidecar
 

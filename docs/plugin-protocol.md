@@ -221,15 +221,15 @@ Cat 把所有**启用的**规则里指向这个实例的触发参数汇总起来
 
 ```jsonc
 "dependencies": [{
-  "name": "napcat",
-  "title": "NapCat",
-  "version": "4.8.0",
+  "name": "rsshub",
+  "title": "RSSHub 源码",
+  "version": "bbc351a",
   "notice": "向用户展示的补充说明",
   "platforms": {                       // 键：os/arch（Go 的命名）、os 或 any
-    "windows/amd64": {
-      "url": "https://…/NapCat.zip",   // 必须是 HTTPS
+    "any": {
+      "url": "https://…/rsshub.tar.gz", // 必须是 HTTPS
       "sha256": "…",                   // 必填，64 位十六进制
-      "format": "zip",                 // zip | tar.gz | file，省略时按 URL 后缀判断
+      "format": "tar.gz",              // zip | tar.gz | file，省略时按 URL 后缀判断
       "strip": 0                       // 解压时去掉的前导目录层数
     }
   }

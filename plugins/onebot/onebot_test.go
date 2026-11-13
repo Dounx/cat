@@ -1,22 +1,20 @@
 package main_test
 
 import (
-	"archive/zip"
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 
 	"github.com/dounx/cat/core/engine"
 	"github.com/dounx/cat/core/plugin"
@@ -43,53 +41,99 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// TestManagedNapCatEndToEnd runs the whole one-click flow under the real
-// plugin host: consent, download, checksum, unpack, configure, launch, QR
-// code, login detection, then the instance starting with quick login and
-// exchanging messages. NapCat itself is replaced by testdata/fakenapcat.
-func TestManagedNapCatEndToEnd(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake launcher is a shell script")
-	}
-	tmp := t.TempDir()
+const token = "s3cret"
 
-	// The "release": a zip holding a launcher and the fake NapCat binary.
-	fake := filepath.Join(tmp, "fakenapcat")
-	build(t, fake, "./testdata/fakenapcat")
-	bin, _ := os.ReadFile(fake)
-	var zbuf bytes.Buffer
-	zw := zip.NewWriter(&zbuf)
-	add := func(name string, body []byte) {
-		h := &zip.FileHeader{Name: name, Method: zip.Deflate}
-		h.SetMode(0o755)
-		w, _ := zw.CreateHeader(h)
-		w.Write(body)
-	}
-	add("launcher.sh", []byte("#!/bin/sh\nexec \"$(dirname \"$0\")/fakenapcat\" \"$@\"\n"))
-	add("fakenapcat", bin)
-	zw.Close()
-	sum := sha256.Sum256(zbuf.Bytes())
-	downloads := 0
-	release := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		downloads++
-		w.Write(zbuf.Bytes())
+// fakeOneBot is a OneBot 11 forward WebSocket server standing in for the
+// service the user runs. Each connection after the wizard's check is sent one
+// group message; what send_msg is called with is recorded.
+type fakeOneBot struct {
+	*httptest.Server
+	mu    sync.Mutex
+	conns int
+	sent  []string
+}
+
+func newFakeOneBot(t *testing.T) *fakeOneBot {
+	f := &fakeOneBot{}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			w.WriteHeader(403)
+			return
+		}
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		ctx := r.Context()
+		f.mu.Lock()
+		f.conns++
+		n := f.conns
+		f.mu.Unlock()
+		_ = wsjson.Write(ctx, c, map[string]any{"post_type": "meta_event", "meta_event_type": "lifecycle", "self_id": 10001})
+		if n > 1 { // the first connection is the wizard checking the address
+			go func() {
+				time.Sleep(200 * time.Millisecond)
+				_ = wsjson.Write(ctx, c, map[string]any{
+					"post_type": "message", "message_type": "group", "time": 1700000000, "self_id": 10001,
+					"user_id": 20002, "group_id": 30003, "message_id": 777, "raw_message": "[CQ:at,qq=10001] 你好",
+					"message": []map[string]any{{"type": "at", "data": map[string]any{"qq": "10001"}}, {"type": "text", "data": map[string]any{"text": " 你好"}}},
+					"sender":  map[string]any{"nickname": "nick", "card": "群名片"},
+				})
+			}()
+		}
+		for {
+			var req struct {
+				Action string         `json:"action"`
+				Params map[string]any `json:"params"`
+				Echo   string         `json:"echo"`
+			}
+			if err := wsjson.Read(ctx, c, &req); err != nil {
+				return
+			}
+			var data any
+			switch req.Action {
+			case "get_login_info":
+				data = map[string]any{"user_id": 10001, "nickname": "机器猫"}
+			case "send_msg":
+				p, _ := json.Marshal(req.Params)
+				f.mu.Lock()
+				f.sent = append(f.sent, string(p))
+				f.mu.Unlock()
+				data = map[string]any{"message_id": 888}
+			default:
+				_ = wsjson.Write(ctx, c, map[string]any{"status": "failed", "retcode": 1404, "message": "no such action", "echo": req.Echo})
+				continue
+			}
+			_ = wsjson.Write(ctx, c, map[string]any{"status": "ok", "retcode": 0, "data": data, "echo": req.Echo})
+		}
 	}))
-	defer release.Close()
+	t.Cleanup(f.Close)
+	return f
+}
 
-	// Install the plugin with a manifest whose dependency points at that zip.
+func (f *fakeOneBot) wsURL() string { return "ws" + strings.TrimPrefix(f.URL, "http") }
+
+func (f *fakeOneBot) sentLog() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.sent, "\n")
+}
+
+// host runs the shipped plugin, with its real manifest, under the real plugin host.
+func host(t *testing.T) (*pluginhost.Host, *engine.Engine) {
+	t.Helper()
+	tmp := t.TempDir()
 	root := filepath.Join(tmp, "plugins")
 	pdir := filepath.Join(root, "onebot")
 	_ = os.MkdirAll(pdir, 0o755)
-	build(t, filepath.Join(pdir, "cat-plugin-onebot"), ".")
+	bin := "cat-plugin-onebot"
+	if os.PathSeparator == '\\' {
+		bin += ".exe"
+	}
+	build(t, filepath.Join(pdir, bin), ".")
 	raw, _ := os.ReadFile("plugin.json")
-	var manifest map[string]any
-	_ = json.Unmarshal(raw, &manifest)
-	manifest["dependencies"] = []map[string]any{{
-		"name": "napcat", "title": "NapCat", "version": "0.0.1-test",
-		"platforms": map[string]any{"any": map[string]any{"url": release.URL + "/NapCat.Shell.zip", "sha256": hex.EncodeToString(sum[:]), "format": "zip"}},
-	}}
-	b, _ := json.Marshal(manifest)
-	_ = os.WriteFile(filepath.Join(pdir, "plugin.json"), b, 0o644)
+	_ = os.WriteFile(filepath.Join(pdir, "plugin.json"), raw, 0o644)
 
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -104,19 +148,32 @@ func TestManagedNapCatEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { e.Stop(); st.Close() })
+	return ph, e
+}
+
+// TestConnectEndToEnd runs the wizard and the instance it saves against a
+// OneBot service: a wrong address and a wrong token are reported and asked
+// again, then messages flow both ways.
+func TestConnectEndToEnd(t *testing.T) {
+	srv := newFakeOneBot(t)
+	ph, e := host(t)
 
 	view, err := ph.StartSetup("onebot", "", "我的 QQ")
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := func() pluginhost.SetupView { v, _ := ph.Setup(view.ID); return v }
-	waiting := func(kind string) func() bool {
+	state := func() pluginhost.SetupView {
+		v, _ := ph.Setup(view.ID)
+		if v.State == pluginhost.SetupError {
+			t.Fatalf("setup failed: %s", v.Error)
+		}
+		return v
+	}
+	form := func(problem string) func() bool {
 		return func() bool {
 			s := state()
-			if s.State == pluginhost.SetupError {
-				t.Fatalf("setup failed: %s", s.Error)
-			}
-			return s.State == pluginhost.SetupWaiting && s.Step["kind"] == kind
+			desc, _ := s.Step["description"].(string)
+			return s.State == pluginhost.SetupWaiting && s.Step["title"] == "连接 OneBot 服务" && strings.Contains(desc, problem)
 		}
 	}
 	answer := func(v map[string]any) {
@@ -126,45 +183,24 @@ func TestManagedNapCatEndToEnd(t *testing.T) {
 		}
 	}
 
-	waitFor(t, "mode form", waiting("form"))
-	answer(map[string]any{"mode": "managed"})
-
-	// The host asks before downloading, naming the source; nothing is fetched until the user agrees.
-	waitFor(t, "download consent", waiting("confirm"))
-	if desc, _ := state().Step["description"].(string); !strings.Contains(desc, release.URL) || downloads != 0 {
-		t.Fatalf("consent step should name the source before any download: downloads=%d desc=%q", downloads, desc)
+	// The wizard goes straight to the address: there is nothing else to choose.
+	waitFor(t, "address form", form(""))
+	if s := state(); s.Step["kind"] != "form" {
+		t.Fatalf("first step: %+v", s.Step)
 	}
-	answer(map[string]any{"confirmed": true})
+	answer(map[string]any{"ws_url": "ws://127.0.0.1:1"})
+	waitFor(t, "unreachable address reported", form("无法连接"))
+	answer(map[string]any{"ws_url": srv.wsURL(), "token": "wrong"})
+	waitFor(t, "wrong token reported", form("访问令牌不正确"))
+	answer(map[string]any{"ws_url": srv.wsURL(), "token": token})
+	waitFor(t, "setup done", func() bool { return state().State == pluginhost.SetupDone })
 
-	// The QR code NapCat printed reaches the wizard.
-	waitFor(t, "QR code", func() bool {
-		s := state()
-		if s.State == pluginhost.SetupError {
-			t.Fatalf("setup failed: %s", s.Error)
-		}
-		return s.Step["kind"] == "qrcode" || s.State == pluginhost.SetupDone
-	})
-	if s := state(); s.State != pluginhost.SetupDone && s.Step["text"] != "https://txz.qq.com/p?k=FAKEQR&f=1" {
-		t.Fatalf("qr step: %+v", s.Step)
-	}
-	waitFor(t, "setup done", func() bool {
-		s := state()
-		if s.State == pluginhost.SetupError {
-			t.Fatalf("setup failed: %s", s.Error)
-		}
-		return s.State == pluginhost.SetupDone
-	})
-	if downloads != 1 {
-		t.Fatalf("downloads = %d", downloads)
-	}
-
-	// The saved instance starts NapCat again, this time with quick login.
 	inst, ok := e.Instance(view.InstanceID)
-	if !ok || inst.Name != "我的 QQ" || inst.Config["mode"] != "managed" || inst.Config["uin"] != "10001" {
+	if !ok || inst.Name != "我的 QQ" || inst.Config["ws_url"] != srv.wsURL() || inst.Config["token"] != engine.SecretMask {
 		t.Fatalf("instance: %+v", inst)
 	}
-	if inst.Config["token"] != engine.SecretMask {
-		t.Fatalf("the generated token should be stored as a secret: %v", inst.Config["token"])
+	if _, has := inst.Config["mode"]; has {
+		t.Fatalf("there is only one way to connect, nothing to record: %+v", inst.Config)
 	}
 	waitFor(t, "instance running", func() bool {
 		v, _ := e.Instance(view.InstanceID)
@@ -173,17 +209,6 @@ func TestManagedNapCatEndToEnd(t *testing.T) {
 		}
 		return v.Status == engine.StatusRunning
 	})
-	napcatDir := filepath.Join(tmp, "data", "instances", view.InstanceID, "napcat")
-	fakeLog := func() string { b, _ := os.ReadFile(filepath.Join(napcatDir, "fake.log")); return string(b) }
-	if !strings.Contains(fakeLog(), "quick-login 10001") {
-		t.Fatalf("instance should start NapCat with quick login; log:\n%s", fakeLog())
-	}
-	var cfg map[string]any
-	cb, _ := os.ReadFile(filepath.Join(napcatDir, "config", "webui.json"))
-	_ = json.Unmarshal(cb, &cfg)
-	if cfg["host"] != "127.0.0.1" {
-		t.Fatalf("NapCat's WebUI must be confined to loopback: %v", cfg)
-	}
 
 	// A group message that mentions the bot arrives as an event...
 	waitFor(t, "message event", func() bool {
@@ -203,255 +228,30 @@ func TestManagedNapCatEndToEnd(t *testing.T) {
 	if err != nil || out["message_id"] != "888" {
 		t.Fatalf("reply: %v %v", out, err)
 	}
-	if log := fakeLog(); !strings.Contains(log, `"group_id":30003`) || !strings.Contains(log, `"type":"reply"`) || !strings.Contains(log, "喵") {
+	if log := srv.sentLog(); !strings.Contains(log, `"group_id":30003`) || !strings.Contains(log, `"type":"reply"`) || !strings.Contains(log, "喵") {
 		t.Fatalf("send_msg not as expected:\n%s", log)
 	}
 	if _, err := e.Invoke(context.Background(), view.InstanceID, "send", map[string]any{"conversation_id": "nonsense", "text": "x"}, plugin.InvokeContext{}); err == nil {
 		t.Fatal("a malformed conversation id should be rejected")
 	}
-
-	// Stopping the instance takes NapCat down with it.
-	if err := e.DeleteInstance(view.InstanceID); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, "NapCat to exit", func() bool {
-		out, _ := exec.Command("pgrep", "-f", napcatDir).Output()
-		return len(bytes.TrimSpace(out)) == 0
-	})
 }
 
-// On a platform the release does not cover, the wizard explains and falls
-// back to connecting to a service the user runs.
-func TestUnsupportedPlatformFallsBackToExternal(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("the shipped manifest supports Windows")
-	}
-	tmp := t.TempDir()
-	root := filepath.Join(tmp, "plugins")
-	pdir := filepath.Join(root, "onebot")
-	_ = os.MkdirAll(pdir, 0o755)
-	build(t, filepath.Join(pdir, "cat-plugin-onebot"), ".")
-	raw, _ := os.ReadFile("plugin.json")
-	_ = os.WriteFile(filepath.Join(pdir, "plugin.json"), raw, 0o644) // the real manifest
-
-	st, _ := store.Open(":memory:")
-	e := engine.New(st, filepath.Join(tmp, "data"), nil)
-	ph := pluginhost.New(e, root)
-	if errs := ph.Scan(); len(errs) > 0 {
-		t.Fatal(errs)
-	}
-	_ = e.Start()
-	t.Cleanup(func() { e.Stop(); st.Close() })
-
-	view, err := ph.StartSetup("onebot", "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := func() pluginhost.SetupView { v, _ := ph.Setup(view.ID); return v }
-	waitFor(t, "mode form", func() bool { return state().State == pluginhost.SetupWaiting })
-	_ = ph.AnswerSetup(view.ID, map[string]any{"mode": "managed"})
-	waitFor(t, "explanation", func() bool {
-		s := state()
-		return s.State == pluginhost.SetupWaiting && s.Step["kind"] == "confirm" && s.Step["title"] == "无法自动配置 NapCat"
-	})
-	if desc, _ := state().Step["description"].(string); !strings.Contains(desc, "不支持当前系统") {
-		t.Fatalf("explanation: %q", desc)
-	}
-	_ = ph.AnswerSetup(view.ID, map[string]any{"confirmed": true})
-	waitFor(t, "external form", func() bool {
-		s := state()
-		return s.State == pluginhost.SetupWaiting && s.Step["title"] == "连接已有的 OneBot 服务"
-	})
-	// An address nothing listens on is reported, and the form comes back.
-	_ = ph.AnswerSetup(view.ID, map[string]any{"ws_url": "ws://127.0.0.1:1"})
-	waitFor(t, "connection problem shown", func() bool {
-		desc, _ := state().Step["description"].(string)
-		return state().State == pluginhost.SetupWaiting && strings.Contains(desc, "无法连接")
-	})
-	ph.CancelSetup(view.ID)
-}
-
-// dockerHost sets up a plugin host whose onebot plugin finds testdata/fakedocker
-// as "docker". bin is where that fake keeps its log and "container" pid files.
-func dockerHost(t *testing.T) (ph *pluginhost.Host, e *engine.Engine, tmp, bin string) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("the fake docker is a shell script")
-	}
-	tmp = t.TempDir()
-	bin = filepath.Join(tmp, "bin")
-	_ = os.MkdirAll(bin, 0o755)
-	build(t, filepath.Join(bin, "fakenapcat"), "./testdata/fakenapcat")
-	script, _ := os.ReadFile("testdata/fakedocker/docker")
-	_ = os.WriteFile(filepath.Join(bin, "docker"), script, 0o755)
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH")) // plugins inherit it
-	t.Setenv("FAKE_NAPCAT_REFUSE_ONCE", "1")
-
-	root := filepath.Join(tmp, "plugins")
-	pdir := filepath.Join(root, "onebot")
-	_ = os.MkdirAll(pdir, 0o755)
-	build(t, filepath.Join(pdir, "cat-plugin-onebot"), ".")
-	raw, _ := os.ReadFile("plugin.json")
-	_ = os.WriteFile(filepath.Join(pdir, "plugin.json"), raw, 0o644)
-
-	st, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	e = engine.New(st, filepath.Join(tmp, "data"), nil)
-	ph = pluginhost.New(e, root)
-	if errs := ph.Scan(); len(errs) > 0 {
-		t.Fatal(errs)
-	}
-	if err := e.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { e.Stop(); st.Close() })
-	return ph, e, tmp, bin
-}
-
-// TestDockerNapCatEndToEnd runs the Docker flow under the real plugin host:
-// consent before pulling the image, configure, run the container, QR code,
-// login detection, then the instance starting with quick login. The docker
-// CLI is replaced by testdata/fakedocker, which runs testdata/fakenapcat.
-func TestDockerNapCatEndToEnd(t *testing.T) {
-	ph, e, tmp, bin := dockerHost(t)
-	dockerLog := func() string { b, _ := os.ReadFile(filepath.Join(bin, "docker.log")); return string(b) }
-
-	view, err := ph.StartSetup("onebot", "", "容器里的 QQ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := func() pluginhost.SetupView {
-		v, _ := ph.Setup(view.ID)
-		if v.State == pluginhost.SetupError {
-			t.Fatalf("setup failed: %s", v.Error)
+// An instance saved back when Cat ran NapCat itself has no service to connect
+// to any more: it says so, and what to do, rather than failing obscurely.
+func TestInstanceFromManagedNapCatExplains(t *testing.T) {
+	_, e := host(t)
+	for _, mode := range []string{"managed", "docker"} {
+		inst, err := e.SaveInstance(store.Instance{Plugin: "onebot", Name: mode, Enabled: true,
+			Config: map[string]any{"mode": mode, "ws_port": 3001, "token": token, "uin": "10001"}})
+		if err != nil {
+			t.Fatal(err)
 		}
-		return v
-	}
-	waitFor(t, "mode form", func() bool { s := state(); return s.State == pluginhost.SetupWaiting && s.Step["kind"] == "form" })
-	// With docker on PATH, the Docker way is the one suggested.
-	if v, _ := state().Step["values"].(map[string]any); v["mode"] != "docker" {
-		t.Fatalf("suggested mode: %+v", state().Step)
-	}
-	_ = ph.AnswerSetup(view.ID, map[string]any{"mode": "docker"})
-
-	// Nothing is pulled until the user agrees, and the step names the image.
-	waitFor(t, "pull consent", func() bool { s := state(); return s.State == pluginhost.SetupWaiting && s.Step["kind"] == "confirm" })
-	if desc, _ := state().Step["description"].(string); !strings.Contains(desc, "mlikiowa/napcat-docker:") || strings.Contains(dockerLog(), "pull") {
-		t.Fatalf("consent step should name the image before any pull: desc=%q log:\n%s", desc, dockerLog())
-	}
-	_ = ph.AnswerSetup(view.ID, map[string]any{"confirmed": true})
-
-	// QQ turns the first login down. NapCat would sit on the dead QR code
-	// for good, so the wizard says why and brings up a fresh one.
-	waitFor(t, "first QR code", func() bool { return state().Step["text"] == "https://txz.qq.com/p?k=REFUSED&f=1" })
-	waitFor(t, "a fresh QR code after the refusal", func() bool {
-		s := state()
-		return s.State == pluginhost.SetupDone || s.Step["text"] == "https://txz.qq.com/p?k=FAKEQR&f=1"
-	})
-	if s := state(); s.State != pluginhost.SetupDone {
-		if desc, _ := s.Step["description"].(string); !strings.Contains(desc, "你的账号近期存在安全风险") {
-			t.Fatalf("the new QR step should say why the login failed: %+v", s.Step)
+		waitFor(t, mode+" instance to report", func() bool {
+			v, _ := e.Instance(inst.ID)
+			return v.Status == engine.StatusError
+		})
+		if v, _ := e.Instance(inst.ID); !strings.Contains(v.Error, "不再代为运行 NapCat") || !strings.Contains(v.Error, "接入向导") {
+			t.Fatalf("%s: %q", mode, v.Error)
 		}
 	}
-	waitFor(t, "setup done", func() bool { return state().State == pluginhost.SetupDone })
-
-	inst, ok := e.Instance(view.InstanceID)
-	if !ok || inst.Config["mode"] != "docker" || inst.Config["uin"] != "10001" || inst.Config["token"] != engine.SecretMask {
-		t.Fatalf("instance: %+v", inst)
-	}
-	waitFor(t, "instance running", func() bool {
-		v, _ := e.Instance(view.InstanceID)
-		if v.Status == engine.StatusError {
-			t.Fatalf("instance failed: %s", v.Error)
-		}
-		return v.Status == engine.StatusRunning
-	})
-	dataDir := filepath.Join(tmp, "data", "instances", view.InstanceID, "napcat-docker")
-	fakeLog := func() string { b, _ := os.ReadFile(filepath.Join(dataDir, "fake.log")); return string(b) }
-	// The instance takes over the container the wizard logged in with: a
-	// second login moments after the first makes QQ ask for confirmation.
-	waitFor(t, "the instance to follow the container's console", func() bool { return strings.Contains(dockerLog(), "\nlogs -f ") })
-	if log := dockerLog(); strings.Count(log, "\nrun ") != 2 || strings.Contains(fakeLog(), "quick-login") {
-		t.Fatalf("the instance should adopt the wizard's container:\n%s\n%s", log, fakeLog())
-	}
-	// A later start has nothing to take over and logs in with the saved account.
-	stored, _ := e.Store.ListInstances() // as saved, with the real token
-	if len(stored) != 1 {
-		t.Fatalf("stored instances: %+v", stored)
-	}
-	if _, err := e.SaveInstance(stored[0]); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, "quick login after a restart", func() bool { return strings.Contains(fakeLog(), "quick-login 10001") })
-	waitFor(t, "instance running again", func() bool {
-		v, _ := e.Instance(view.InstanceID)
-		if v.Status == engine.StatusError {
-			t.Fatalf("instance failed: %s", v.Error)
-		}
-		return v.Status == engine.StatusRunning
-	})
-	// What QQ delivers the moment the account logs in is not lost: the
-	// connection that detected the login is the one that stays.
-	waitFor(t, "message event", func() bool {
-		l, _ := e.Store.ListEvents(store.EventFilter{Type: "message.created"})
-		return len(l) >= 1
-	})
-	// Inside the container NapCat listens on every interface at its usual port...
-	if !strings.Contains(fakeLog(), "listen 0.0.0.0:3001") {
-		t.Fatalf("container should listen on 0.0.0.0:3001; log:\n%s", fakeLog())
-	}
-	// ...but only the OneBot port is published, and only on loopback; the
-	// image was pulled once, and login state is kept outside the container.
-	log := dockerLog()
-	for _, line := range strings.Split(log, "\n") {
-		if strings.HasPrefix(line, "run ") && (strings.Count(line, " -p ") != 1 || !strings.Contains(line, " -p 127.0.0.1:") ||
-			!strings.Contains(line, filepath.Join(dataDir, "qq")+":/app/.config/QQ")) {
-			t.Fatalf("docker run: %s", line)
-		}
-	}
-	// Every run looks like the same machine to QQ, or the saved login would be refused.
-	device := regexp.MustCompile(`--hostname \S+ --mac-address 02:42(:[0-9a-f]{2}){4}`).FindAllString(log, -1)
-	if len(device) != 3 || device[0] != device[1] || device[1] != device[2] {
-		t.Fatalf("the container should keep one host name and MAC address across runs: %v", device)
-	}
-	if strings.Count(log, "pull ") != 1 || strings.Count(log, "\nrun ") != 3 {
-		t.Fatalf("expected one pull and three runs (refused login, login, instance):\n%s", log)
-	}
-
-	// Stopping the instance removes the container.
-	if err := e.DeleteInstance(view.InstanceID); err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, "container to be removed", func() bool {
-		pids, _ := filepath.Glob(filepath.Join(bin, "*.pid"))
-		out, _ := exec.Command("pgrep", "-f", filepath.Join(bin, "fakenapcat")).Output()
-		return len(pids) == 0 && len(bytes.TrimSpace(out)) == 0
-	})
-}
-
-// Closing the wizard while it waits for a scan must not leave the container
-// behind: the host stops the plugin without waiting for the wizard to unwind.
-func TestDockerWizardCancelRemovesContainer(t *testing.T) {
-	ph, _, _, bin := dockerHost(t)
-	view, err := ph.StartSetup("onebot", "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := func() pluginhost.SetupView { v, _ := ph.Setup(view.ID); return v }
-	waitFor(t, "mode form", func() bool { return state().State == pluginhost.SetupWaiting })
-	_ = ph.AnswerSetup(view.ID, map[string]any{"mode": "docker"})
-	waitFor(t, "pull consent", func() bool { return state().Step["kind"] == "confirm" })
-	_ = ph.AnswerSetup(view.ID, map[string]any{"confirmed": true})
-	waitFor(t, "QR code", func() bool { return state().Step["kind"] == "qrcode" })
-	if pids, _ := filepath.Glob(filepath.Join(bin, "*.pid")); len(pids) != 1 {
-		t.Fatalf("expected one running container, got %v", pids)
-	}
-	ph.CancelSetup(view.ID)
-	waitFor(t, "container to be removed", func() bool {
-		pids, _ := filepath.Glob(filepath.Join(bin, "*.pid"))
-		out, _ := exec.Command("pgrep", "-f", filepath.Join(bin, "fakenapcat")).Output()
-		return len(pids) == 0 && len(bytes.TrimSpace(out)) == 0
-	})
 }
