@@ -97,4 +97,7 @@ type Step struct {
 	Schema      map[string]any `json:"schema,omitempty"`
 	Values      map[string]any `json:"values,omitempty"` // initial form values
 	Danger      bool           `json:"danger,omitempty"` // confirm is risky
+	// Notice is said once in passing as the step comes up, for something that
+	// has just been done for the user ("copied to the clipboard").
+	Notice string `json:"notice,omitempty"`
 }

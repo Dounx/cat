@@ -7,6 +7,7 @@ import { get } from '../api'
 import type { Schema } from '../types'
 import VarPicker, { type VarGroup } from './VarPicker.vue'
 import TemplateInput from './TemplateInput.vue'
+import MultiPick, { type Choice } from './MultiPick.vue'
 
 // `variables` lists what a templated text field may refer to; when given,
 // those fields show placeholders as named tags and offer a menu that inserts
@@ -45,7 +46,8 @@ function set(key: string, value: unknown) {
 }
 
 function kind(s: Schema): string {
-  if (s.enum) return 'enum'
+  if (s.enum) return s['x-enum-notes'] ? 'choice' : 'enum'
+  if (s['x-multi'] && !props.templated) return 'multi'
   if (s.type === 'boolean') return 'boolean'
   if ((s.type === 'number' || s.type === 'integer') && !props.templated) return 'number'
   if (s.type === 'object' || s.type === 'array') return 'json'
@@ -119,9 +121,21 @@ watch(
   { immediate: true },
 )
 
+// What a field that takes several values can choose from, as the instance lists it.
+function choices(key: string): Choice[] {
+  return (offered.value[key] || []).flatMap((g) =>
+    g.items.map((o) => ({ value: o.expr, title: o.label, note: o.sample })),
+  )
+}
+const waiting = (key: string, s: Schema) => s['x-pick'] === 'option' && !!props.optionsFrom && !(key in offered.value)
+
 // Values to pick from for a field that asks for them.
 const picksFor = (key: string, s: Schema) =>
-  s['x-pick'] === 'option' ? offered.value[key] : (s['x-pick'] && props.picks?.[s['x-pick']]) || undefined
+  kind(s) === 'multi'
+    ? undefined
+    : s['x-pick'] === 'option'
+      ? offered.value[key]
+      : (s['x-pick'] && props.picks?.[s['x-pick']]) || undefined
 function pick(key: string, s: Schema, value: string) {
   // senders add up to a list; a conversation replaces what was there
   const cur = show(key, s)
@@ -177,6 +191,29 @@ function setJSON(key: string, raw: string) {
         <option v-if="!required.has(key) && s.default === undefined" value="">（默认）</option>
         <option v-for="(o, i) in s.enum" :key="o" :value="o">{{ enumTitle(s, i) }}</option>
       </select>
+      <div v-else-if="kind(s) === 'choice'" class="list">
+        <label v-for="(o, i) in s.enum" :key="o" class="row link flex cursor-pointer items-start gap-3 px-3 py-2">
+          <input
+            type="radio"
+            class="mt-1"
+            :name="key"
+            :checked="(modelValue[key] ?? s.default) === o"
+            @change="set(key, o)"
+          />
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium text-ink">{{ enumTitle(s, i) }}</div>
+            <div v-if="s['x-enum-notes']?.[i]" class="text-xs text-mute">{{ s['x-enum-notes'][i] }}</div>
+          </div>
+        </label>
+      </div>
+      <MultiPick
+        v-else-if="kind(s) === 'multi'"
+        :model-value="show(key, s)"
+        :options="choices(key)"
+        :loading="waiting(key, s)"
+        :empty="refused[key]"
+        @update:model-value="set(key, $event)"
+      />
       <label v-else-if="kind(s) === 'boolean'" class="flex cursor-pointer items-center gap-2 text-sm">
         <input
           type="checkbox"

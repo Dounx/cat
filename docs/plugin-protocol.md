@@ -79,11 +79,13 @@
 
 表单渲染支持的 Schema 子集：`type` 为 `string` / `number` / `integer` / `boolean` / `object`，以及 `title`、`description`、`default`、`enum`、`required`；`format: "password"` 和 `format: "textarea"`；`x-order` 数组指定字段顺序（JSON 对象本身无序）。
 
-两个让表单更好填的扩展：
+几个让表单更好填的扩展：
 
 - `"x-enum-titles": ["只读（推荐）", "不做任何限制（危险）"]`：和 `enum` 等长、同序，是每个选项显示给人看的名字。存下来的仍是 `enum` 里的值。请总是给出，不要让用户面对 `read-only` 这样的内部值。
+- `"x-enum-notes": ["…", "…"]`：和 `enum` 等长、同序，是每个选项下面的一句说明。给了它，选项就不再是下拉框，而是一列单选项，每项带着自己的说明；适合选项不多、又需要解释各自适用场合的时候（比如接入向导里选登录方式）。
 - `"x-pick": "conversation"` 或 `"actor"`：这个字段要填的是会话 ID 或发送者 ID。界面会在旁边提供「从最近的里选」，列出最近事件里出现过的会话（`conversation.id`，限这个动作所属的接入）或发送者（`actor.id`，多选时用逗号连接）。用在动作参数和配置里都可以。
-- `"x-pick": "option"`：这个字段的可选值由插件自己给出，比如一个网关里现有的模型。界面会在旁边提供「从现有的里选」，打开表单时向实例发 `options.list` 取列表。字段仍然是文本框，用户可以手写列表之外的值，也可以写 `{{ }}` 模板。用在动作参数里，或已有接入的配置里（接入向导里请直接给 `enum`）。
+- `"x-pick": "option"`：这个字段的可选值由插件自己给出，比如一个网关里现有的模型。界面会在旁边提供「从现有的里选」，打开表单时向实例发 `options.list` 取列表。字段仍然是文本框，用户可以手写列表之外的值，也可以写 `{{ }}` 模板。用在动作参数、触发参数里，或已有接入的配置里（接入向导里请直接给 `enum`）。
+- `"x-multi": true`：这个字段要填好几个值（比如几个仓库）。界面把它显示成带搜索的下拉多选：选中的显示成标签，输入几个字就筛出匹配的，列表里没有的值也可以直接输入后回车添加。存下来的是一个字符串，每行一个值。可选项和 `"x-pick": "option"` 一起用时由插件通过 `options.list` 给出。
 
 ## 传输
 
@@ -123,7 +125,7 @@ Cat                                   插件
 | `stop` | — | — |
 | `action.invoke` | `{ action, params, context: { event?, rule_id?, run_id? } }` | 一个对象，成为该动作的输出 |
 | `triggers.set` | `{ triggers: [{ id, params }] }`：启用的规则要这个实例盯的全部东西，每次都是完整列表 | `{ errors?: { "<id>": "原因" } }`：看不懂的触发各自的原因。见「触发参数」 |
-| `options.list` | `{ action, field }`：`action` 是动作名，问的是配置字段时为空串 | `{ options: [{ value, title?, note? }] }`。`title` 是给人看的名字，`note` 是旁边的一小段补充。只在实例启动后调用；没有实现这个方法等于没有可选项 |
+| `options.list` | `{ action, field }`：`action` 是动作名，问的是配置字段时为空串，问的是触发参数的字段时为 `@trigger` | `{ options: [{ value, title?, note? }] }`。`title` 是给人看的名字，`note` 是旁边的一小段补充。只在实例启动后调用；没有实现这个方法等于没有可选项 |
 | `ingress.request` | `{ method, path, query, headers, body }`（`body` 为 base64） | `{ status, headers?, body? }`（`body` 为 base64） |
 | `setup.run` | `{ existing }`（已有配置，新建时为空对象） | `{ config }` |
 
@@ -210,6 +212,7 @@ Cat 把所有**启用的**规则里指向这个实例的触发参数汇总起来
 | `image` | `qrcode`：直接显示的图片（`data:` URL），优先于 `text` |
 | `schema`、`values` | `form`：表单的 JSON Schema 与初始值 |
 | `danger` | `confirm`：确认按钮显示为危险操作 |
+| `notice` | 任何步骤都可带：这一步出现时在界面上闪一下的短提示，用来告诉用户刚替他做了什么（比如「验证码已复制到剪贴板」）。只提示一次，不要放必须看到的内容 |
 
 `setup.ask` 的回答：`form` 返回各字段的值；`confirm` 返回 `{ "confirmed": true | false }`。
 

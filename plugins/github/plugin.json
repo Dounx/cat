@@ -1,0 +1,99 @@
+{
+  "id": "github",
+  "name": "GitHub",
+  "version": "0.1.0",
+  "protocol": 1,
+  "description": "把仓库里的 Issue 和 Pull Request 当作会话：新开的 Issue、PR、它们下面的评论和审查意见是消息，回复就是发一条评论。接入只管登录一个账号，关注哪些仓库在规则的触发节点里选。定时查询，不需要公网地址；配上 Webhook 可以实时收到。",
+  "command": ["./cat-plugin-github"],
+  "capabilities": ["source", "action"],
+  "ingress": true,
+  "setup": true,
+  "config_schema": {
+    "type": "object",
+    "required": ["token"],
+    "x-order": ["token", "webhook_secret", "interval", "api_base"],
+    "properties": {
+      "token": { "type": "string", "title": "访问令牌（Token）", "format": "password", "description": "接入向导里在浏览器登录 GitHub 就会自动填上（登录借 GitHub CLI 完成，组织的仓库不用管理员另外批准），也可以自己建一个：细粒度令牌需要对要用到的仓库有 Issues 和 Pull requests 的读写权限；经典令牌勾选 repo（只用公开仓库时 public_repo 即可）。评论以这个令牌所属的账号发出；想让机器人有自己的名字，就专门注册一个账号。" },
+      "webhook_secret": { "type": "string", "title": "Webhook 密钥（可选）", "format": "password", "description": "想实时收到消息时设置：自己定一串密钥填在这里，再到仓库或组织的 Settings → Webhooks 添加 Webhook。Payload URL 填这个接入的地址（在「接入」页复制，要能从公网访问），Content type 选 application/json，Secret 填同一串密钥，事件勾选 Issues、Issue comments、Pull requests、Pull request reviews、Pull request review comments。规则里关注的仓库照常定时查询，补上没送到的；同一条消息不会收到两次。" },
+      "interval": { "type": "integer", "title": "检查间隔（秒）", "default": 30, "description": "多久查一次有没有新内容，最短 10 秒。没有新内容的查询不占 GitHub 的请求额度。" },
+      "api_base": { "type": "string", "title": "API 地址（可选）", "description": "GitHub Enterprise Server 填 https://<你的域名>/api/v3。留空用 github.com。" }
+    }
+  },
+  "events": [
+    { "type": "message.created", "title": "新的 Issue、PR、评论或审查意见" },
+    { "type": "message.edited", "title": "Issue、PR、评论或审查意见的内容被编辑" }
+  ],
+  "trigger_params": {
+    "type": "object",
+    "x-order": ["repos", "mentions"],
+    "properties": {
+      "repos": { "type": "string", "title": "关注的仓库", "x-pick": "option", "x-multi": true, "description": "从这个账号能访问的仓库里选，可以搜索；不在列表里的（比如别人的公开仓库）直接输入 owner/repo 后回车。这些仓库里新开的 Issue、PR，新的评论和审查意见，以及它们的内容被编辑，都会触发这条规则。" },
+      "mentions": { "type": "boolean", "title": "在任何仓库被 @ 都接收", "description": "上面的仓库之外，只接收 @ 了这个账号的 Issue、PR、评论和审查意见。靠读取这个账号的通知实现，每分钟查一次。在浏览器里登录得到的令牌可以；自己建的要用经典令牌（勾了 repo 或 notifications 都行），细粒度令牌读不了通知。" }
+    }
+  },
+  "actions": [
+    {
+      "name": "reply",
+      "title": "回复（原会话）",
+      "description": "在触发事件所在的 Issue 或 PR 下发一条评论。输出：message_id、url。",
+      "params": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string", "title": "内容", "format": "textarea", "description": "按 Markdown 渲染。" }
+        }
+      }
+    },
+    {
+      "name": "send",
+      "title": "发送到指定会话",
+      "description": "在指定的 Issue 或 PR 下发一条评论。输出：message_id、url。",
+      "params": {
+        "type": "object",
+        "required": ["conversation_id", "text"],
+        "x-order": ["conversation_id", "text"],
+        "properties": {
+          "conversation_id": { "type": "string", "title": "发到哪个会话", "x-pick": "conversation", "description": "从最近的会话里选，或直接写 owner/repo#编号，也可以贴 Issue 或 PR 的网址。" },
+          "text": { "type": "string", "title": "内容", "format": "textarea", "description": "按 Markdown 渲染。" }
+        }
+      }
+    },
+    {
+      "name": "create_issue",
+      "title": "新建 Issue",
+      "description": "在一个仓库里新建 Issue。输出：number、url，以及可以接着往里发评论的 conversation_id。",
+      "params": {
+        "type": "object",
+        "required": ["repo", "title"],
+        "x-order": ["repo", "title", "text", "labels"],
+        "properties": {
+          "repo": { "type": "string", "title": "仓库", "x-pick": "option", "description": "写成 owner/repo。" },
+          "title": { "type": "string", "title": "标题" },
+          "text": { "type": "string", "title": "内容", "format": "textarea", "description": "按 Markdown 渲染。" },
+          "labels": { "type": "string", "title": "标签（可选）", "description": "多个用逗号隔开。" }
+        }
+      }
+    },
+    {
+      "name": "typing",
+      "title": "表示已看到（加 👀 表情）",
+      "description": "给触发事件的那条评论（或 Issue、PR 本身）加一个 👀 表情，适合放在耗时较长的 AI 步骤之前。"
+    }
+  ],
+  "dependencies": [
+    {
+      "name": "gh",
+      "title": "GitHub CLI",
+      "version": "2.103.3",
+      "notice": "GitHub 官方的命令行工具，只在接入向导里用来登录。本机已经装了 gh 时不会下载。",
+      "platforms": {
+        "darwin/arm64": { "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_macOS_arm64.zip", "sha256": "d700207eae9ae98fe2b89535c2c087c07823d4628c56364695a5a07ef311c062", "strip": 1 },
+        "darwin/amd64": { "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_macOS_amd64.zip", "sha256": "a2f86418f4350ae6e9ec60d5000bdf7665728436946a97fc27fe50e6ae752682", "strip": 1 },
+        "linux/amd64": { "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_linux_amd64.tar.gz", "sha256": "4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d", "strip": 1 },
+        "linux/arm64": { "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_linux_arm64.tar.gz", "sha256": "ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306ce63", "strip": 1 },
+        "windows/amd64": { "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_windows_amd64.zip", "sha256": "98d0cfa794721665d7973dd728c78aff7bd836d58f10f6d7a03568eccb0a22e0" },
+        "windows/arm64": { "url": "https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_windows_arm64.zip", "sha256": "197211c98687d7770ac331fe8a3b6c198c389108c1536cdbedf659fe4703e484" }
+      }
+    }
+  ]
+}

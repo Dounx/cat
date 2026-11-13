@@ -82,6 +82,7 @@ const several = ref(props.node.sources.length > 1)
     class="mt-3"
     :model-value="node.params"
     :schema="triggerSchema(node)"
+    :options-from="node.sources.length === 1 ? `/instances/${node.sources[0]}/options?action=%40trigger` : undefined"
     @update:model-value="node.params = $event"
   />
   <details

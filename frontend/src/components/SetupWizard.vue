@@ -20,6 +20,7 @@ interface Step {
   schema?: Schema
   values?: Record<string, any>
   danger?: boolean
+  notice?: string
 }
 interface Session {
   id: string
@@ -64,6 +65,12 @@ watch(
     qr.value = s?.kind === 'qrcode' && s.text ? await QRCode.toDataURL(s.text, { margin: 2, width: 240 }) : ''
   },
   { immediate: true },
+)
+
+// What a step has just done for the user is said in passing, once.
+watch(
+  () => step.value?.notice,
+  (notice) => notice && hub.notify(notice),
 )
 
 onMounted(async () => {

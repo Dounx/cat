@@ -1,0 +1,22 @@
+#!/bin/sh
+# A stand-in for the GitHub CLI. Signing in "works" at once, unless a file
+# named deny lies next to this script; the login it has on the machine itself
+# is whatever the file own-token holds.
+state="$(dirname "$0")"
+case "$1 $2" in
+"auth login")
+	[ -n "$GH_CONFIG_DIR" ] || { echo "fake gh: asked to sign in over the machine's own login" >&2; exit 1; }
+	echo "$*" > "$state/login-args"
+	echo >&2
+	case "$*" in
+	*--clipboard*) echo "! One-time code (WDJB-MJHT) copied to clipboard" >&2 ;;
+	*) echo "! First copy your one-time code: WDJB-MJHT" >&2 ;;
+	esac
+	echo "Open this URL to continue in your web browser: https://github.test/login/device" >&2
+	[ -f "$state/deny" ] && { echo "error: authorization was denied" >&2; exit 1; }
+	echo good-token > "$GH_CONFIG_DIR/token"
+	echo "✓ Authentication complete." >&2 ;;
+"auth token")
+	if [ -n "$GH_CONFIG_DIR" ]; then cat "$GH_CONFIG_DIR/token"; else cat "$state/own-token" 2>/dev/null || { echo "no oauth token found" >&2; exit 1; }; fi ;;
+*) echo "fake gh: unsupported: $*" >&2; exit 1 ;;
+esac

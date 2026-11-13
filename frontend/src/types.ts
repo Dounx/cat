@@ -6,9 +6,13 @@ export interface Schema {
   enum?: string[]
   // what to show for each enum value, in the same order
   'x-enum-titles'?: string[]
+  'x-enum-notes'?: string[]
   // offer values to pick from: a conversation or senders seen in recent
   // events, or the options the plugin itself lists for this field
   'x-pick'?: 'conversation' | 'actor' | 'option'
+  // several values, one per line, chosen from a list that can be searched:
+  // the one given here, or with "x-pick": "option" the one the plugin lists
+  'x-multi'?: boolean
   default?: unknown
   required?: string[]
   'x-order'?: string[]

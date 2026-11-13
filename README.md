@@ -3,7 +3,7 @@
 把各处来的事件接到一起，按规则判断，再触发动作。
 
 ```
-QQ / Discord / Telegram / 企业微信 / RSS / 网页变动 / 接口变动 / 定时 / Webhook ──▶ 规则（条件、分支）──▶ 动作
+QQ / Discord / Telegram / GitHub / 企业微信 / RSS / 网页变动 / 接口变动 / 定时 / Webhook ──▶ 规则（条件、分支）──▶ 动作
                                                                                        ├─ 交给 AI（Claude Code / Codex / DeepSeek）
                                                                                        ├─ 原路回复、跨平台转发
                                                                                        └─ 发 HTTP 请求、跑脚本
@@ -216,6 +216,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 | HTTP 请求、运行脚本（内置） | 动作 |
 | Telegram | Bot，长轮询 |
 | Discord | Bot，Gateway |
+| GitHub | 仓库里的 Issue 和 PR 是会话；新开的 Issue、PR、评论和审查意见是消息，评论被编辑也有事件；回复就是发评论，还能新建 Issue。接入时在浏览器里登录 GitHub（借 GitHub CLI 完成，本机没有时 Cat 会下载；组织的仓库不用管理员另外批准），或自己填访问令牌。接入只是一个账号，关注哪些仓库在规则的触发节点里从列表选，也可以让规则在任何仓库被 @ 时都收到。定时查询，不需要公网地址；配上 Webhook 可以实时收到，两边不会重复 |
 | QQ（官方机器人） | QQ 开放平台的官方机器人，收发群聊和单聊消息。手机 QQ 扫码接入，WebSocket 收消息，不需要公网地址；只能在收到消息后回复，主动发消息 QQ 限制很严 |
 | QQ（OneBot） | OneBot 11。连接你自己运行的 OneBot 服务（正向 WebSocket） |
 | 企业微信 | 自建应用的消息回调 |
