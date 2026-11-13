@@ -29,6 +29,10 @@ export const useHub = defineStore('hub', {
       const p = s.plugins.find((p) => p.id === i.plugin)
       return !!p && (!!p.singleton || (!!p.default_instance && i.id === p.id))
     },
+    // The connections that are not working: the ones to look at first.
+    troubled(): Instance[] {
+      return this.instances.filter((i) => i.status === 'error' && !this.given(i))
+    },
     // The rules that name an instance: as what a trigger listens to, or as
     // what a condition or an action is put to.
     rulesUsing: (s) => (id: string) => s.rules.filter((r) => named(r).has(id)),

@@ -28,6 +28,11 @@ watch(
   () => route.path,
   () => nextTick(placeThumb),
 )
+// the dot beside 接入 makes its link wider
+watch(
+  () => hub.troubled.length > 0,
+  () => nextTick(placeThumb),
+)
 onBeforeUnmount(() => window.removeEventListener('resize', placeThumb))
 
 const nav = [
@@ -79,6 +84,12 @@ onMounted(async () => {
         />
         <RouterLink v-for="n in nav" :key="n.to" :to="n.to" active-class="on">
           <component :is="n.icon" :size="14" />{{ n.label }}
+          <!-- seen from every page: a connection has stopped working -->
+          <span
+            v-if="n.to === '/connections' && hub.troubled.length"
+            class="dot bad !h-1.5 !w-1.5"
+            :title="`${hub.troubled.length} 个接入出错了`"
+          />
         </RouterLink>
       </nav>
       <div

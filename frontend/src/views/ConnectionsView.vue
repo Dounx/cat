@@ -53,11 +53,12 @@ const addable = computed(() =>
     (p) => p.category,
   ),
 )
+// What is not working comes first: it is what the page is opened for then.
 const configured = computed(() =>
   byKind(
     hub.instances.filter((i) => !hub.given(i)),
     (i) => hub.pluginOf(i.plugin)?.category,
-  ),
+  ).sort((a, b) => Number(b.status === 'error') - Number(a.status === 'error')),
 )
 // What the market has that is not here yet, and what came from it: the
 // latter can be updated and removed.
