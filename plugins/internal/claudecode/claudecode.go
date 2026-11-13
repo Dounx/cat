@@ -83,9 +83,9 @@ func run(ctx context.Context, o Options, prompt, resume string) (Result, error) 
 			if detail == "" {
 				detail = harness.Tail(string(stdout), 400)
 			}
-			return Result{}, fmt.Errorf("Claude Code 运行失败：%v %s", runErr, detail)
+			return Result{}, fmt.Errorf("Claude Desktop 运行失败：%v %s", runErr, detail)
 		}
-		return Result{}, errors.New("无法解析 Claude Code 的输出：" + harness.Tail(string(stdout), 300))
+		return Result{}, errors.New("无法解析 Claude Desktop 的输出：" + harness.Tail(string(stdout), 300))
 	}
 	res := Result{Text: out.Result, SessionID: out.SessionID, CostUSD: out.TotalCost, Turns: out.NumTurns, DurationMS: out.DurationMS}
 	if out.IsError {
@@ -93,7 +93,7 @@ func run(ctx context.Context, o Options, prompt, resume string) (Result, error) 
 		if msg == "" {
 			msg = out.Subtype
 		}
-		return res, errors.New("Claude Code：" + msg)
+		return res, errors.New("Claude Desktop：" + msg)
 	}
 	return res, nil
 }

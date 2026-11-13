@@ -130,7 +130,7 @@ func TestClaudeCodeMode(t *testing.T) {
 	bin := faketest.Script(t, "claude", faketest.Claude)
 	calls := faketest.Log(t)
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{
-		"api_key": "sk-good", "mode": "claude-code", "bin": bin, "model": "deepseek-v4-pro",
+		"api_key": "sk-good", "mode": "claude-desktop", "bin": bin, "model": "deepseek-v4-pro",
 	}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)

@@ -4,7 +4,7 @@
 
 ```
 QQ / Discord / Telegram / GitHub / 企业微信 / RSS / 网页变动 / 接口变动 / 定时 / Webhook ──▶ 规则（条件、分支）──▶ 动作
-                                                                                       ├─ 交给 AI（Claude Code / Codex / DeepSeek）
+                                                                                       ├─ 交给 AI（Claude Desktop / ChatGPT Desktop / DeepSeek Harness）
                                                                                        ├─ 原路回复、跨平台转发
                                                                                        └─ 发 HTTP 请求、跑脚本
 ```
@@ -201,7 +201,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 
 用 Jev 判断时，结果还带着概率：是否判断给出 `probability`（「是」的概率，默认不低于 0.5 算是，可以调），选项判断给出 `confidence`。想让没把握的走另一条线，在后面接一个表达式条件，如 `steps.c1.confidence > 0.8`。
 
-**动作的参数**里用「插入变量」放进事件的内容和前面动作的结果，它们在输入框里显示成标签（如「内容」「Claude Code 的输出」）。存下来的是 `{{ }}` 写法：`{{ payload.text }}` 是事件内容，`{{ steps.s1.text }}` 是标识为 `s1` 的动作节点的输出，也可以直接这样写；节点标识在动作面板的「高级」里。发到哪个会话、允许谁来触发这类参数，可以点「从最近的里选」，不用自己找 ID。
+**动作的参数**里用「插入变量」放进事件的内容和前面动作的结果，它们在输入框里显示成标签（如「内容」「Claude Desktop 的输出」）。存下来的是 `{{ }}` 写法：`{{ payload.text }}` 是事件内容，`{{ steps.s1.text }}` 是标识为 `s1` 的动作节点的输出，也可以直接这样写；节点标识在动作面板的「高级」里。发到哪个会话、允许谁来触发这类参数，可以点「从最近的里选」，不用自己找 ID。
 
 **试运行**：工具栏的「试运行」拿一个收到过的事件，把规则现在的样子跑一遍，不用先保存。动作会真的执行。跑过之后，「插入变量」里能选到每个动作实际给出的值。
 
@@ -225,7 +225,7 @@ payload.mentioned == true and actor.id in ["123", "456"]
 | 网页变动 | 定时检查网页，文字内容有变化时发出 `page.changed` 事件，可用 CSS 选择器只盯一块 |
 | 接口变动 | 定时请求 HTTP 接口，返回的数据有变化时发出 `api.changed` 事件并列出变了的字段，可用字段路径只盯一处 |
 | 定时触发 | 到了设定的时间发出 `schedule.fired` 事件：每天几点、每隔多久，或 cron 表达式 |
-| Claude Code / Codex / DeepSeek | AI，按会话续接对话 |
+| Claude Desktop / ChatGPT Desktop / DeepSeek Harness | AI，按会话续接对话 |
 | 大模型对话 | 任意 OpenAI 兼容接口，纯对话；也能替条件节点做判断 |
 | Magpie | 经 [Magpie](https://usemagpie.ai) 网关对话和判断：自动找到本机的 Magpie，从它的模型和路由组里选一个，密钥和订阅都留在 Magpie 里 |
 | Jev | [TypeSafe](https://typesafe.ai) 的 System One 模型：不生成文字，只做判断，快而便宜。专门给条件节点用，还给出判断的概率 |

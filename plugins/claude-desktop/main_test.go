@@ -105,7 +105,7 @@ func TestErrorsAndLostSession(t *testing.T) {
 
 func TestMissingCLI(t *testing.T) {
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": "/nonexistent/claude"}})
-	if err := h.Start(); err == nil || !strings.Contains(err.Error(), "安装 Claude Code") {
+	if err := h.Start(); err == nil || !strings.Contains(err.Error(), "安装 Claude Desktop") {
 		t.Fatalf("err = %v", err)
 	}
 }

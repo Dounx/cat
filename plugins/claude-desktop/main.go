@@ -16,7 +16,7 @@ func main() { cat.Run(New()) }
 func options(h *cat.Host) (claudecode.Options, error) {
 	bin, err := harness.FindBin("claude", harness.Str(h.Config, "bin"))
 	if err != nil {
-		return claudecode.Options{}, errors.New(err.Error() + "。请先安装 Claude Code：https://claude.com/claude-code")
+		return claudecode.Options{}, errors.New(err.Error() + "。请先安装 Claude Desktop 用的 claude 命令：https://claude.com/claude-code")
 	}
 	cwd, err := harness.EnsureDir(harness.Str(h.Config, "cwd"), h.DataDir)
 	if err != nil {
@@ -50,7 +50,7 @@ func New() cat.Plugin {
 			if err != nil {
 				return errors.New("无法运行 claude 命令：" + err.Error())
 			}
-			h.Log("info", "Claude Code %s，工作目录 %s", v, opts.Cwd)
+			h.Log("info", "Claude Desktop %s，工作目录 %s", v, opts.Cwd)
 			return nil
 		},
 		Actions: map[string]cat.ActionFunc{
@@ -88,21 +88,21 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 		cfg[k] = v
 	}
 	for {
-		s.Progress("正在检测 Claude Code…", -1)
+		s.Progress("正在检测 Claude Desktop…", -1)
 		bin, err := harness.FindBin("claude", harness.Str(cfg, "bin"))
 		if err == nil {
 			vctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			v, verr := claudecode.Version(vctx, bin)
 			cancel()
 			if verr == nil {
-				s.Show(cat.Step{Kind: cat.StepInfo, Title: "已找到 Claude Code " + v})
+				s.Show(cat.Step{Kind: cat.StepInfo, Title: "已找到 Claude Desktop " + v})
 				break
 			}
 			err = verr
 		}
 		ok, aerr := s.Ask(ctx, cat.Step{
-			Kind: cat.StepConfirm, Title: "没有找到 Claude Code", URL: "https://claude.com/claude-code",
-			Description: err.Error() + "\n\n请先安装并在终端里运行一次 claude 完成登录，然后点确认重新检测。",
+			Kind: cat.StepConfirm, Title: "没有找到 Claude Desktop", URL: "https://claude.com/claude-code",
+			Description: err.Error() + "\n\n请先安装 Claude Desktop 用的 claude 命令，并在终端里运行一次 claude 完成登录，然后点确认重新检测。",
 		})
 		if aerr != nil {
 			return nil, aerr
@@ -125,7 +125,7 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 			"type": "object", "x-order": []string{"cwd", "permission_mode", "allowed_tools"},
 			"properties": map[string]any{
 				"cwd":             map[string]any{"type": "string", "title": "工作目录", "description": "留空使用实例自己的空目录。"},
-				"permission_mode": map[string]any{"type": "string", "title": "权限模式", "enum": []string{"dontAsk", "acceptEdits", "auto", "bypassPermissions"}, "x-enum-titles": []string{"只用下面允许的工具（推荐）", "可以改文件", "由 Claude Code 自动判断", "不做任何限制（危险）"}, "default": "dontAsk", "description": "「不做任何限制」只在你完全信任能触发它的人时使用。"},
+				"permission_mode": map[string]any{"type": "string", "title": "权限模式", "enum": []string{"dontAsk", "acceptEdits", "auto", "bypassPermissions"}, "x-enum-titles": []string{"只用下面允许的工具（推荐）", "可以改文件", "由 Claude Desktop 自动判断", "不做任何限制（危险）"}, "default": "dontAsk", "description": "「不做任何限制」只在你完全信任能触发它的人时使用。"},
 				"allowed_tools":   map[string]any{"type": "string", "title": "允许的工具", "description": "逗号分隔。"},
 			},
 		},

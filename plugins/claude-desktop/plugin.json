@@ -1,10 +1,10 @@
 {
   "id": "claude-desktop",
-  "name": "Claude Code",
+  "name": "Claude Desktop",
   "version": "0.1.0",
   "category": "processor",
   "setup": true,
-  "description": "把事件交给本机的 Claude Code 处理，可读写文件、运行命令（取决于权限设置），并按会话续接对话。",
+  "description": "把事件交给本机的 Claude Desktop 处理，可读写文件、运行命令（取决于权限设置），并按会话续接对话。",
   "config_schema": {
     "type": "object",
     "x-order": [
@@ -19,7 +19,7 @@
       "cwd": {
         "type": "string",
         "title": "工作目录",
-        "description": "Claude Code 在这个目录里工作。留空使用 Cat 为它准备的空目录。"
+        "description": "Claude Desktop 在这个目录里工作。留空使用 Cat 为它准备的空目录。"
       },
       "permission_mode": {
         "type": "string",
@@ -29,7 +29,7 @@
           "acceptEdits",
           "auto",
           "bypassPermissions"
-        ], "x-enum-titles": ["只用下面允许的工具（推荐）", "可以改文件", "由 Claude Code 自动判断", "不做任何限制（危险）"],
+        ], "x-enum-titles": ["只用下面允许的工具（推荐）", "可以改文件", "由 Claude Desktop 自动判断", "不做任何限制（危险）"],
         "default": "dontAsk",
         "description": "「不做任何限制」只在你完全信任能触发它的人时使用。"
       },

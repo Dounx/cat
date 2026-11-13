@@ -99,7 +99,7 @@ func TestParseRealStream(t *testing.T) {
 }
 
 // TestRealCodex talks to the installed Codex CLI. It spends real quota, so it
-// only runs when asked: CAT_REAL_CODEX=1 go test ./plugins/codex-desktop -run Real
+// only runs when asked: CAT_REAL_CODEX=1 go test ./plugins/chatgpt-desktop -run Real
 func TestRealCodex(t *testing.T) {
 	if os.Getenv("CAT_REAL_CODEX") == "" {
 		t.Skip("set CAT_REAL_CODEX=1 to run against the real Codex CLI")

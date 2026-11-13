@@ -251,10 +251,10 @@ func New() cat.Plugin {
 			case "api":
 				client = &openaichat.Client{Base: s.base, Key: s.key, Model: s.model}
 				history = openaichat.History{Dir: filepath.Join(h.DataDir, "sessions")}
-			case "claude-code":
+			case "claude-desktop":
 				bin, err := harness.FindBin("claude", harness.Str(h.Config, "bin"))
 				if err != nil {
-					return errors.New(err.Error() + "。这种方式需要先安装 Claude Code：https://claude.com/claude-code")
+					return errors.New(err.Error() + "。这种方式需要先安装 Claude Desktop 用的 claude 命令：https://claude.com/claude-code")
 				}
 				cwd, err := harness.EnsureDir(harness.Str(h.Config, "cwd"), h.DataDir)
 				if err != nil {
@@ -418,9 +418,9 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 			desc = "⚠ " + problem + "\n\n" + desc
 		}
 		props := map[string]any{
-			"mode":    map[string]any{"type": "string", "title": "方式", "enum": []string{"harness", "api", "claude-code"}, "x-enum-titles": []string{"本机的 DeepSeek Harness", "只调用 API（纯对话，不带工具）", "用 DeepSeek 模型驱动本机的 Claude Code"}},
+			"mode":    map[string]any{"type": "string", "title": "方式", "enum": []string{"harness", "api", "claude-desktop"}, "x-enum-titles": []string{"本机的 DeepSeek Harness", "只调用 API（纯对话，不带工具）", "用 DeepSeek 模型驱动本机的 Claude Desktop"}},
 			"api_key": map[string]any{"type": "string", "title": "API Key", "format": "password"},
-			"cwd":     map[string]any{"type": "string", "title": "工作目录（Harness / Claude Code 方式）", "description": "留空使用 Cat 为它准备的空目录。"},
+			"cwd":     map[string]any{"type": "string", "title": "工作目录（Harness / Claude Desktop 方式）", "description": "留空使用 Cat 为它准备的空目录。"},
 		}
 		if len(profiles) > 1 {
 			props["harness_profile"] = map[string]any{"type": "string", "title": "跟哪个档案用同一个模型（Harness 方式）", "enum": profiles, "x-enum-titles": profileTitles,
@@ -447,9 +447,9 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 				problem = dshErr.Error()
 				continue
 			}
-		case "claude-code":
+		case "claude-desktop":
 			if _, err := harness.FindBin("claude", harness.Str(cfg, "bin")); err != nil {
-				problem = err.Error() + "。请先安装 Claude Code，或改用其他方式"
+				problem = err.Error() + "。请先安装 Claude Desktop 用的 claude 命令，或改用其他方式"
 				continue
 			}
 		}

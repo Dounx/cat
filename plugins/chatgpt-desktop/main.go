@@ -1,4 +1,5 @@
-// Command cat-plugin-codex-desktop hands events to the Codex CLI running on this machine.
+// Command cat-plugin-chatgpt-desktop hands events to ChatGPT Desktop on this machine, through
+// the codex CLI it ships with.
 package main
 
 import (
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,6 +18,27 @@ import (
 )
 
 func main() { cat.Run(New()) }
+
+const installURL = "https://learn.chatgpt.com/docs/app"
+
+// findCodex locates the codex CLI: one on the PATH, or the copy inside the
+// ChatGPT desktop app.
+func findCodex(explicit string) (string, error) {
+	bin, err := harness.FindBin("codex", explicit)
+	if err == nil || explicit != "" {
+		return bin, err
+	}
+	home, _ := os.UserHomeDir()
+	for _, p := range []string{
+		"/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+		filepath.Join(home, "Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex"),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", errors.New("没有找到 ChatGPT Desktop（codex 命令）")
+}
 
 type options struct {
 	bin, cwd, sandbox, model, systemPrompt string
@@ -100,21 +123,21 @@ func run(ctx context.Context, o options, prompt, resume string) (result, error) 
 		res.Text = string(b)
 	}
 	if failure != "" {
-		return res, errors.New("Codex：" + failure)
+		return res, errors.New("ChatGPT Desktop：" + failure)
 	}
 	if runErr != nil {
-		return res, errors.New("Codex 运行失败：" + runErr.Error() + " " + harness.Tail(string(stderr), 400))
+		return res, errors.New("ChatGPT Desktop 运行失败：" + runErr.Error() + " " + harness.Tail(string(stderr), 400))
 	}
 	if strings.TrimSpace(res.Text) == "" {
-		return res, errors.New("Codex 没有返回内容")
+		return res, errors.New("ChatGPT Desktop 没有返回内容")
 	}
 	return res, nil
 }
 
 func load(h *cat.Host) (options, error) {
-	bin, err := harness.FindBin("codex", harness.Str(h.Config, "bin"))
+	bin, err := findCodex(harness.Str(h.Config, "bin"))
 	if err != nil {
-		return options{}, errors.New(err.Error() + "。请先安装 Codex CLI：https://developers.openai.com/codex/cli")
+		return options{}, errors.New(err.Error() + "。请先安装 ChatGPT Desktop：" + installURL)
 	}
 	cwd, err := harness.EnsureDir(harness.Str(h.Config, "cwd"), h.DataDir)
 	if err != nil {
@@ -198,8 +221,8 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 		cfg[k] = v
 	}
 	for {
-		s.Progress("正在检测 Codex CLI…", -1)
-		bin, err := harness.FindBin("codex", harness.Str(cfg, "bin"))
+		s.Progress("正在检测 ChatGPT Desktop…", -1)
+		bin, err := findCodex(harness.Str(cfg, "bin"))
 		if err == nil {
 			v, verr := version(ctx, bin)
 			if verr == nil {
@@ -209,8 +232,8 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 			err = verr
 		}
 		ok, aerr := s.Ask(ctx, cat.Step{
-			Kind: cat.StepConfirm, Title: "没有找到 Codex CLI", URL: "https://developers.openai.com/codex/cli",
-			Description: err.Error() + "\n\n请先安装并在终端里运行一次 codex 完成登录，然后点确认重新检测。",
+			Kind: cat.StepConfirm, Title: "没有找到 ChatGPT Desktop", URL: installURL,
+			Description: err.Error() + "\n\n请先安装 ChatGPT Desktop 并登录，然后点确认重新检测。",
 		})
 		if aerr != nil {
 			return nil, aerr

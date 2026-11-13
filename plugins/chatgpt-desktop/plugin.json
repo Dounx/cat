@@ -1,10 +1,10 @@
 {
-  "id": "codex-desktop",
-  "name": "Codex",
+  "id": "chatgpt-desktop",
+  "name": "ChatGPT Desktop",
   "version": "0.1.0",
   "category": "processor",
   "setup": true,
-  "description": "把事件交给本机的 Codex CLI 处理，并按会话续接对话。",
+  "description": "把事件交给本机的 ChatGPT Desktop 处理，并按会话续接对话。",
   "config_schema": {
     "type": "object",
     "x-order": [
@@ -18,7 +18,7 @@
       "cwd": {
         "type": "string",
         "title": "工作目录",
-        "description": "Codex 在这个目录里工作。留空使用 Cat 为它准备的空目录。"
+        "description": "ChatGPT Desktop 在这个目录里工作。留空使用 Cat 为它准备的空目录。"
       },
       "sandbox": {
         "type": "string",
@@ -44,7 +44,7 @@
       "bin": {
         "type": "string",
         "title": "codex 命令路径（可选）",
-        "description": "留空自动查找。"
+        "description": "留空自动查找：先找 codex 命令，再找 ChatGPT Desktop 自带的那一份。"
       }
     }
   },
@@ -92,7 +92,7 @@
   ],
   "protocol": 1,
   "command": [
-    "./cat-plugin-codex-desktop"
+    "./cat-plugin-chatgpt-desktop"
   ],
   "capabilities": [
     "action"
