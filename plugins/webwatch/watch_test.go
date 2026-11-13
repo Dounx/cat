@@ -402,7 +402,7 @@ func TestInterval(t *testing.T) {
 		if n := len(list.Items()); n != 1 {
 			t.Fatalf("%d pages", n)
 		}
-		return list.Items()[0].interval()
+		return list.Items()[0].Interval()
 	}
 	if got := ask(float64(30), float64(5)); got != 5*time.Minute {
 		t.Fatalf("quickest: %s", got)

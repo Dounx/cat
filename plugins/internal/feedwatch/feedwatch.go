@@ -23,6 +23,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dounx/cat/plugins/internal/poller"
+	"github.com/dounx/cat/plugins/internal/watchlist"
 	cat "github.com/dounx/cat/sdk/go"
 )
 
@@ -32,7 +34,6 @@ const (
 	maxBody         = 16 << 20
 	maxSeen         = 2000 // remembered item keys per feed
 	summaryRunes    = 500
-	parallel        = 4
 	userAgent       = "Cat-RSS/0.1 (+https://github.com/dounx/cat)"
 )
 
@@ -48,9 +49,11 @@ type sub struct {
 	every    atomic.Int64
 	existing atomic.Bool
 
-	mu      sync.Mutex // one fetch at a time: the poll loop and "check" can overlap
-	lastErr string
+	mu sync.Mutex // one fetch at a time: the poll loop and "check" can overlap
 }
+
+func (s *sub) Label() string           { return s.Spec }
+func (s *sub) Interval() time.Duration { return time.Duration(s.every.Load()) }
 
 // subState is what is remembered about a feed between polls and restarts.
 type subState struct {
@@ -63,16 +66,11 @@ type subState struct {
 // those the rules ask for in their trigger nodes.
 type watcher struct {
 	kind   Kind
-	hub    string         // RSSHub: where the routes are fetched from
-	base   map[string]any // the settings: what a rule leaves unsaid is as here
-	secret string         // RSSHub access key, kept out of logs
+	hub    string // RSSHub: where the routes are fetched from
+	secret string // RSSHub access key, kept out of logs
 	client *http.Client
-	wake   chan struct{} // what is watched has changed
-
-	mu    sync.Mutex
-	fixed []string            // from the settings
-	subs  []*sub              // everything watched, the settings' first
-	asked map[string][]string // spec → the triggers that ask for it
+	subs   watchlist.List[*sub]
+	poll   *poller.Poller[*sub]
 }
 
 func isURL(s string) bool {
@@ -154,30 +152,12 @@ func (k Kind) noun() string {
 	return "订阅源"
 }
 
-// how is the way a subscription is watched.
-type how struct {
-	every    time.Duration
-	existing bool
-}
-
-// join settles two ways the same subscription is wanted: it is checked as
-// often as the more impatient asks, and what is already there is announced
-// if either wants it.
-func (a how) join(b how) how {
-	return how{every: min(a.every, b.every), existing: a.existing || b.existing}
-}
-
-// settings reads how to watch from a trigger's parameters, falling back on
-// the instance's settings (base) for what it leaves unsaid.
-func settings(params, base map[string]any) how {
-	get := func(k string) any {
-		if v, ok := params[k]; ok {
-			return v
-		}
-		return base[k]
-	}
+// pace reads how to watch from a trigger's parameters or the instance's
+// settings: the time between checks, and whether to announce what is already
+// there the first time.
+func pace(params map[string]any) (every time.Duration, existing bool) {
 	minutes := float64(defaultInterval)
-	switch v := get("interval").(type) {
+	switch v := params["interval"].(type) {
 	case float64:
 		minutes = v
 	case string:
@@ -185,37 +165,49 @@ func settings(params, base map[string]any) how {
 			minutes = n
 		}
 	}
-	return how{every: time.Duration(max(minutes, 1) * float64(time.Minute)), existing: get("emit_existing") == true}
+	return time.Duration(max(minutes, 1) * float64(time.Minute)), params["emit_existing"] == true
 }
 
-// asked reads what the rules' triggers ask for: for each subscription, the
-// triggers that want it and how, and for each trigger that cannot be read,
-// why.
-func (k Kind) asked(base map[string]any, list []cat.Trigger) (specs []string, by map[string][]string, ways map[string]how, errs map[string]string) {
-	by, ways, errs = map[string][]string{}, map[string]how{}, map[string]string{}
-	for _, t := range list {
-		text, _ := t.Params[k.field()].(string)
-		found, err := parseSpecs(k, text)
-		if err != nil {
-			errs[t.ID] = err.Error()
-			continue
-		}
-		way := settings(t.Params, base)
-		for _, spec := range found {
-			if by[spec] == nil {
-				specs = append(specs, spec)
-				ways[spec] = way
-			}
-			ways[spec] = ways[spec].join(way)
-			by[spec] = append(by[spec], t.ID)
-		}
+// parse reads the subscriptions a rule's trigger (or the instance's settings)
+// lists, with what it says beside them about how to watch.
+func (w *watcher) parse(params map[string]any) ([]*sub, error) {
+	text, _ := params[w.kind.field()].(string)
+	specs, err := parseSpecs(w.kind, text)
+	if err != nil {
+		return nil, err
 	}
-	return specs, by, ways, errs
+	every, existing := pace(params)
+	subs := make([]*sub, len(specs))
+	for i, spec := range specs {
+		subs[i] = w.newSub(spec)
+		subs[i].every.Store(int64(every))
+		subs[i].existing.Store(existing)
+	}
+	return subs, nil
+}
+
+// list is the subscriptions of an instance, yet to be read.
+func (w *watcher) list() watchlist.List[*sub] {
+	return watchlist.List[*sub]{
+		Field: w.kind.field(), Parse: w.parse, Key: func(s *sub) string { return s.Spec },
+		// A subscription wanted in several ways is checked as often as the
+		// most impatient asks, and what is already there is announced if
+		// anyone wants it.
+		Merge: func(kept *sub, wanted []*sub) {
+			every, existing := wanted[0].Interval(), false
+			for _, s := range wanted {
+				every = min(every, s.Interval())
+				existing = existing || s.existing.Load()
+			}
+			kept.every.Store(int64(every))
+			kept.existing.Store(existing)
+		},
+	}
 }
 
 func newWatcher(kind Kind, cfg map[string]any) (*watcher, error) {
 	str := func(k string) string { s, _ := cfg[k].(string); return strings.TrimSpace(s) }
-	w := &watcher{kind: kind, base: cfg, client: &http.Client{Timeout: 30 * time.Second}, wake: make(chan struct{}, 1)}
+	w := &watcher{kind: kind, client: &http.Client{Timeout: 30 * time.Second}}
 	if kind == RSSHub {
 		w.secret = str("access_key")
 		w.hub = strings.TrimRight(str("base_url"), "/")
@@ -226,12 +218,9 @@ func newWatcher(kind Kind, cfg map[string]any) (*watcher, error) {
 			return nil, errors.New("RSSHub 实例地址无效，应以 http:// 或 https:// 开头")
 		}
 	}
-	var err error
-	if w.fixed, err = parseSpecs(kind, str(kind.field())); err != nil {
-		return nil, err
-	}
-	w.watch(nil)
-	return w, nil
+	w.subs = w.list()
+	w.poll = poller.New(w.subs.Items, w.check, poller.Words{Failed: "获取失败", AllFailed: "全部获取失败"})
+	return w, w.subs.Init(cfg)
 }
 
 // newSub works out what to fetch for a subscription.
@@ -247,56 +236,6 @@ func (w *watcher) newSub(spec string) *sub {
 		s.URL = u.String()
 	}
 	return s
-}
-
-// watch sets what the rules ask for beside the settings' own subscriptions.
-// It returns the subscriptions that are new, and what is wrong with the
-// triggers that could not be read.
-func (w *watcher) watch(list []cat.Trigger) (added []*sub, errs map[string]string) {
-	specs, by, ways, errs := w.kind.asked(w.base, list)
-	for _, spec := range w.fixed { // those in the settings go by the settings
-		way := settings(nil, w.base)
-		if other, ok := ways[spec]; ok {
-			way = way.join(other)
-		}
-		ways[spec] = way
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	have := map[string]*sub{}
-	for _, s := range w.subs {
-		have[s.Spec] = s
-	}
-	var subs []*sub
-	for _, spec := range append(slices.Clone(w.fixed), specs...) {
-		s := have[spec]
-		if s == nil {
-			s = w.newSub(spec)
-			added = append(added, s)
-		} else if slices.Contains(subs, s) {
-			continue // in the settings and asked for by a rule
-		}
-		have[spec] = s
-		s.every.Store(int64(ways[spec].every))
-		s.existing.Store(ways[spec].existing)
-		subs = append(subs, s)
-	}
-	w.subs, w.asked = subs, by
-	return added, errs
-}
-
-// watched lists the subscriptions as they are now.
-func (w *watcher) watched() []*sub {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return slices.Clone(w.subs)
-}
-
-// askedBy lists the triggers that ask for a subscription.
-func (w *watcher) askedBy(spec string) []string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return slices.Clone(w.asked[spec])
 }
 
 func stateKey(spec string) string { return "feed:" + hash(spec) }
@@ -533,121 +472,12 @@ func (w *watcher) event(s *sub, f *feed, it item) cat.Event {
 		Type:         "feed.item",
 		Conversation: &cat.Conversation{ID: s.Spec, Kind: "channel", Name: name},
 		Payload:      payload,
-		Triggers:     w.askedBy(s.Spec), // the rules that asked for this feed take it as theirs
+		Triggers:     w.subs.AskedBy(s.Spec), // the rules that asked for this feed take it as theirs
 	}
 	if it.Author != "" {
 		ev.Actor = &cat.Actor{ID: it.Author, Name: it.Author}
 	}
 	return ev
-}
-
-type result struct {
-	Checked, New int
-	Errors       []string // "spec：reason", in subscription order
-}
-
-// round checks the given feeds, a few at a time.
-func (w *watcher) round(ctx context.Context, h *cat.Host, subs []*sub) result {
-	errs := make([]string, len(subs))
-	counts := make([]int, len(subs))
-	sem := make(chan struct{}, parallel)
-	var wg sync.WaitGroup
-	for i, s := range subs {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer func() { <-sem; wg.Done() }()
-			n, err := w.check(ctx, h, s)
-			counts[i] = n
-			msg := ""
-			if err != nil && ctx.Err() == nil {
-				msg = err.Error()
-				errs[i] = s.Spec + "：" + msg
-			}
-			// Log transitions only, so a feed that stays down doesn't flood the log.
-			s.mu.Lock()
-			changed := msg != s.lastErr && ctx.Err() == nil
-			if changed {
-				s.lastErr = msg
-			}
-			s.mu.Unlock()
-			if changed && msg != "" {
-				h.Log("warn", "%s 获取失败：%s", s.Spec, msg)
-			} else if changed {
-				h.Log("info", "%s 已恢复", s.Spec)
-			}
-		}()
-	}
-	wg.Wait()
-	res := result{Checked: len(subs)}
-	for i := range subs {
-		res.New += counts[i]
-		if errs[i] != "" {
-			res.Errors = append(res.Errors, errs[i])
-		}
-	}
-	return res
-}
-
-// poll checks each subscription as often as it is asked to, starting with a
-// look at once: on start, and at one a rule has just asked for.
-func (w *watcher) poll(ctx context.Context, h *cat.Host) {
-	status := ""
-	last := map[*sub]time.Time{}
-	for {
-		subs := w.watched()
-		now := time.Now()
-		var due []*sub
-		seen := make(map[*sub]time.Time, len(subs))
-		for _, s := range subs {
-			if t, ok := last[s]; ok && now.Sub(t) < time.Duration(s.every.Load()) {
-				seen[s] = t
-				continue
-			}
-			seen[s] = now
-			due = append(due, s)
-		}
-		last = seen // subscriptions no longer watched are forgotten
-		if len(due) > 0 {
-			w.round(ctx, h, due)
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		// The instance is only "in error" when nothing works; a single broken
-		// feed is reported in the log and shouldn't hide the healthy ones.
-		next, failing := "", 0
-		for _, s := range subs {
-			s.mu.Lock()
-			if s.lastErr != "" {
-				if failing++; next == "" {
-					next = "全部获取失败，将继续重试：" + s.Spec + "：" + s.lastErr
-				}
-			}
-			s.mu.Unlock()
-		}
-		if failing < len(subs) {
-			next = ""
-		}
-		if next != status {
-			if next != "" {
-				h.SetStatus("error", next)
-			} else {
-				h.SetStatus("running", "")
-			}
-			status = next
-		}
-		wait := time.Hour
-		for _, s := range subs {
-			wait = min(wait, time.Until(last[s].Add(time.Duration(s.every.Load()))))
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.wake:
-		case <-time.After(max(wait, time.Second)):
-		}
-	}
 }
 
 // Kind is what a plugin's subscriptions are.
@@ -685,14 +515,14 @@ func New(kind Kind) cat.Plugin {
 			}
 			mu.Lock()
 			w = nw
-			nw.watch(h.Triggers()) // under mu: a change of triggers comes after, not in between
+			nw.subs.Ask(h.Triggers()) // under mu: a change of triggers comes after, not in between
 			mu.Unlock()
-			if n := len(nw.watched()); n > 0 {
+			if n := len(nw.subs.Items()); n > 0 {
 				h.Log("info", "订阅 %d 个%s", n, noun)
 			} else {
 				h.Log("info", "还没有要订阅的%s：在规则的触发节点里填写", noun)
 			}
-			go nw.poll(ctx, h)
+			go nw.poll.Run(ctx, h)
 			return nil
 		},
 		// The rules changed what they ask for. Before the instance has started
@@ -701,18 +531,17 @@ func New(kind Kind) cat.Plugin {
 			mu.Lock()
 			defer mu.Unlock()
 			if w == nil {
-				_, _, _, errs := kind.asked(h.Config, list)
-				return errs
+				// Whatever is wrong with the settings, Start says so.
+				probe := (&watcher{kind: kind}).list()
+				_ = probe.Init(h.Config)
+				return probe.Check(list)
 			}
-			before := len(w.watched())
-			added, errs := w.watch(list)
-			if n := len(w.watched()); len(added) > 0 || n != before {
+			before := len(w.subs.Items())
+			added, errs := w.subs.Ask(list)
+			if n := len(w.subs.Items()); len(added) > 0 || n != before {
 				h.Log("info", "规则要订阅的%s有变化：现在订阅 %d 个", noun, n)
 			}
-			select { // a new subscription is looked at now, and a new pace is kept from now
-			case w.wake <- struct{}{}:
-			default:
-			}
+			w.poll.Wake() // a new subscription is looked at now, and a new pace is kept from now
 			return errs
 		},
 		Actions: map[string]cat.ActionFunc{
@@ -721,7 +550,7 @@ func New(kind Kind) cat.Plugin {
 				if w == nil {
 					return nil, errors.New("实例尚未启动")
 				}
-				subs := w.watched()
+				subs := w.subs.Items()
 				if want, _ := p[param].(string); strings.TrimSpace(want) != "" {
 					want = strings.TrimSpace(want)
 					if kind == RSSHub {
@@ -733,15 +562,7 @@ func New(kind Kind) cat.Plugin {
 					}
 					subs = subs[i : i+1]
 				}
-				res := w.round(ctx, h, subs)
-				out := map[string]any{"checked": res.Checked, "new": res.New, "failed": len(res.Errors), "errors": res.Errors}
-				if res.Errors == nil {
-					out["errors"] = []string{}
-				}
-				if res.Checked > 0 && len(res.Errors) == res.Checked {
-					return out, errors.New(strings.Join(res.Errors, "；"))
-				}
-				return out, nil
+				return w.poll.Round(ctx, h, subs).Output("new")
 			},
 		},
 	}

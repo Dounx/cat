@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/andybalholm/cascadia"
+	"github.com/dounx/cat/plugins/internal/poller"
 	"github.com/dounx/cat/plugins/internal/watchlist"
 	cat "github.com/dounx/cat/sdk/go"
 )
@@ -28,7 +29,6 @@ const (
 	maxKeep         = 256 << 10 // bytes of page text remembered for the next diff
 	diffLinesShown  = 10        // per side, in payload.text
 	lineRunes       = 200
-	parallel        = 4
 	userAgent       = "Mozilla/5.0 (compatible; Cat-WebWatch/0.1; +https://github.com/dounx/cat)"
 )
 
@@ -46,8 +46,7 @@ type page struct {
 	key    string       // Spec and rules: the same page compared differently is watched apart
 	every  atomic.Int64 // time between checks: the shortest anyone asks for
 
-	mu      sync.Mutex // one fetch at a time: the poll loop and "check" can overlap
-	lastErr string
+	mu sync.Mutex // one fetch at a time: the poll loop and "check" can overlap
 }
 
 // pageState is what is remembered about a page between checks and restarts.
@@ -64,10 +63,11 @@ type watcher struct {
 	// the pages in the settings and those rules ask for in their triggers
 	pages  watchlist.List[*page]
 	client *http.Client
-	wake   chan struct{} // what is watched has changed
+	poll   *poller.Poller[*page]
 }
 
-func (p *page) interval() time.Duration { return time.Duration(p.every.Load()) }
+func (p *page) Label() string           { return p.Spec }
+func (p *page) Interval() time.Duration { return time.Duration(p.every.Load()) }
 
 // parsePages reads the pages a rule's trigger (or the instance's settings)
 // lists under "pages", with what it says beside them about how to watch.
@@ -145,9 +145,9 @@ func pageList() watchlist.List[*page] {
 		// Rules that want a page looked at at different paces share one watch
 		// of it, at the quickest of them.
 		Merge: func(kept *page, wanted []*page) {
-			every := wanted[0].interval()
+			every := wanted[0].Interval()
 			for _, p := range wanted[1:] {
-				every = min(every, p.interval())
+				every = min(every, p.Interval())
 			}
 			kept.every.Store(int64(every))
 		},
@@ -155,7 +155,8 @@ func pageList() watchlist.List[*page] {
 }
 
 func newWatcher(cfg map[string]any) (*watcher, error) {
-	w := &watcher{pages: pageList(), client: &http.Client{Timeout: 30 * time.Second}, wake: make(chan struct{}, 1)}
+	w := &watcher{pages: pageList(), client: &http.Client{Timeout: 30 * time.Second}}
+	w.poll = poller.New(w.pages.Items, w.check, poller.Words{Failed: "检查失败", AllFailed: "网页全部检查失败"})
 	return w, w.pages.Init(cfg)
 }
 
@@ -224,7 +225,8 @@ func (w *watcher) fetch(ctx context.Context, p *page, st *pageState) (*snapshot,
 }
 
 // check looks at one page and emits an event if it changed since last time.
-func (w *watcher) check(ctx context.Context, h *cat.Host, p *page) (changed bool, err error) {
+// It returns how many events it emitted.
+func (w *watcher) check(ctx context.Context, h *cat.Host, p *page) (changed int, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -242,10 +244,10 @@ func (w *watcher) check(ctx context.Context, h *cat.Host, p *page) (changed bool
 	}
 	snap, err := w.fetch(ctx, p, &st)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	if snap == nil { // not modified
-		return false, nil
+		return 0, nil
 	}
 	text := strings.Join(snap.Lines, "\n")
 	sum := hash(text)
@@ -257,9 +259,9 @@ func (w *watcher) check(ctx context.Context, h *cat.Host, p *page) (changed bool
 		// Without the old text (page too large to keep) there is no diff to show.
 		if _, err := h.Emit(w.event(p, snap, old, st.Text != "" || st.Hash == hash(""), sum)); err != nil {
 			// State is left alone, so the next check finds the change again.
-			return false, fmt.Errorf("发出事件失败：%v", err)
+			return 0, fmt.Errorf("发出事件失败：%v", err)
 		}
-		changed = true
+		changed = 1
 	}
 	st.Hash, st.Rules, st.Title, st.Text = sum, p.rules, snap.Title, ""
 	if len(text) <= maxKeep {
@@ -336,117 +338,6 @@ func section(prefix string, lines []string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-type result struct {
-	Checked, Changed int
-	Errors           []string // "spec：reason", in configuration order
-}
-
-// round checks the given pages, a few at a time.
-func (w *watcher) round(ctx context.Context, h *cat.Host, pages []*page) result {
-	errs := make([]string, len(pages))
-	changed := make([]bool, len(pages))
-	sem := make(chan struct{}, parallel)
-	var wg sync.WaitGroup
-	for i, p := range pages {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer func() { <-sem; wg.Done() }()
-			ok, err := w.check(ctx, h, p)
-			changed[i] = ok
-			msg := ""
-			if err != nil && ctx.Err() == nil {
-				msg = err.Error()
-				errs[i] = p.Spec + "：" + msg
-			}
-			// Log transitions only, so a page that stays down doesn't flood the log.
-			p.mu.Lock()
-			flipped := msg != p.lastErr && ctx.Err() == nil
-			if flipped {
-				p.lastErr = msg
-			}
-			p.mu.Unlock()
-			if flipped && msg != "" {
-				h.Log("warn", "%s 检查失败：%s", p.Spec, msg)
-			} else if flipped {
-				h.Log("info", "%s 已恢复", p.Spec)
-			}
-		}()
-	}
-	wg.Wait()
-	res := result{Checked: len(pages)}
-	for i := range pages {
-		if changed[i] {
-			res.Changed++
-		}
-		if errs[i] != "" {
-			res.Errors = append(res.Errors, errs[i])
-		}
-	}
-	return res
-}
-
-// poll looks at each page as often as it is asked to, starting with a look
-// at once: on start, and at a page a rule has just asked for.
-func (w *watcher) poll(ctx context.Context, h *cat.Host) {
-	status := ""
-	last := map[*page]time.Time{}
-	for {
-		pages := w.pages.Items()
-		now := time.Now()
-		var due []*page
-		seen := make(map[*page]time.Time, len(pages))
-		for _, p := range pages {
-			if t, ok := last[p]; ok && now.Sub(t) < p.interval() {
-				seen[p] = t
-				continue
-			}
-			seen[p] = now
-			due = append(due, p)
-		}
-		last = seen // pages no longer watched are forgotten
-		if len(due) > 0 {
-			w.round(ctx, h, due)
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		// The instance is only "in error" when nothing works; a single broken
-		// page is reported in the log and shouldn't hide the healthy ones.
-		next, failing := "", 0
-		for _, p := range pages {
-			p.mu.Lock()
-			if p.lastErr != "" {
-				if failing++; next == "" {
-					next = "网页全部检查失败，将继续重试：" + p.Spec + "：" + p.lastErr
-				}
-			}
-			p.mu.Unlock()
-		}
-		if failing < len(pages) {
-			next = ""
-		}
-		if next != status {
-			if next != "" {
-				h.SetStatus("error", next)
-			} else {
-				h.SetStatus("running", "")
-			}
-			status = next
-		}
-		wait := time.Hour
-		for _, p := range pages {
-			wait = min(wait, time.Until(last[p].Add(p.interval())))
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.wake:
-		case <-time.After(max(wait, time.Second)):
-		}
-	}
-}
-
 // New builds the plugin. What it watches, and how, is said in the trigger
 // nodes of rules; an instance with settings of its own may list pages there
 // too, under the same names.
@@ -470,7 +361,7 @@ func New() cat.Plugin {
 			} else {
 				h.Log("info", "还没有要监控的网页：在规则的触发节点里选「网页变动」后填写")
 			}
-			go nw.poll(ctx, h)
+			go nw.poll.Run(ctx, h)
 			return nil
 		},
 		// The rules changed what they ask for. Before the instance has started
@@ -490,10 +381,7 @@ func New() cat.Plugin {
 			if n := len(w.pages.Items()); len(added) > 0 || n != before {
 				h.Log("info", "规则要监控的网页有变化：现在监控 %d 个", n)
 			}
-			select { // a new page is looked at now, and a new pace is kept from now
-			case w.wake <- struct{}{}:
-			default:
-			}
+			w.poll.Wake() // a new page is looked at now, and a new pace is kept from now
 			return errs
 		},
 		Actions: map[string]cat.ActionFunc{
@@ -518,15 +406,7 @@ func New() cat.Plugin {
 						return nil, fmt.Errorf("没有监控这个网页：%s", want)
 					}
 				}
-				res := w.round(ctx, h, pages)
-				out := map[string]any{"checked": res.Checked, "changed": res.Changed, "failed": len(res.Errors), "errors": res.Errors}
-				if res.Errors == nil {
-					out["errors"] = []string{}
-				}
-				if res.Checked > 0 && len(res.Errors) == res.Checked {
-					return out, errors.New(strings.Join(res.Errors, "；"))
-				}
-				return out, nil
+				return w.poll.Round(ctx, h, pages).Output("changed")
 			},
 		},
 	}

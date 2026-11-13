@@ -417,17 +417,29 @@ func TestSettingsFromRules(t *testing.T) {
 	}
 
 	// The pace is the quickest anyone asks for; unsaid, it is the settings'.
-	base := map[string]any{"interval": float64(20)}
-	_, _, ways, _ := RSS.asked(base, []cat.Trigger{
-		{ID: "t1", Params: map[string]any{"feeds": a, "interval": float64(30)}},
-		{ID: "t2", Params: map[string]any{"feeds": a + "\n" + b, "interval": float64(5)}},
-		{ID: "t3", Params: map[string]any{"feeds": b}},
-	})
-	if ways[a].every != 5*time.Minute || ways[b].every != 5*time.Minute || ways[a].existing {
-		t.Fatalf("ways: %+v", ways)
+	ask := func(triggers ...cat.Trigger) map[string]*sub {
+		list := (&watcher{kind: RSS}).list()
+		if err := list.Init(map[string]any{"interval": float64(20)}); err != nil {
+			t.Fatal(err)
+		}
+		if _, errs := list.Ask(triggers); len(errs) != 0 {
+			t.Fatal(errs)
+		}
+		subs := map[string]*sub{}
+		for _, s := range list.Items() {
+			subs[s.Spec] = s
+		}
+		return subs
 	}
-	_, _, ways, _ = RSS.asked(base, []cat.Trigger{{ID: "t3", Params: map[string]any{"feeds": b}}})
-	if ways[b].every != 20*time.Minute {
-		t.Fatalf("unsaid: %+v", ways)
+	subs := ask(
+		cat.Trigger{ID: "t1", Params: map[string]any{"feeds": a, "interval": float64(30)}},
+		cat.Trigger{ID: "t2", Params: map[string]any{"feeds": a + "\n" + b, "interval": float64(5)}},
+		cat.Trigger{ID: "t3", Params: map[string]any{"feeds": b}},
+	)
+	if subs[a].Interval() != 5*time.Minute || subs[b].Interval() != 5*time.Minute || subs[a].existing.Load() {
+		t.Fatalf("paces: %s %s", subs[a].Interval(), subs[b].Interval())
+	}
+	if subs = ask(cat.Trigger{ID: "t3", Params: map[string]any{"feeds": b}}); subs[b].Interval() != 20*time.Minute {
+		t.Fatalf("unsaid: %s", subs[b].Interval())
 	}
 }

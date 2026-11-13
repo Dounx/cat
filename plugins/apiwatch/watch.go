@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dounx/cat/plugins/internal/poller"
 	"github.com/dounx/cat/plugins/internal/watchlist"
 	cat "github.com/dounx/cat/sdk/go"
 )
@@ -27,7 +28,6 @@ const (
 	maxKeep         = 256 << 10 // bytes of the watched value remembered for the next diff
 	changesShown    = 10        // in payload.text
 	lineRunes       = 200
-	parallel        = 4
 	userAgent       = "Cat-APIWatch/0.1 (+https://github.com/dounx/cat)"
 )
 
@@ -51,8 +51,7 @@ type api struct {
 	key     string       // Spec and the above: the same API asked differently is watched apart
 	every   atomic.Int64 // time between checks: the shortest anyone asks for
 
-	mu      sync.Mutex // one request at a time: the poll loop and "check" can overlap
-	lastErr string
+	mu sync.Mutex // one request at a time: the poll loop and "check" can overlap
 }
 
 // apiState is what is remembered about an API between checks and restarts.
@@ -68,10 +67,11 @@ type watcher struct {
 	// the APIs in the settings and those rules ask for in their triggers
 	apis   watchlist.List[*api]
 	client *http.Client
-	wake   chan struct{} // what is watched has changed
+	poll   *poller.Poller[*api]
 }
 
-func (a *api) interval() time.Duration { return time.Duration(a.every.Load()) }
+func (a *api) Label() string           { return a.Name }
+func (a *api) Interval() time.Duration { return time.Duration(a.every.Load()) }
 
 // parseAPIs reads the endpoints a rule's trigger (or the instance's settings)
 // lists under "apis", with what it says beside them about how to ask and
@@ -181,9 +181,9 @@ func apiList() watchlist.List[*api] {
 		// Rules that want an API asked at different paces share one watch of
 		// it, at the quickest of them.
 		Merge: func(kept *api, wanted []*api) {
-			every := wanted[0].interval()
+			every := wanted[0].Interval()
 			for _, a := range wanted[1:] {
-				every = min(every, a.interval())
+				every = min(every, a.Interval())
 			}
 			kept.every.Store(int64(every))
 		},
@@ -191,7 +191,8 @@ func apiList() watchlist.List[*api] {
 }
 
 func newWatcher(cfg map[string]any) (*watcher, error) {
-	w := &watcher{apis: apiList(), client: &http.Client{Timeout: 30 * time.Second}, wake: make(chan struct{}, 1)}
+	w := &watcher{apis: apiList(), client: &http.Client{Timeout: 30 * time.Second}}
+	w.poll = poller.New(w.apis.Items, w.check, poller.Words{Failed: "检查失败", AllFailed: "接口全部检查失败"})
 	return w, w.apis.Init(cfg)
 }
 
@@ -282,8 +283,9 @@ func (w *watcher) fetch(ctx context.Context, a *api, st *apiState) (value any, o
 	return value, true, nil
 }
 
-// check calls one API and emits an event if its value changed since last time.
-func (w *watcher) check(ctx context.Context, h *cat.Host, a *api) (changed bool, err error) {
+// check calls one API and emits an event if its value changed since last
+// time. It returns how many events it emitted.
+func (w *watcher) check(ctx context.Context, h *cat.Host, a *api) (changed int, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -301,10 +303,10 @@ func (w *watcher) check(ctx context.Context, h *cat.Host, a *api) (changed bool,
 	}
 	value, ok, err := w.fetch(ctx, a, &st)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	if !ok { // not modified
-		return false, nil
+		return 0, nil
 	}
 	text := canonical(value)
 	sum := hash(text)
@@ -316,9 +318,9 @@ func (w *watcher) check(ctx context.Context, h *cat.Host, a *api) (changed bool,
 		}
 		if _, err := h.Emit(w.event(a, value, old, haveOld, sum)); err != nil {
 			// State is left alone, so the next check finds the change again.
-			return false, fmt.Errorf("发出事件失败：%v", err)
+			return 0, fmt.Errorf("发出事件失败：%v", err)
 		}
-		changed = true
+		changed = 1
 	}
 	st.Hash, st.Rules, st.Value = sum, a.rules, ""
 	if len(text) <= maxKeep {
@@ -394,117 +396,6 @@ func describe(c change) string {
 	return line
 }
 
-type result struct {
-	Checked, Changed int
-	Errors           []string // "name：reason", in configuration order
-}
-
-// round checks the given APIs, a few at a time.
-func (w *watcher) round(ctx context.Context, h *cat.Host, apis []*api) result {
-	errs := make([]string, len(apis))
-	changed := make([]bool, len(apis))
-	sem := make(chan struct{}, parallel)
-	var wg sync.WaitGroup
-	for i, a := range apis {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func() {
-			defer func() { <-sem; wg.Done() }()
-			ok, err := w.check(ctx, h, a)
-			changed[i] = ok
-			msg := ""
-			if err != nil && ctx.Err() == nil {
-				msg = err.Error()
-				errs[i] = a.Name + "：" + msg
-			}
-			// Log transitions only, so an API that stays down doesn't flood the log.
-			a.mu.Lock()
-			flipped := msg != a.lastErr && ctx.Err() == nil
-			if flipped {
-				a.lastErr = msg
-			}
-			a.mu.Unlock()
-			if flipped && msg != "" {
-				h.Log("warn", "%s 检查失败：%s", a.Name, msg)
-			} else if flipped {
-				h.Log("info", "%s 已恢复", a.Name)
-			}
-		}()
-	}
-	wg.Wait()
-	res := result{Checked: len(apis)}
-	for i := range apis {
-		if changed[i] {
-			res.Changed++
-		}
-		if errs[i] != "" {
-			res.Errors = append(res.Errors, errs[i])
-		}
-	}
-	return res
-}
-
-// poll asks each API as often as it is asked to, starting with a call at
-// once: on start, and to an API a rule has just asked for.
-func (w *watcher) poll(ctx context.Context, h *cat.Host) {
-	status := ""
-	last := map[*api]time.Time{}
-	for {
-		apis := w.apis.Items()
-		now := time.Now()
-		var due []*api
-		seen := make(map[*api]time.Time, len(apis))
-		for _, a := range apis {
-			if t, ok := last[a]; ok && now.Sub(t) < a.interval() {
-				seen[a] = t
-				continue
-			}
-			seen[a] = now
-			due = append(due, a)
-		}
-		last = seen // APIs no longer watched are forgotten
-		if len(due) > 0 {
-			w.round(ctx, h, due)
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		// The instance is only "in error" when nothing works; a single broken
-		// API is reported in the log and shouldn't hide the healthy ones.
-		next, failing := "", 0
-		for _, a := range apis {
-			a.mu.Lock()
-			if a.lastErr != "" {
-				if failing++; next == "" {
-					next = "接口全部检查失败，将继续重试：" + a.Name + "：" + a.lastErr
-				}
-			}
-			a.mu.Unlock()
-		}
-		if failing < len(apis) {
-			next = ""
-		}
-		if next != status {
-			if next != "" {
-				h.SetStatus("error", next)
-			} else {
-				h.SetStatus("running", "")
-			}
-			status = next
-		}
-		wait := time.Hour
-		for _, a := range apis {
-			wait = min(wait, time.Until(last[a].Add(a.interval())))
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.wake:
-		case <-time.After(max(wait, time.Second)):
-		}
-	}
-}
-
 // New builds the plugin. What it watches, and how, is said in the trigger
 // nodes of rules; an instance with settings of its own may list APIs there
 // too, under the same names.
@@ -528,7 +419,7 @@ func New() cat.Plugin {
 			} else {
 				h.Log("info", "还没有要监控的接口：在规则的触发节点里选「接口变动」后填写")
 			}
-			go nw.poll(ctx, h)
+			go nw.poll.Run(ctx, h)
 			return nil
 		},
 		// The rules changed what they ask for. Before the instance has started
@@ -548,10 +439,7 @@ func New() cat.Plugin {
 			if n := len(w.apis.Items()); len(added) > 0 || n != before {
 				h.Log("info", "规则要监控的接口有变化：现在监控 %d 个", n)
 			}
-			select { // a new API is asked now, and a new pace is kept from now
-			case w.wake <- struct{}{}:
-			default:
-			}
+			w.poll.Wake() // a new API is asked now, and a new pace is kept from now
 			return errs
 		},
 		Actions: map[string]cat.ActionFunc{
@@ -576,15 +464,7 @@ func New() cat.Plugin {
 						return nil, fmt.Errorf("没有监控这个接口：%s", want)
 					}
 				}
-				res := w.round(ctx, h, apis)
-				out := map[string]any{"checked": res.Checked, "changed": res.Changed, "failed": len(res.Errors), "errors": res.Errors}
-				if res.Errors == nil {
-					out["errors"] = []string{}
-				}
-				if res.Checked > 0 && len(res.Errors) == res.Checked {
-					return out, errors.New(strings.Join(res.Errors, "；"))
-				}
-				return out, nil
+				return w.poll.Round(ctx, h, apis).Output("changed")
 			},
 		},
 	}
