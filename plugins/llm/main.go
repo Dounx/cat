@@ -19,7 +19,6 @@ func New() cat.Plugin {
 	var (
 		client  *openaichat.Client
 		history openaichat.History
-		guard   harness.Guard
 		locks   harness.Locks
 		system  string
 	)
@@ -35,15 +34,11 @@ func New() cat.Plugin {
 			}
 			max, _ := h.Config["max_history"].(float64)
 			history = openaichat.History{Dir: filepath.Join(h.DataDir, "sessions"), Max: int(max)}
-			guard = harness.NewGuard(h.Config, true)
 			system = harness.Str(h.Config, "system_prompt")
 			return nil
 		},
 		Actions: map[string]cat.ActionFunc{
 			"chat": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
-				if err := guard.Check(actx); err != nil {
-					return nil, err
-				}
 				prompt := harness.Str(p, "prompt")
 				if prompt == "" {
 					return nil, errors.New("提示词为空")
@@ -63,9 +58,6 @@ func New() cat.Plugin {
 			// One question, one answer out of a fixed set, no memory. A rule's
 			// condition node asks this and takes the way out named by "choice".
 			"judge": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
-				if err := guard.Check(actx); err != nil {
-					return nil, err
-				}
 				prompt := harness.Str(p, "prompt")
 				if prompt == "" {
 					return nil, errors.New("提示词为空")

@@ -141,7 +141,6 @@ func version(ctx context.Context, bin string) (string, error) {
 func New() cat.Plugin {
 	var (
 		opts  options
-		guard harness.Guard
 		locks harness.Locks
 	)
 	return cat.Plugin{
@@ -149,7 +148,6 @@ func New() cat.Plugin {
 			if opts, err = load(h); err != nil {
 				return err
 			}
-			guard = harness.NewGuard(h.Config, false)
 			v, err := version(ctx, opts.bin)
 			if err != nil {
 				return errors.New("无法运行 codex 命令：" + err.Error())
@@ -159,9 +157,6 @@ func New() cat.Plugin {
 		},
 		Actions: map[string]cat.ActionFunc{
 			"chat": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
-				if err := guard.Check(actx); err != nil {
-					return nil, err
-				}
 				prompt := harness.Str(p, "prompt")
 				if prompt == "" {
 					return nil, errors.New("提示词为空")
@@ -225,23 +220,20 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 		}
 	}
 	values := map[string]any{"sandbox": "read-only"}
-	for _, k := range []string{"cwd", "sandbox", "allowed_actors", "allow_anyone"} {
+	for _, k := range []string{"cwd", "sandbox"} {
 		if v, ok := cfg[k]; ok {
 			values[k] = v
 		}
 	}
-	guardSchema := harness.GuardSchema()
 	out, err := s.Ask(ctx, cat.Step{
-		Kind: cat.StepForm, Title: "它能做什么、谁能用它",
-		Description: "聊天消息会原样成为给 AI 的指令，所以默认使用只读沙箱，并且只接受白名单里的发送者。",
+		Kind: cat.StepForm, Title: "它能做什么",
+		Description: "聊天消息会原样成为给 AI 的指令，所以默认使用只读沙箱。",
 		Values:      values,
 		Schema: map[string]any{
-			"type": "object", "x-order": []string{"cwd", "sandbox", "allowed_actors", "allow_anyone"},
+			"type": "object", "x-order": []string{"cwd", "sandbox"},
 			"properties": map[string]any{
-				"cwd":            map[string]any{"type": "string", "title": "工作目录", "description": "留空使用实例自己的空目录。"},
-				"sandbox":        map[string]any{"type": "string", "title": "沙箱", "enum": []string{"read-only", "workspace-write", "danger-full-access"}, "x-enum-titles": []string{"只读（推荐）", "可以改工作目录里的文件", "不做任何限制（危险）"}, "default": "read-only"},
-				"allowed_actors": guardSchema["allowed_actors"],
-				"allow_anyone":   guardSchema["allow_anyone"],
+				"cwd":     map[string]any{"type": "string", "title": "工作目录", "description": "留空使用实例自己的空目录。"},
+				"sandbox": map[string]any{"type": "string", "title": "沙箱", "enum": []string{"read-only", "workspace-write", "danger-full-access"}, "x-enum-titles": []string{"只读（推荐）", "可以改工作目录里的文件", "不做任何限制（危险）"}, "default": "read-only"},
 			},
 		},
 	})

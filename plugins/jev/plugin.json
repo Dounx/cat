@@ -12,8 +12,7 @@
     "x-order": [
       "api_key",
       "model",
-      "base_url",
-      "allowed_actors"
+      "base_url"
     ],
     "properties": {
       "api_key": {
@@ -32,12 +31,6 @@
         "title": "接口地址",
         "default": "https://api.typesafe.ai",
         "description": "到 /v1/systemone 之前的部分，一般不用改。"
-      },
-      "allowed_actors": {
-        "type": "string",
-        "title": "允许谁来触发",
-        "x-pick": "actor",
-        "description": "只有这些人发的聊天消息能触发。留空则不限制。从最近发过消息的人里选，或直接写发送者 ID，逗号分隔。"
       }
     }
   },

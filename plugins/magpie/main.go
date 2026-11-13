@@ -144,7 +144,6 @@ func New() cat.Plugin {
 		gw      gateway
 		model   string
 		history openaichat.History
-		guard   harness.Guard
 		locks   harness.Locks
 		system  string
 	)
@@ -188,15 +187,11 @@ func New() cat.Plugin {
 			}
 			max, _ := h.Config["max_history"].(float64)
 			history = openaichat.History{Dir: filepath.Join(h.DataDir, "sessions"), Max: int(max)}
-			guard = harness.NewGuard(h.Config, true)
 			system = harness.Str(h.Config, "system_prompt")
 			return nil
 		},
 		Actions: map[string]cat.ActionFunc{
 			"chat": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
-				if err := guard.Check(actx); err != nil {
-					return nil, err
-				}
 				prompt := harness.Str(p, "prompt")
 				if prompt == "" {
 					return nil, errors.New("提示词为空")
@@ -217,9 +212,6 @@ func New() cat.Plugin {
 			// One question, one answer out of a fixed set, no memory. A rule's
 			// condition node asks this and takes the way out named by "choice".
 			"judge": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
-				if err := guard.Check(actx); err != nil {
-					return nil, err
-				}
 				prompt := harness.Str(p, "prompt")
 				if prompt == "" {
 					return nil, errors.New("提示词为空")
@@ -308,13 +300,12 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 	desc += fmt.Sprintf("，有 %d 个模型。排在前面的是路由组：几个模型当一个用，由 Magpie 决定这次问谁。", len(models))
 	out, err := s.Ask(ctx, cat.Step{
 		Kind: cat.StepForm, Title: "选一个模型", Description: desc,
-		Values: map[string]any{"model": picked, "system_prompt": cfg["system_prompt"], "allowed_actors": cfg["allowed_actors"]},
+		Values: map[string]any{"model": picked, "system_prompt": cfg["system_prompt"]},
 		Schema: map[string]any{
-			"type": "object", "required": []string{"model"}, "x-order": []string{"model", "system_prompt", "allowed_actors"},
+			"type": "object", "required": []string{"model"}, "x-order": []string{"model", "system_prompt"},
 			"properties": map[string]any{
-				"model":          map[string]any{"type": "string", "title": "模型", "enum": ids, "x-enum-titles": titles},
-				"system_prompt":  map[string]any{"type": "string", "title": "系统提示（可选）", "format": "textarea"},
-				"allowed_actors": harness.GuardSchema()["allowed_actors"],
+				"model":         map[string]any{"type": "string", "title": "模型", "enum": ids, "x-enum-titles": titles},
+				"system_prompt": map[string]any{"type": "string", "title": "系统提示（可选）", "format": "textarea"},
 			},
 		},
 	})

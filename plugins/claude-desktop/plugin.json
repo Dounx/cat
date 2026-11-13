@@ -13,8 +13,6 @@
       "allowed_tools",
       "model",
       "system_prompt",
-      "allowed_actors",
-      "allow_anyone",
       "bin"
     ],
     "properties": {
@@ -49,16 +47,6 @@
         "type": "string",
         "title": "附加系统提示（可选）",
         "format": "textarea"
-      },
-      "allowed_actors": {
-        "type": "string",
-        "title": "允许谁来触发",
-        "x-pick": "actor",
-        "description": "只有这些人发的聊天消息能触发。从最近发过消息的人里选，或直接写发送者 ID，逗号分隔。"
-      },
-      "allow_anyone": {
-        "type": "boolean",
-        "title": "允许任何人触发（有风险：任何能给机器人发消息的人都能驱动它）"
       },
       "bin": {
         "type": "string",

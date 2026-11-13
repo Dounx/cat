@@ -41,12 +41,9 @@ func msg(actor, conv string) *cat.Event {
 func TestCodexChat(t *testing.T) {
 	bin := faketest.Script(t, "codex", fakeCodex)
 	calls := faketest.Log(t)
-	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin, "allowed_actors": "7", "system_prompt": "Answer in Chinese."}})
+	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin, "system_prompt": "Answer in Chinese."}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := h.Invoke("chat", map[string]any{"prompt": "hi"}, msg("8", "c")); err == nil {
-		t.Fatal("unlisted sender should be refused")
 	}
 	out, err := h.Invoke("chat", map[string]any{"prompt": "first"}, msg("7", "c"))
 	if err != nil || out["text"] != "answer 1" || out["session_id"] != "thread-1" {
@@ -74,7 +71,7 @@ func TestCodexChat(t *testing.T) {
 func TestCodexFailures(t *testing.T) {
 	bin := faketest.Script(t, "codex", fakeCodex)
 	faketest.Log(t)
-	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin, "allow_anyone": true}, State: map[string]string{"session:k": "gone"}})
+	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin}, State: map[string]string{"session:k": "gone"}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +104,7 @@ func TestRealCodex(t *testing.T) {
 	if os.Getenv("CAT_REAL_CODEX") == "" {
 		t.Skip("set CAT_REAL_CODEX=1 to run against the real Codex CLI")
 	}
-	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"allow_anyone": true}})
+	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
 	}

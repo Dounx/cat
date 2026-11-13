@@ -1,6 +1,6 @@
 // Package harness holds what the conversation plugins (harnesses and LLMs) share:
-// the chat contract, session bookkeeping, the sender allow-list and a helper
-// for running harness CLIs.
+// the chat contract, session bookkeeping and a helper for running harness
+// CLIs.
 package harness
 
 import (
@@ -79,50 +79,6 @@ func SessionKey(p map[string]any, actx cat.ActionContext) string {
 		return ev.Source + ":" + ev.Conversation.ID
 	}
 	return ""
-}
-
-// Guard restricts who may trigger a harness. Chat platforms let anyone who can
-// message the bot inject a prompt, so harnesses that can act on this machine
-// refuse senders that are not listed, unless explicitly opened to everyone.
-type Guard struct {
-	AllowAnyone bool
-	Allowed     map[string]bool
-}
-
-// NewGuard reads allow_anyone / allowed_actors from config. openByDefault
-// applies when neither is set (true for tool-less LLM chat).
-func NewGuard(cfg map[string]any, openByDefault bool) Guard {
-	g := Guard{Allowed: map[string]bool{}}
-	for _, id := range List(cfg, "allowed_actors") {
-		g.Allowed[id] = true
-	}
-	if v, ok := cfg["allow_anyone"].(bool); ok {
-		g.AllowAnyone = v
-	} else {
-		g.AllowAnyone = openByDefault && len(g.Allowed) == 0
-	}
-	return g
-}
-
-// Check rejects events from senders outside the allow-list. Events without a
-// sender (webhooks, schedules) are not chat messages and pass.
-func (g Guard) Check(actx cat.ActionContext) error {
-	if g.AllowAnyone || actx.Event == nil || actx.Event.Actor == nil {
-		return nil
-	}
-	id := actx.Event.Actor.ID
-	if g.Allowed[id] {
-		return nil
-	}
-	return fmt.Errorf("发送者 %s（%s）不在白名单中。要允许，请在「接入」里把这个人加进「允许谁来触发」", id, actx.Event.Actor.Name)
-}
-
-// GuardSchema is the config_schema fragment for the allow-list.
-func GuardSchema() map[string]any {
-	return map[string]any{
-		"allowed_actors": map[string]any{"type": "string", "title": "允许谁来触发", "x-pick": "actor", "description": "只有这些人发的聊天消息能触发。从最近发过消息的人里选，或直接写发送者 ID，逗号分隔。"},
-		"allow_anyone":   map[string]any{"type": "boolean", "title": "允许任何人触发（有风险：任何能给机器人发消息的人都能驱动它）"},
-	}
 }
 
 // Locks serialises work per key, so two messages in one conversation do not

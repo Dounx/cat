@@ -17,8 +17,6 @@
       "harness_permission",
       "permission_mode",
       "allowed_tools",
-      "allowed_actors",
-      "allow_anyone",
       "api_base",
       "bin"
     ],
@@ -71,16 +69,6 @@
         "type": "string",
         "title": "允许的工具（仅 Claude Code 方式）",
         "default": "Read,Glob,Grep"
-      },
-      "allowed_actors": {
-        "type": "string",
-        "title": "允许谁来触发",
-        "x-pick": "actor",
-        "description": "只有这些人发的聊天消息能触发。从最近发过消息的人里选，或直接写发送者 ID，逗号分隔。"
-      },
-      "allow_anyone": {
-        "type": "boolean",
-        "title": "允许任何人触发（有风险：任何能给机器人发消息的人都能驱动它）"
       },
       "api_base": {
         "type": "string",

@@ -152,8 +152,7 @@ func number(p map[string]any, key string, or float64) (float64, error) {
 
 func New() cat.Plugin {
 	var (
-		c     *client
-		guard harness.Guard
+		c *client
 	)
 	return cat.Plugin{
 		Start: func(_ context.Context, h *cat.Host) error {
@@ -170,16 +169,12 @@ func New() cat.Plugin {
 			if c.key == "" {
 				return errors.New("需要填写 API Key")
 			}
-			guard = harness.NewGuard(h.Config, true)
 			return nil
 		},
 		Actions: map[string]cat.ActionFunc{
 			// With choices, a Choice question: which of them fits. Without,
 			// a Noul: how likely the answer is yes, held against a threshold.
 			"judge": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
-				if err := guard.Check(actx); err != nil {
-					return nil, err
-				}
 				prompt := harness.Str(p, "prompt")
 				if prompt == "" {
 					return nil, errors.New("没有写要判断什么")

@@ -4,9 +4,9 @@
 // taken for it.
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronRight, Inbox, Plus, RotateCcw, Search, UserCheck, Workflow } from 'lucide-vue-next'
+import { ChevronRight, Inbox, Plus, RotateCcw, Search, Workflow } from 'lucide-vue-next'
 import { useHub, clock, summarize } from '../hub'
-import { get, post, put } from '../api'
+import { get, post } from '../api'
 import type { HubEvent, Rule, Run, StepResult } from '../types'
 import { eventTitle } from '../labels'
 import PageHeader from '../components/PageHeader.vue'
@@ -116,29 +116,6 @@ watch(
 async function replay() {
   const out = await hub.run(() => post<{ matched: number }>(`/events/${selected.value!.id}/replay`))
   if (out) hub.notify(out.matched ? `已重放，触发了 ${out.matched} 条规则` : '已重放，没有规则被触发')
-}
-
-// An AI that turned a sender away can be told to take them, right where
-// the refusal shows.
-const refused = (s: StepResult) => !!s.error?.includes('不在白名单') && !!selected.value?.actor?.id
-async function allowSender(s: StepResult) {
-  const inst = hub.instanceOf(s.instance)
-  const actor = selected.value?.actor
-  if (!inst || !actor) return
-  const list = String(inst.config.allowed_actors || '')
-    .split(/[,，\s]+/)
-    .filter(Boolean)
-  if (!list.includes(actor.id)) list.push(actor.id)
-  const ok = await hub.run(
-    () =>
-      put(`/instances/${inst.id}`, {
-        name: inst.name,
-        enabled: inst.enabled,
-        config: { ...inst.config, allowed_actors: list.join(',') },
-      }),
-    `已允许 ${actor.name || actor.id} 触发 ${inst.name}，可以重放这个事件再试一次`,
-  )
-  if (ok) hub.reloadInstances()
 }
 </script>
 
@@ -268,9 +245,6 @@ async function allowSender(s: StepResult) {
             </div>
             <div v-if="s.error" class="mt-2 rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">
               {{ s.error }}
-              <button v-if="refused(s)" class="btn mt-2 flex" @click="allowSender(s)">
-                <UserCheck :size="14" />允许 {{ selected.actor!.name || selected.actor!.id }}
-              </button>
             </div>
             <details class="mt-1.5 text-xs text-mute">
               <summary class="cursor-pointer">用了什么、得到什么</summary>

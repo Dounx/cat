@@ -37,7 +37,6 @@ func options(h *cat.Host) (claudecode.Options, error) {
 func New() cat.Plugin {
 	var (
 		opts  claudecode.Options
-		guard harness.Guard
 		locks harness.Locks
 	)
 	return cat.Plugin{
@@ -45,7 +44,6 @@ func New() cat.Plugin {
 			if opts, err = options(h); err != nil {
 				return err
 			}
-			guard = harness.NewGuard(h.Config, false)
 			vctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 			defer cancel()
 			v, err := claudecode.Version(vctx, opts.Bin)
@@ -57,9 +55,6 @@ func New() cat.Plugin {
 		},
 		Actions: map[string]cat.ActionFunc{
 			"chat": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
-				if err := guard.Check(actx); err != nil {
-					return nil, err
-				}
 				prompt := harness.Str(p, "prompt")
 				if prompt == "" {
 					return nil, errors.New("提示词为空")
@@ -117,24 +112,21 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 		}
 	}
 	values := map[string]any{"permission_mode": "dontAsk", "allowed_tools": "Read,Glob,Grep"}
-	for _, k := range []string{"cwd", "permission_mode", "allowed_tools", "allowed_actors", "allow_anyone"} {
+	for _, k := range []string{"cwd", "permission_mode", "allowed_tools"} {
 		if v, ok := cfg[k]; ok {
 			values[k] = v
 		}
 	}
-	guardSchema := harness.GuardSchema()
 	out, err := s.Ask(ctx, cat.Step{
-		Kind: cat.StepForm, Title: "它能做什么、谁能用它",
-		Description: "聊天消息会原样成为给 AI 的指令，所以默认只允许只读工具，并且只接受白名单里的发送者。",
+		Kind: cat.StepForm, Title: "它能做什么",
+		Description: "聊天消息会原样成为给 AI 的指令，所以默认只允许只读工具。",
 		Values:      values,
 		Schema: map[string]any{
-			"type": "object", "x-order": []string{"cwd", "permission_mode", "allowed_tools", "allowed_actors", "allow_anyone"},
+			"type": "object", "x-order": []string{"cwd", "permission_mode", "allowed_tools"},
 			"properties": map[string]any{
 				"cwd":             map[string]any{"type": "string", "title": "工作目录", "description": "留空使用实例自己的空目录。"},
 				"permission_mode": map[string]any{"type": "string", "title": "权限模式", "enum": []string{"dontAsk", "acceptEdits", "auto", "bypassPermissions"}, "x-enum-titles": []string{"只用下面允许的工具（推荐）", "可以改文件", "由 Claude Code 自动判断", "不做任何限制（危险）"}, "default": "dontAsk", "description": "「不做任何限制」只在你完全信任能触发它的人时使用。"},
 				"allowed_tools":   map[string]any{"type": "string", "title": "允许的工具", "description": "逗号分隔。"},
-				"allowed_actors":  guardSchema["allowed_actors"],
-				"allow_anyone":    guardSchema["allow_anyone"],
 			},
 		},
 	})

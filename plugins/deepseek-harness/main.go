@@ -228,7 +228,6 @@ func New() cat.Plugin {
 		history openaichat.History
 		claude  claudecode.Options
 		dsh     dshOptions
-		guard   harness.Guard
 		locks   harness.Locks
 	)
 	return cat.Plugin{
@@ -249,11 +248,9 @@ func New() cat.Plugin {
 				}
 				dsh = dshOptions{bin: bin, cwd: cwd, permission: harness.Str(h.Config, "harness_permission"), key: s.key,
 					profile: harness.Str(h.Config, "harness_profile"), dataDir: h.DataDir}
-				guard = harness.NewGuard(h.Config, false)
 			case "api":
 				client = &openaichat.Client{Base: s.base, Key: s.key, Model: s.model}
 				history = openaichat.History{Dir: filepath.Join(h.DataDir, "sessions")}
-				guard = harness.NewGuard(h.Config, true)
 			case "claude-code":
 				bin, err := harness.FindBin("claude", harness.Str(h.Config, "bin"))
 				if err != nil {
@@ -271,7 +268,6 @@ func New() cat.Plugin {
 					Bin: bin, Cwd: cwd, AllowedTools: tools, Model: s.model, SystemPrompt: s.system,
 					PermissionMode: harness.Str(h.Config, "permission_mode"), Env: claudeEnv(s),
 				}
-				guard = harness.NewGuard(h.Config, false)
 			default:
 				return errors.New("未知的方式：" + s.mode)
 			}
@@ -309,9 +305,6 @@ func New() cat.Plugin {
 		},
 		Actions: map[string]cat.ActionFunc{
 			"chat": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
-				if err := guard.Check(actx); err != nil {
-					return nil, err
-				}
 				prompt := harness.Str(p, "prompt")
 				if prompt == "" {
 					return nil, errors.New("提示词为空")
@@ -424,13 +417,10 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 		if problem != "" {
 			desc = "⚠ " + problem + "\n\n" + desc
 		}
-		guardSchema := harness.GuardSchema()
 		props := map[string]any{
-			"mode":           map[string]any{"type": "string", "title": "方式", "enum": []string{"harness", "api", "claude-code"}, "x-enum-titles": []string{"本机的 DeepSeek Harness", "只调用 API（纯对话，不带工具）", "用 DeepSeek 模型驱动本机的 Claude Code"}},
-			"api_key":        map[string]any{"type": "string", "title": "API Key", "format": "password"},
-			"cwd":            map[string]any{"type": "string", "title": "工作目录（Harness / Claude Code 方式）", "description": "留空使用 Cat 为它准备的空目录。"},
-			"allowed_actors": guardSchema["allowed_actors"],
-			"allow_anyone":   guardSchema["allow_anyone"],
+			"mode":    map[string]any{"type": "string", "title": "方式", "enum": []string{"harness", "api", "claude-code"}, "x-enum-titles": []string{"本机的 DeepSeek Harness", "只调用 API（纯对话，不带工具）", "用 DeepSeek 模型驱动本机的 Claude Code"}},
+			"api_key": map[string]any{"type": "string", "title": "API Key", "format": "password"},
+			"cwd":     map[string]any{"type": "string", "title": "工作目录（Harness / Claude Code 方式）", "description": "留空使用 Cat 为它准备的空目录。"},
 		}
 		if len(profiles) > 1 {
 			props["harness_profile"] = map[string]any{"type": "string", "title": "跟哪个档案用同一个模型（Harness 方式）", "enum": profiles, "x-enum-titles": profileTitles,
@@ -438,9 +428,9 @@ func setup(ctx context.Context, s *cat.Setup) (map[string]any, error) {
 		}
 		out, err := s.Ask(ctx, cat.Step{
 			Kind: cat.StepForm, Title: "连接 DeepSeek", Description: desc, URL: "https://platform.deepseek.com/api_keys",
-			Values: map[string]any{"mode": mode, "harness_profile": cfg["harness_profile"], "cwd": cfg["cwd"], "allowed_actors": cfg["allowed_actors"]},
+			Values: map[string]any{"mode": mode, "harness_profile": cfg["harness_profile"], "cwd": cfg["cwd"]},
 			Schema: map[string]any{
-				"type": "object", "x-order": []string{"mode", "harness_profile", "api_key", "cwd", "allowed_actors", "allow_anyone"},
+				"type": "object", "x-order": []string{"mode", "harness_profile", "api_key", "cwd"},
 				"properties": props,
 			},
 		})

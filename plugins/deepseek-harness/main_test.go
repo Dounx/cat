@@ -60,14 +60,10 @@ func TestHarnessMode(t *testing.T) {
 	bin := faketest.Script(t, "dsh", fakeDsh)
 	calls := faketest.Log(t)
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{
-		"bin": bin, "api_key": "sk-good", "allowed_actors": "u1", "harness_permission": "workspace-write", "system_prompt": "Be brief.",
+		"bin": bin, "api_key": "sk-good", "harness_permission": "workspace-write", "system_prompt": "Be brief.",
 	}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
-	}
-	stranger := &cat.Event{Source: "qq", Conversation: &cat.Conversation{ID: "g1"}, Actor: &cat.Actor{ID: "u2"}}
-	if _, err := h.Invoke("chat", map[string]any{"prompt": "hi"}, stranger); err == nil {
-		t.Fatal("unlisted sender should be refused")
 	}
 	member := &cat.Event{Source: "qq", Conversation: &cat.Conversation{ID: "g1"}, Actor: &cat.Actor{ID: "u1"}}
 	out, err := h.Invoke("chat", map[string]any{"prompt": "first"}, member)
@@ -96,7 +92,7 @@ func TestHarnessMissingCredential(t *testing.T) {
 	bin := faketest.Script(t, "dsh", fakeDsh)
 	faketest.Log(t)
 	t.Setenv("DEEPSEEK_API_KEY", "")
-	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin, "allow_anyone": true}})
+	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -134,14 +130,10 @@ func TestClaudeCodeMode(t *testing.T) {
 	bin := faketest.Script(t, "claude", faketest.Claude)
 	calls := faketest.Log(t)
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{
-		"api_key": "sk-good", "mode": "claude-code", "bin": bin, "model": "deepseek-v4-pro", "allowed_actors": "u1",
+		"api_key": "sk-good", "mode": "claude-code", "bin": bin, "model": "deepseek-v4-pro",
 	}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
-	}
-	stranger := &cat.Event{Source: "qq", Conversation: &cat.Conversation{ID: "g1"}, Actor: &cat.Actor{ID: "u2"}}
-	if _, err := h.Invoke("chat", map[string]any{"prompt": "hi"}, stranger); err == nil {
-		t.Fatal("tool-capable mode must refuse unlisted senders")
 	}
 	member := &cat.Event{Source: "qq", Conversation: &cat.Conversation{ID: "g1"}, Actor: &cat.Actor{ID: "u1"}}
 	out, err := h.Invoke("chat", map[string]any{"prompt": "hi"}, member)
@@ -228,7 +220,7 @@ func TestHarnessBorrowsProfileModel(t *testing.T) {
 
 	bin := faketest.Script(t, "dsh", fakeDsh)
 	calls := faketest.Log(t)
-	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin, "api_key": "sk-good", "allow_anyone": true, "harness_profile": "desktop"}})
+	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin, "api_key": "sk-good", "harness_profile": "desktop"}})
 	if err := h.Start(); err != nil {
 		t.Fatal(err)
 	}
