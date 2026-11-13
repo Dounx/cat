@@ -59,8 +59,6 @@ const configured = computed(() =>
     (i) => hub.pluginOf(i.plugin)?.category,
   ),
 )
-// what needs no connecting: said, so that it is not looked for here
-const given = computed(() => hub.plugins.filter((p) => p.default_instance).map((p) => p.name))
 // What the market has that is not here yet, and what came from it: the
 // latter can be updated and removed.
 const offered = computed(() =>
@@ -92,6 +90,18 @@ function sought(p: { id: string; name: string; description?: string; category: C
 }
 const foundAddable = computed(() => addable.value.filter(sought))
 const foundOffered = computed(() => offered.value.filter(sought))
+// What needs no connecting is looked for here all the same, so it is listed
+// last, saying so, and leads to where it is used: a new rule.
+const foundReady = computed(() =>
+  byKind(
+    hub.plugins.filter((p) => p.default_instance),
+    (p) => p.category,
+  ).filter(sought),
+)
+function toRule() {
+  picking.value = false
+  router.push({ path: '/rules', query: { new: '' } })
+}
 
 const installed = computed(() => market.value.plugins.filter((p) => p.installed_version && !p.bundled))
 const outdated = computed(() => installed.value.filter((p) => p.installed_version !== p.version))
@@ -299,7 +309,6 @@ async function remove(i: Instance) {
           <input type="checkbox" :checked="i.enabled" :title="i.enabled ? '停用' : '启用'" @change="toggle(i)" />
         </div>
       </TransitionGroup>
-      <p v-if="given.length" class="text-xs text-mute">{{ given.join('、') }}不用接入，建规则时在触发节点里直接填。</p>
     </div>
 
     <Transition name="drawer">
@@ -357,8 +366,27 @@ async function remove(i: Instance) {
               >
             </button>
           </div>
-          <p v-else-if="query.trim() || kind" class="text-sm text-mute">没有找到这样的插件。</p>
-          <p v-else class="text-sm text-mute">还没有能接入的插件。</p>
+          <p v-else-if="!foundReady.length" class="text-sm text-mute">
+            {{ query.trim() || kind ? '没有找到这样的插件。' : '还没有能接入的插件。' }}
+          </p>
+          <template v-if="foundReady.length">
+            <h3 class="section-title mt-5 mb-1">不用接入</h3>
+            <p class="mb-2 text-xs text-mute">这些 Cat 自带，建规则时在触发节点里直接填要盯什么。</p>
+            <div class="list">
+              <button
+                v-for="p in foundReady"
+                :key="p.id"
+                class="row link flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left"
+                @click="toRule"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="text-sm font-medium">{{ p.name }}</div>
+                  <p class="mt-0.5 truncate text-xs text-mute" :title="p.description">{{ p.description }}</p>
+                </div>
+                <span class="shrink-0 text-xs text-accent">建一条规则</span>
+              </button>
+            </div>
+          </template>
           <p v-if="market.error" class="mt-4 text-xs text-mute">
             这里只有已经装好的插件。插件市场用不了：{{ market.error }}
           </p>
