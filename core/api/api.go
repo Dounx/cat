@@ -190,6 +190,10 @@ func (s *Server) Handler() http.Handler {
 		q := r.URL.Query()
 		limit, _ := strconv.Atoi(q.Get("limit"))
 		list, err := e.Store.ListRuns(q.Get("rule_id"), q.Get("event_id"), limit)
+		// the rule each ran as comes with a single run only
+		for i := range list {
+			list[i].Rule = nil
+		}
 		respond(w, list, err)
 	})
 	mux.HandleFunc("GET /api/runs/{id}", func(w http.ResponseWriter, r *http.Request) {

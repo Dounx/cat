@@ -116,6 +116,17 @@ export interface StepResult {
   error?: string
   duration_ms: number
 }
+// One node a run came to: by which wire, and for a condition which way it
+// left (`branch`: none when it held, "else", or the choice picked) and what
+// it came to.
+export interface Visit {
+  node: string
+  from?: string
+  via?: string
+  branch?: string
+  value?: unknown
+  error?: string
+}
 export interface Run {
   id: string
   rule_id: string
@@ -126,4 +137,8 @@ export interface Run {
   finished_at?: string
   steps: StepResult[]
   replay?: boolean
+  // the path the event took through the rule's graph, node by node
+  trace?: Visit[]
+  // the rule as it stood for this run; comes only with a run asked for by id
+  rule?: Rule
 }

@@ -2,12 +2,13 @@
 // picked on the canvas, and how a node reads. The canvas draws each node from
 // it, and the panel that edits a node fills its fields from it.
 import { computed, inject, provide, reactive, ref, type Component, type InjectionKey, type Ref } from 'vue'
-import { Play, Reply, Wrench } from 'lucide-vue-next'
+import { BrainCircuit, Filter, Play, Reply, Wrench, Zap } from 'lucide-vue-next'
 import { useHub } from '../hub'
 import { commonFields, operators } from '../condition'
-import { typesOf, upstreamActions, type Doc, type ENode } from '../graph'
+import { ELSE, outcomes, tracePath, typesOf, upstreamActions, type Doc, type ENode } from '../graph'
 import { fieldLabel, isKnownField } from '../labels'
-import type { ActionSpec, Run } from '../types'
+import type { ActionSpec, Run, Visit } from '../types'
+import type { CanvasNode } from '../components/FlowCanvas.vue'
 import type { VarGroup } from '../components/VarPicker.vue'
 import { SOURCE, kindIcon, usePicking } from './picking'
 
@@ -102,11 +103,13 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
   // The rows of a condition whose field is typed rather than chosen by name:
   // like `narrowed`, a state of the panel that outlasts it.
   const typedRows = reactive(new Set<object>())
-  // What the model said in the trial run, as the node's ways out are named.
-  function verdict(n: ENode, choice: unknown): string {
-    if (choice === undefined) return ''
-    const said = n.choices.length ? choice : choice === 'yes' ? '是' : '否'
-    return `判断为：${said}`
+  // What a condition came to when a run got to it, as the node's ways out
+  // are named.
+  function verdict(n: ENode, v?: Visit): string {
+    if (!v) return ''
+    if (v.error) return '没能判断'
+    if (!n.choices.length) return `判断为：${v.branch === ELSE ? '否' : '是'}`
+    return `判断为：${v.branch === ELSE ? `其他${v.value == null ? '' : `（${brief(v.value)}）`}` : v.branch}`
   }
 
   // ---- actions ----
@@ -149,6 +152,48 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
   // A node on a loop may have run several times; the last is the one shown.
   const trialSteps = (id: string) => trial.value?.run?.steps.filter((s) => s.id === id) || []
   const trialStep = (id: string) => trialSteps(id).pop()
+  // The way it went through the graph: the nodes it came to, in order, and
+  // the wires it took.
+  const trialPath = computed(() => tracePath(doc, trial.value?.run?.trace))
+  const trialVisits = (id: string) => trialPath.value.visits.filter((v) => v.node === id)
+
+  // ---- a node as the canvas draws it ----
+  function canvasNode(n: ENode): CanvasNode {
+    const at = { id: n.id, kind: n.kind, x: n.x, y: n.y }
+    const came = trialVisits(n.id).pop()
+    const ran = trialStep(n.id)
+    if (n.kind === 'trigger')
+      return {
+        ...at,
+        icon: Zap,
+        label: '触发',
+        title: triggerTitle(n),
+        sub: triggerSummary(n),
+        state: came ? 'ok' : undefined,
+      }
+    if (n.kind === 'condition') {
+      const failed = !!came?.error || !!ran?.error
+      return {
+        ...at,
+        icon: n.ask ? BrainCircuit : Filter,
+        label: n.ask ? `模型判断 · ${hub.instanceName(n.instance) || '未选择'}` : '条件',
+        title: conditionTitle(n),
+        sub: verdict(n, came),
+        outs: outcomes(n),
+        bad: (n.ask && (!specOf(n) || !String(n.params?.prompt || '').trim())) || failed,
+        state: came || ran ? (failed ? 'bad' : 'ok') : undefined,
+      }
+    }
+    return {
+      ...at,
+      icon: targetIcon(n.instance),
+      label: targetName(n),
+      title: actionTitle(n),
+      sub: actionSummary(n),
+      bad: !specOf(n) || !!ran?.error,
+      state: ran ? (ran.error ? 'bad' : 'ok') : undefined,
+    }
+  }
 
   // ---- what a parameter may refer to ----
   // The event, and the outputs of the actions that run before the node.
@@ -233,6 +278,9 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
     trial,
     trialStep,
     trialSteps,
+    trialPath,
+    trialVisits,
+    canvasNode,
     variablesFor,
     ...picking,
   }

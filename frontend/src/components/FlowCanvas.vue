@@ -20,8 +20,10 @@ export interface CanvasNode {
   // the ways out of a condition, top to bottom; any other node has just one
   outs?: { branch: string; label?: string }[]
   bad?: boolean
-  // how the node fared in a trial run
+  // how the node fared in a run
   state?: 'ok' | 'bad'
+  // set back, as a node a run did not come to
+  dim?: boolean
 }
 export interface Point {
   x: number
@@ -33,6 +35,8 @@ const props = defineProps<{
   edges: GraphEdge[]
   selected: string | null // a node id or an edge key
   padRight?: number // width covered by a panel, kept clear when fitting
+  lit?: Set<string> // the keys of the wires a run went along
+  readonly?: boolean // only to look at: nodes can be picked, nothing changed
 }>()
 const emit = defineEmits<{
   select: [id: string | null]
@@ -128,6 +132,13 @@ onBeforeUnmount(() => {
 })
 
 function downNode(e: PointerEvent, n: CanvasNode) {
+  if (props.readonly)
+    return begin(e, {
+      move() {},
+      up(_, wasMoved) {
+        if (!wasMoved) emit('select', n.id)
+      },
+    })
   const grab = point(e)
   const off = { x: grab.x - n.x, y: grab.y - n.y }
   begin(e, {
@@ -245,14 +256,14 @@ defineExpose({ fit, zoom, center })
   <div
     ref="root"
     class="canvas relative overflow-hidden"
-    :class="{ panning: busy }"
+    :class="{ panning: busy, traced: !!lit?.size }"
     :style="{
       backgroundPosition: `${view.x}px ${view.y}px`,
       backgroundSize: `${18 * view.k}px ${18 * view.k}px`,
     }"
     @pointerdown="downBlank"
     @wheel.prevent="onWheel"
-    @contextmenu.prevent="emit('menu', null, point($event), $event)"
+    @contextmenu.prevent="readonly || emit('menu', null, point($event), $event)"
   >
     <div
       class="absolute top-0 left-0 origin-top-left"
@@ -264,9 +275,15 @@ defineExpose({ fit, zoom, center })
             <path d="M 1 1 L 7 4 L 1 7" fill="none" stroke="context-stroke" stroke-width="1.5" />
           </marker>
         </defs>
-        <g v-for="w in wires" :key="w.key" class="wire" :class="{ on: selected === w.key, no: w.no }">
+        <g
+          v-for="w in wires"
+          :key="w.key"
+          class="wire"
+          :class="{ on: selected === w.key, no: w.no, lit: lit?.has(w.key) }"
+        >
           <path class="line" :d="w.d" marker-end="url(#wire-tip)" />
           <path
+            v-if="!readonly"
             class="hit"
             :d="w.d"
             @pointerdown.stop
@@ -281,12 +298,18 @@ defineExpose({ fit, zoom, center })
         v-for="n in nodes"
         :key="n.id"
         class="node"
-        :class="{ on: selected === n.id, bad: n.bad, drag: dragging === n.id, named: !!n.outs?.[0]?.branch }"
+        :class="{
+          on: selected === n.id,
+          bad: n.bad,
+          dim: n.dim,
+          drag: dragging === n.id,
+          named: !!n.outs?.[0]?.branch,
+        }"
         :data-node="n.kind === 'trigger' ? undefined : n.id"
         :style="{ left: n.x + 'px', top: n.y + 'px', width: W + 'px', height: heightOf(n) + 'px' }"
         :title="n.title"
         @pointerdown.stop="downNode($event, n)"
-        @contextmenu.prevent.stop="emit('menu', { node: n.id }, point($event), $event)"
+        @contextmenu.prevent.stop="readonly || emit('menu', { node: n.id }, point($event), $event)"
       >
         <span v-if="n.kind !== 'trigger'" class="inlet" />
         <span v-if="n.state" class="ran" :class="n.state" />
@@ -306,6 +329,7 @@ defineExpose({ fit, zoom, center })
             >{{ p.label }}</span
           >
           <button
+            v-if="!readonly"
             type="button"
             class="port"
             :class="{ no: p.branch === ELSE }"
@@ -372,6 +396,14 @@ defineExpose({ fit, zoom, center })
   stroke: var(--color-accent);
   stroke-width: 2;
 }
+/* the way a run went: its wires stand out, the rest step back */
+.wire.lit .line {
+  stroke: var(--color-accent);
+  stroke-width: 2;
+}
+.traced .wire:not(.lit, .on) .line {
+  opacity: 0.5;
+}
 .pull {
   fill: none;
   stroke: var(--color-accent);
@@ -400,6 +432,9 @@ defineExpose({ fit, zoom, center })
 .node.on {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+.node.dim:not(.on) {
+  opacity: 0.5;
 }
 .node.drag {
   z-index: 1;

@@ -26,7 +26,8 @@ function start(rule: Rule) {
 }
 
 // Other pages send people here to make a rule: ?new after connecting
-// something, ?event=<id> to start from an event that came in.
+// something, ?event=<id> to start from an event that came in. ?rule=<id>
+// opens one there is.
 watch(
   () => route.query,
   async (q) => {
@@ -34,6 +35,9 @@ watch(
       const ev =
         hub.events.find((e) => e.id === q.event) || (await get<HubEvent>(`/events/${q.event}`).catch(() => null))
       if (ev) editing.value = ruleFromEvent(ev, hub.instanceName(ev.source))
+    } else if (typeof q.rule === 'string') {
+      const rule = hub.rules.find((r) => r.id === q.rule)
+      if (rule) editing.value = JSON.parse(JSON.stringify(rule))
     } else if ('new' in q) choosing.value = true
     else return
     router.replace({ path: '/rules' })

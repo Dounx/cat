@@ -215,6 +215,8 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 	// A graph rule's run is recorded from its first action on: an event that
 	// takes a branch leading nowhere leaves no run behind.
 	recorded := r.Graph == nil
+	snapshot := r.Rule
+	run.Rule = &snapshot
 	if recorded {
 		e.saveRun(run)
 	}
@@ -264,7 +266,7 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 			outputs[n.ID] = res.Output
 			e.saveRun(run)
 			return verdict, nil
-		})
+		}, func(v rules.Visit) { run.Trace = append(run.Trace, v) })
 	} else {
 		for _, step := range r.Steps {
 			if !act(step, rules.Env(ev, outputs)) {
@@ -351,6 +353,8 @@ func (e *Engine) saveRun(run *store.Run) {
 	}
 	copied := *run
 	copied.Steps = append([]store.StepResult(nil), run.Steps...)
+	copied.Trace = append([]rules.Visit(nil), run.Trace...)
+	copied.Rule = nil
 	e.publish(Message{Kind: "run", Data: copied})
 }
 

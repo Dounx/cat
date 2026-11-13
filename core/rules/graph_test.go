@@ -38,7 +38,7 @@ func ran(t *testing.T, r Rule, ev *event.Event, failing ...string) []string {
 		}
 		outputs[s.ID] = map[string]any{"ok": true}
 		return true
-	}, func(id string, err error) { t.Fatalf("condition %s: %v", id, err) }, nil)
+	}, func(id string, err error) { t.Fatalf("condition %s: %v", id, err) }, nil, nil)
 	return got
 }
 
@@ -166,7 +166,7 @@ func TestGraphLoop(t *testing.T) {
 			t.Fatalf("%s: %v", id, err)
 		}
 		stopped = id
-	}, nil)
+	}, nil, nil)
 	if drafts != MaxLoops+1 || stopped != "draft" {
 		t.Errorf("drafted %d times and stopped at %q", drafts, stopped)
 	}
@@ -212,7 +212,7 @@ func TestGraphLoopsWithin(t *testing.T) {
 		n[s.ID]++
 		outputs[s.ID] = map[string]any{"n": n[s.ID]}
 		return true
-	}, func(id string, err error) { t.Fatalf("%s: %v", id, err) }, nil)
+	}, func(id string, err error) { t.Fatalf("%s: %v", id, err) }, nil, nil)
 	pass := []string{"a", "left", "meet", "right"}
 	var want []string
 	for i := 0; i < 2; i++ {
@@ -377,7 +377,7 @@ func TestGraphChoices(t *testing.T) {
 					return tc.kind, nil
 				}
 				return tc.spam, nil
-			})
+			}, nil)
 		if !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("%v: ran %v, want %v", tc, got, tc.want)
 		}
@@ -412,5 +412,52 @@ func TestGraphChoices(t *testing.T) {
 		if _, err := Compile(Rule{Graph: g}); err == nil {
 			t.Errorf("%s should be rejected", name)
 		}
+	}
+}
+
+// A walk tells of every node it comes to: by which wire, and how each
+// condition came out. A loop comes to its nodes again, by the wire back.
+func TestGraphWalkNotesItsPath(t *testing.T) {
+	outputs := map[string]any{}
+	r := Rule{Graph: &Graph{
+		Nodes: []Node{
+			{Step: Step{ID: "t"}, Kind: KindTrigger},
+			action("a"), condition("again", "steps.a.n < 2"), action("end"),
+			{Step: Step{ID: "bad"}, Kind: KindCondition, Condition: "payload.x.y > 1"},
+		},
+		Edges: []Edge{
+			{From: "t", To: "a"}, {From: "a", To: "again"},
+			{From: "again", To: "a"},
+			{From: "again", To: "end", Branch: BranchElse},
+			{From: "end", To: "bad"},
+		},
+	}}
+	c, err := Compile(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	var got []Visit
+	c.Walk(&event.Event{}, outputs, func(s Step, _ map[string]any) bool {
+		n++
+		outputs[s.ID] = map[string]any{"n": n}
+		return true
+	}, func(string, error) {}, nil, func(v Visit) {
+		if v.Error != "" {
+			v.Error = "failed"
+		}
+		got = append(got, v)
+	})
+	want := []Visit{
+		{Node: "t"},
+		{Node: "a", From: "t"},
+		{Node: "again", From: "a", Value: true},
+		{Node: "a", From: "again"},
+		{Node: "again", From: "a", Branch: BranchElse, Value: false},
+		{Node: "end", From: "again", Via: BranchElse},
+		{Node: "bad", From: "end", Error: "failed"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("visits:\n got %+v\nwant %+v", got, want)
 	}
 }

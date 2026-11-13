@@ -4,14 +4,15 @@
 // taken for it.
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronRight, Inbox, Plus, RotateCcw, Search, UserCheck } from 'lucide-vue-next'
+import { ChevronRight, Inbox, Plus, RotateCcw, Search, UserCheck, Workflow } from 'lucide-vue-next'
 import { useHub, clock, summarize } from '../hub'
 import { get, post, put } from '../api'
-import type { HubEvent, Run, StepResult } from '../types'
+import type { HubEvent, Rule, Run, StepResult } from '../types'
 import { eventTitle } from '../labels'
 import PageHeader from '../components/PageHeader.vue'
 import Drawer from '../components/Drawer.vue'
 import JsonView from '../components/JsonView.vue'
+import RunView from '../components/RunView.vue'
 
 const hub = useHub()
 const route = useRoute()
@@ -72,8 +73,18 @@ function stepTitle(s: StepResult): string {
 }
 
 watch(selected, async (ev) => {
+  viewing.value = null
   selectedRuns.value = ev ? await get<Run[]>(`/runs?event_id=${ev.id}`).catch(() => []) : []
 })
+
+// A run can be looked at on its rule's graph, as the rule stood then: the
+// rule comes with the run when it is asked for by id.
+const viewing = ref<null | { id: string; rule: Rule }>(null)
+const viewed = computed(() => selectedRuns.value.find((r) => r.id === viewing.value?.id))
+async function view(r: Run) {
+  const full = await hub.run(() => get<Run>(`/runs/${r.id}`))
+  if (full?.rule) viewing.value = { id: r.id, rule: full.rule }
+}
 // Keep the open drawer's runs current as they stream in.
 watch(
   () => hub.runs[0],
@@ -231,7 +242,15 @@ async function allowSender(s: StepResult) {
             >
             <span class="flex shrink-0 items-center gap-1.5 text-xs text-mute"
               ><span class="dot" :class="statusDot[r.status]" />{{ statusText[r.status] }}
-              <template v-if="duration(r)">· {{ duration(r) }}</template></span
+              <template v-if="duration(r)">· {{ duration(r) }}</template>
+              <button
+                v-if="r.trace?.length"
+                class="btn ml-2"
+                title="在规则的图上看这次走过的路径和每个节点的结果"
+                @click="view(r)"
+              >
+                <Workflow :size="14" />看流程
+              </button></span
             >
           </div>
           <div v-for="(s, i) in r.steps" :key="s.id + i" class="border-t border-line px-4 py-2.5">
@@ -280,6 +299,16 @@ async function allowSender(s: StepResult) {
           <JsonView :value="selected.raw ?? null" />
         </details>
       </Drawer>
+    </Transition>
+    <Transition name="drawer">
+      <RunView
+        v-if="selected && viewing && viewed"
+        :key="viewing.id"
+        :run="viewed"
+        :rule="viewing.rule"
+        :event="selected"
+        @close="viewing = null"
+      />
     </Transition>
   </div>
 </template>

@@ -1,7 +1,7 @@
 // The rule editor's working copy of a rule: everything the user can change,
 // held as one plain object so that undo is a matter of keeping snapshots.
 import { compile, type Builder } from './condition'
-import type { GraphEdge, GraphNode, Rule } from './types'
+import type { GraphEdge, GraphNode, Rule, Visit } from './types'
 
 export const NODE_W = 208
 export const NODE_H = 64
@@ -249,6 +249,16 @@ export function toRule(doc: Doc, base: Rule, asks: (t: ENode) => boolean = () =>
     graph: { nodes, edges },
     meta,
   }
+}
+
+// The path a run took, as the doc names its nodes (the rule's own trigger is
+// a node here), and the wires it went along.
+export function tracePath(doc: Doc, trace: Visit[] = []): { visits: Visit[]; lit: Set<string> } {
+  const own = doc.nodes.some((n) => n.id === IMPLICIT_TRIGGER) ? '' : doc.nodes.find((n) => n.kind === 'trigger')?.id
+  const at = (id?: string) => (id === IMPLICIT_TRIGGER && own ? own : id)
+  const visits = trace.map((v) => ({ ...v, node: at(v.node)!, from: at(v.from) }))
+  const lit = new Set(visits.filter((v) => v.from).map((v) => edgeKey({ from: v.from!, to: v.node, branch: v.via })))
+  return { visits, lit }
 }
 
 // Would an edge from → to close a loop that nothing could end? A wire may

@@ -5,7 +5,6 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   ArrowLeft,
-  BrainCircuit,
   ClipboardPaste,
   Copy,
   CopyPlus,
@@ -57,7 +56,7 @@ const panels = { trigger: TriggerPanel, condition: ConditionPanel, action: Actio
 
 const editor = createEditor(doc, sel)
 provideEditor(editor)
-const { node, scopedEvents, testEventId, trial, trialStep, picker, connecting, triggerSchema, specOf } = editor
+const { node, scopedEvents, testEventId, trial, picker, connecting, triggerSchema } = editor
 const { onMove, addNode, connect, splice, removeNode, removeEdge, unlink, removeSelected, paste, copy, tidy } =
   useGraphEditing(editor, canvas)
 const { state, settle, undo, redo } = useHistory(doc, () => {
@@ -106,39 +105,11 @@ const trialText = computed(() => {
   const failed = t.run.steps.filter((s) => s.error).length
   return failed
     ? `试运行完成：${t.run.steps.length} 步里有 ${failed} 步失败，点红色的节点看原因`
-    : `试运行成功：执行了 ${t.run.steps.length} 步，点节点看结果`
+    : `试运行成功：执行了 ${t.run.steps.length} 步，亮起的连线是走过的路径，点节点看结果`
 })
 
 // ---- the graph on the canvas ----
-const nodes = computed<CanvasNode[]>(() =>
-  doc.nodes.map<CanvasNode>((n) => {
-    const at = { id: n.id, kind: n.kind, x: n.x, y: n.y }
-    if (n.kind === 'trigger')
-      return { ...at, icon: Zap, label: '触发', title: editor.triggerTitle(n), sub: editor.triggerSummary(n) }
-    if (n.kind === 'condition') {
-      const ran = trialStep(n.id)
-      return {
-        ...at,
-        icon: n.ask ? BrainCircuit : Filter,
-        label: n.ask ? `模型判断 · ${hub.instanceName(n.instance) || '未选择'}` : '条件',
-        title: editor.conditionTitle(n),
-        sub: editor.verdict(n, ran?.output?.choice),
-        outs: outcomes(n),
-        bad: (n.ask && (!specOf(n) || !String(n.params?.prompt || '').trim())) || !!ran?.error,
-        state: ran ? (ran.error ? 'bad' : 'ok') : undefined,
-      }
-    }
-    return {
-      ...at,
-      icon: editor.targetIcon(n.instance),
-      label: editor.targetName(n),
-      title: editor.actionTitle(n),
-      sub: editor.actionSummary(n),
-      bad: !specOf(n) || !!trialStep(n.id)?.error,
-      state: trialStep(n.id) ? (trialStep(n.id)!.error ? 'bad' : 'ok') : undefined,
-    }
-  }),
-)
+const nodes = computed<CanvasNode[]>(() => doc.nodes.map(editor.canvasNode))
 
 // ---- menus ----
 const menu = ref<null | { x: number; y: number; items: MenuItem[] }>(null)
@@ -363,6 +334,7 @@ async function remove() {
       :nodes="nodes"
       :edges="doc.edges"
       :selected="sel"
+      :lit="editor.trialPath.value.lit"
       :pad-right="node ? PANEL_W : 0"
       @select="sel = $event"
       @move="onMove"
