@@ -22,6 +22,7 @@ require (
 	github.com/dounx/cat/sdk/go v0.0.0
 	github.com/expr-lang/expr v1.17.8
 	github.com/larksuite/oapi-sdk-go/v3 v3.12.2
+	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
 	golang.org/x/net v0.62.0
 	golang.org/x/text v0.43.0
 	modernc.org/sqlite v1.62.0
