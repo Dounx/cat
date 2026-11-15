@@ -71,6 +71,10 @@ export interface Step {
   params?: Record<string, unknown>
   continue_on_error?: boolean
   timeout_seconds?: number
+  // how many more times a failed action is tried, and how long to wait
+  // before the first of them (the wait doubles after that)
+  retries?: number
+  retry_wait_seconds?: number
 }
 // A rule drawn as a graph: trigger, condition and action nodes wired together.
 // A trigger node names the events that start there, and with `params` asks
@@ -115,6 +119,8 @@ export interface StepResult {
   output?: Record<string, unknown>
   error?: string
   duration_ms: number
+  // how many times the action was tried, when more than once
+  attempts?: number
 }
 // One node a run came to: by which wire, and for a condition which way it
 // left (`branch`: none when it held, "else", or the choice picked) and what

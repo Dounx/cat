@@ -36,6 +36,8 @@ type StepResult struct {
 	Output     map[string]any `json:"output,omitempty"`
 	Error      string         `json:"error,omitempty"`
 	DurationMS int64          `json:"duration_ms"`
+	// Attempts is how many times the action was tried, when more than once.
+	Attempts int `json:"attempts,omitempty"`
 }
 
 // Run records one execution of a rule against an event.

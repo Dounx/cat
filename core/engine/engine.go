@@ -27,6 +27,8 @@ const (
 	StatusError    = "error"
 
 	defaultStepTimeout = 10 * time.Minute
+	defaultRetryWait   = 5 * time.Second
+	maxRetryWait       = 5 * time.Minute
 	keepEvents         = 20000
 )
 
@@ -96,6 +98,10 @@ type Engine struct {
 	sem     chan struct{}
 	wg      sync.WaitGroup
 	emitted int
+	// stopping is closed by Stop: a run waiting to try an action again gives
+	// up instead.
+	stopping chan struct{}
+	stopOnce sync.Once
 
 	started bool       // Start has run: instances are launched as they come
 	defMu   sync.Mutex // one default instance at a time
@@ -113,6 +119,7 @@ func New(st *store.Store, dataDir string, log *slog.Logger) *Engine {
 		trigErrs: map[string]map[string]string{},
 		subs:     map[chan Message]struct{}{},
 		sem:      make(chan struct{}, 16),
+		stopping: make(chan struct{}),
 	}
 }
 
@@ -252,6 +259,7 @@ func (e *Engine) Start() error {
 
 // Stop stops all instances and waits for in-flight runs.
 func (e *Engine) Stop() {
+	e.stopOnce.Do(func() { close(e.stopping) })
 	e.mu.Lock()
 	all := e.running
 	e.running = map[string]*running{}

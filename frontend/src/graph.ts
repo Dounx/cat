@@ -34,6 +34,8 @@ export interface ENode {
   params: Record<string, unknown>
   continue_on_error?: boolean
   timeout_seconds?: number
+  retries?: number
+  retry_wait_seconds?: number
 }
 export interface Doc {
   name: string
@@ -149,6 +151,8 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
           params: n.params || {},
           continue_on_error: n.continue_on_error,
           timeout_seconds: n.timeout_seconds,
+          retries: n.retries,
+          retry_wait_seconds: n.retry_wait_seconds,
         })
       }
       doc.nodes.push(node)
@@ -178,6 +182,8 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
         params: s.params || {},
         continue_on_error: s.continue_on_error,
         timeout_seconds: s.timeout_seconds,
+        retries: s.retries,
+        retry_wait_seconds: s.retry_wait_seconds,
       })
       doc.nodes.push(node)
       doc.edges.push({ from: prev, to: node.id })
@@ -228,6 +234,8 @@ export function toRule(doc: Doc, base: Rule, asks: (t: ENode) => boolean = () =>
       params: n.params,
       continue_on_error: n.continue_on_error || undefined,
       timeout_seconds: n.timeout_seconds || undefined,
+      retries: n.retries || undefined,
+      retry_wait_seconds: (n.retries && n.retry_wait_seconds) || undefined,
       meta: at,
     }
   })

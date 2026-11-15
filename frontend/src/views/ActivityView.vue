@@ -240,7 +240,9 @@ async function replay() {
                 <span class="truncate">{{ stepTitle(s) }}</span>
               </span>
               <span class="flex shrink-0 items-center gap-1.5 font-mono text-xs text-mute">
-                <span class="dot" :class="s.error ? 'bad' : 'ok'" />{{ s.duration_ms }} ms
+                <span class="dot" :class="s.error ? 'bad' : 'ok'" /><template v-if="s.attempts"
+                  >试了 {{ s.attempts }} 次 · </template
+                >{{ s.duration_ms }} ms
               </span>
             </div>
             <div v-if="s.error" class="mt-2 rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">

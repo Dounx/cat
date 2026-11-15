@@ -2,8 +2,9 @@
 // what it needs connected (a chat, an AI, something to watch) and, given
 // those, builds the rule; the editor then opens on it like on any other.
 import type { Component } from 'vue'
-import { Bell, Bot, CalendarClock, PenLine, Webhook } from 'lucide-vue-next'
+import { Bell, Bot, CalendarClock, PenLine, TriangleAlert, Webhook } from 'lucide-vue-next'
 import type { HubEvent, Instance, Plugin, Rule } from './types'
+import { SELF } from './editor/picking'
 
 export interface Need {
   key: string
@@ -138,6 +139,23 @@ export const templates: Template[] = [
           { from: 't1', to: 'ai' },
           { from: 'ai', to: 'send' },
         ],
+      },
+    }),
+  },
+  {
+    id: 'failure',
+    title: '规则失败时通知我',
+    about: '哪条规则的动作失败了，把原因发到聊天里',
+    icon: TriangleAlert,
+    needs: [notify],
+    build: ({ to }, plugins) => ({
+      ...blank(`规则失败 → ${to.name}`),
+      graph: {
+        nodes: [
+          trigger('t1', [SELF], ['run.failed']),
+          action('send', to.id, 'send', params(plugins, to, 'send', { text: '{{ payload.text }}' })),
+        ],
+        edges: [{ from: 't1', to: 'send' }],
       },
     }),
   },

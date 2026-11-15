@@ -196,6 +196,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
             </span>
             <span class="flex shrink-0 items-center gap-1.5 font-mono text-xs text-mute">
               <span class="dot" :class="failed(p) ? 'bad' : p.step || node.kind === 'condition' ? 'ok' : 'warn'" />
+              <template v-if="p.step?.attempts">试了 {{ p.step.attempts }} 次 · </template>
               <template v-if="p.step">{{ p.step.duration_ms }} ms</template>
             </span>
           </div>

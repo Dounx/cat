@@ -11,6 +11,8 @@ import type { Instance, Plugin } from '../types'
 
 // An action sent here replies through whichever instance emitted the event.
 export const SOURCE = '$source'
+// The hub itself as a source of events: a run of a rule that failed.
+export const SELF = 'cat'
 // The ways a condition is worked out that need no instance: rows of fields,
 // or an expression. Any other pick is the instance of a model to ask.
 export const ROWS = '$rows'

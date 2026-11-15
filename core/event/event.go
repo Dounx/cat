@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+// SelfSource is the source, and the plugin, of the events the hub emits about
+// itself (a run that failed). A rule takes them only when it names this
+// source: one that listens to everything is not started by them.
+const SelfSource = "cat"
+
 // Conversation identifies where a message happened (a group, channel or DM).
 type Conversation struct {
 	ID   string `json:"id"`

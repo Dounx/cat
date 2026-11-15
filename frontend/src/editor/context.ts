@@ -10,7 +10,7 @@ import { fieldLabel, isKnownField } from '../labels'
 import type { ActionSpec, Run, Visit } from '../types'
 import type { CanvasNode } from '../components/FlowCanvas.vue'
 import type { VarGroup } from '../components/VarPicker.vue'
-import { SOURCE, kindIcon, usePicking } from './picking'
+import { SELF, SOURCE, kindIcon, usePicking } from './picking'
 
 const brief = (v: unknown) =>
   v === undefined || v === null ? '' : (typeof v === 'string' ? v : JSON.stringify(v)).replace(/\s+/g, ' ').slice(0, 40)
@@ -26,9 +26,10 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
     hub.instances.filter((i) => hub.pluginOf(i.plugin)?.capabilities.includes('source')),
   )
   const triggers = computed(() => doc.nodes.filter((n) => n.kind === 'trigger'))
-  // The instances whose events a trigger listens to: the chosen ones, or all.
+  // The instances whose events a trigger listens to: the chosen ones, or all
+  // but the hub itself, whose events go only to the triggers that name it.
   const listening = (t: ENode) =>
-    t.sources.length ? sourceInstances.value.filter((i) => t.sources.includes(i.id)) : sourceInstances.value
+    sourceInstances.value.filter((i) => (t.sources.length ? t.sources.includes(i.id) : i.id !== SELF))
   // Every instance some trigger of the rule listens to.
   const allListening = computed(() => {
     const ids = new Set(triggers.value.flatMap((t) => listening(t).map((i) => i.id)))

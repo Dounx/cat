@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/dounx/cat/core/builtin"
 	"github.com/dounx/cat/core/event"
 	"github.com/dounx/cat/core/id"
 	"github.com/dounx/cat/core/plugin"
@@ -284,7 +286,73 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 		run.Status = "error"
 	}
 	e.saveRun(run)
+	if failed && !replay {
+		e.reportFailure(run, ev)
+	}
 	return run
+}
+
+// reportFailure emits a run.failed event for a run that ended in an error, so
+// that a rule can tell someone. A run started by such an event is not
+// reported in turn: a rule that fails to tell would otherwise go round.
+func (e *Engine) reportFailure(run *store.Run, ev *event.Event) {
+	if ev.Plugin == builtin.SelfID {
+		return
+	}
+	var lines []string
+	var errs []any
+	for _, s := range run.Steps {
+		if s.Error == "" {
+			continue
+		}
+		what := s.ID
+		if s.Instance != "" {
+			name, action := e.describe(s.Instance, s.Action)
+			what = fmt.Sprintf("%s（%s · %s）", s.ID, name, action)
+		}
+		lines = append(lines, what+"："+s.Error)
+		errs = append(errs, map[string]any{"step": s.ID, "instance": s.Instance, "action": s.Action, "error": s.Error})
+	}
+	text := fmt.Sprintf("规则「%s」运行失败", run.RuleName)
+	if len(lines) > 0 {
+		text += "\n" + strings.Join(lines, "\n")
+	}
+	payload := map[string]any{
+		"text": text, "rule_id": run.RuleID, "rule_name": run.RuleName, "run_id": run.ID,
+		"event_id": run.EventID, "errors": errs,
+	}
+	if len(errs) > 0 {
+		first := errs[0].(map[string]any)
+		payload["step"], payload["error"] = first["step"], first["error"]
+	}
+	_, err := e.Emit(&event.Event{
+		Source: builtin.SelfID, Plugin: builtin.SelfID, Type: builtin.RunFailed,
+		Conversation: &event.Conversation{ID: run.RuleID, Name: run.RuleName},
+		Payload:      payload,
+	})
+	if err != nil {
+		e.log.Warn("report failed run", "run", run.ID, "err", err)
+	}
+}
+
+// describe gives what an instance and one of its actions are called, or
+// their ids when they are gone.
+func (e *Engine) describe(instanceID, action string) (string, string) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	r, ok := e.running[instanceID]
+	if !ok {
+		return instanceID, action
+	}
+	for _, a := range e.plugins[r.rec.Plugin].manifest.Actions {
+		if a.Name == action && a.Title != "" {
+			action = a.Title
+		}
+	}
+	if r.rec.Name != "" {
+		return r.rec.Name, action
+	}
+	return instanceID, action
 }
 
 // TryRule runs a rule, saved or not, for a stored event and waits for the
@@ -384,13 +452,34 @@ func (e *Engine) runStep(step rules.Step, ev *event.Event, ruleID, runID string,
 	if step.TimeoutSeconds > 0 {
 		timeout = time.Duration(step.TimeoutSeconds) * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	out, err := e.Invoke(ctx, target, step.Action, params, plugin.InvokeContext{Event: ev, RuleID: ruleID, RunID: runID})
-	res.Output = out
-	if err != nil {
-		res.Error = err.Error()
+	wait := defaultRetryWait
+	if step.RetryWaitSeconds > 0 {
+		wait = time.Duration(step.RetryWaitSeconds) * time.Second
 	}
-	res.DurationMS = time.Since(start).Milliseconds()
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		out, err := e.Invoke(ctx, target, step.Action, params, plugin.InvokeContext{Event: ev, RuleID: ruleID, RunID: runID})
+		cancel()
+		res.Output, res.Error = out, ""
+		if attempt > 1 {
+			res.Attempts = attempt
+		}
+		if err == nil {
+			break
+		}
+		res.Error = err.Error()
+		if attempt > step.Retries {
+			break
+		}
+		e.log.Info("step failed, trying again", "rule", ruleID, "step", step.ID, "attempt", attempt, "wait", wait, "err", err)
+		select {
+		case <-time.After(wait):
+		case <-e.stopping:
+			return res
+		}
+		if wait *= 2; wait > maxRetryWait {
+			wait = maxRetryWait
+		}
+	}
 	return res
 }

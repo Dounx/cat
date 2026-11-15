@@ -2,7 +2,10 @@
 // implement the same plugin interfaces external plugins are adapted to.
 package builtin
 
-import "github.com/dounx/cat/core/plugin"
+import (
+	"github.com/dounx/cat/core/event"
+	"github.com/dounx/cat/core/plugin"
+)
 
 // Entry pairs a manifest with the factory that builds its instances.
 type Entry struct {
@@ -12,7 +15,31 @@ type Entry struct {
 
 // All returns every built-in plugin.
 func All() []Entry {
-	return []Entry{webhookEntry(), websocketEntry(), httpEntry(), shellEntry()}
+	return []Entry{webhookEntry(), websocketEntry(), httpEntry(), shellEntry(), selfEntry()}
+}
+
+const (
+	// SelfID is the plugin, and the one instance, that stands for the hub
+	// itself as a source of events.
+	SelfID = event.SelfSource
+	// RunFailed is the event the hub emits when a run of a rule ends in an
+	// error.
+	RunFailed = "run.failed"
+)
+
+// selfEntry is the hub as a source: it does nothing of its own, the engine
+// emits its events.
+func selfEntry() Entry {
+	return Entry{
+		Manifest: plugin.Manifest{
+			ID: SelfID, Name: "Cat", Version: "1.0.0", Builtin: true, Singleton: true, Icon: "cat",
+			Category:     plugin.CategoryMonitor,
+			Description:  "Cat 自己的事：某条规则运行失败了。",
+			Capabilities: []string{plugin.CapSource},
+			Events:       []plugin.EventSpec{{Type: RunFailed, Title: "规则运行失败"}},
+		},
+		Factory: func(map[string]any) (plugin.Instance, error) { return plugin.Base{}, nil },
+	}
 }
 
 func str(m map[string]any, key string) string {

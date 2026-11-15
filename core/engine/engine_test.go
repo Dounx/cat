@@ -828,3 +828,78 @@ func TestDefaultInstance(t *testing.T) {
 		t.Fatalf("feeds=%d", count(e, "feeds"))
 	}
 }
+
+// A failed action is tried again as often as its step says, and a run that
+// still ends in an error is told of as an event a rule can act on.
+func TestRetryAndFailureEvent(t *testing.T) {
+	var mu sync.Mutex
+	hits := map[string]int{}
+	var told []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		defer mu.Unlock()
+		hits[r.URL.Path]++
+		switch r.URL.Path {
+		case "/flaky": // fails the first time only
+			if hits[r.URL.Path] == 1 {
+				w.WriteHeader(503)
+			}
+		case "/down":
+			w.WriteHeader(500)
+		case "/told":
+			told = append(told, string(b))
+		}
+	}))
+	defer srv.Close()
+
+	e := newEngine(t)
+	hook, _ := e.SaveInstance(store.Instance{Plugin: "webhook", Name: "hook", Enabled: true})
+	waitRunning(t, e, hook.ID)
+	waitRunning(t, e, "http")
+	step := func(id, path string) rules.Step {
+		return rules.Step{ID: id, Instance: "http", Action: "request", Retries: 1, RetryWaitSeconds: 1,
+			Params: map[string]any{"url": srv.URL + path, "body": "{{ payload.text }}"}}
+	}
+	flaky, _ := e.SaveRule(rules.Rule{Name: "flaky", Enabled: true, Sources: []string{hook.ID},
+		Condition: `payload.to == "flaky"`, Steps: []rules.Step{step("s1", "/flaky")}})
+	down, _ := e.SaveRule(rules.Rule{Name: "down", Enabled: true, Sources: []string{hook.ID},
+		Condition: `payload.to == "down"`, Steps: []rules.Step{step("s1", "/down")}})
+	// the rule that tells of failures fails itself the second time round
+	tell, err := e.SaveRule(rules.Rule{Name: "tell", Enabled: true, Sources: []string{builtin.SelfID},
+		Types: []string{builtin.RunFailed}, Steps: []rules.Step{step("s1", "/told"), {ID: "s2", Instance: "http", Action: "request",
+			Params: map[string]any{"url": srv.URL + "/down"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	post(t, e, hook.ID, `{"to":"flaky"}`, nil)
+	waitFor(t, "the flaky run", func() bool {
+		runs, _ := e.Store.ListRuns(flaky.ID, "", 10)
+		return len(runs) == 1 && runs[0].Status == "ok"
+	})
+	runs, _ := e.Store.ListRuns(flaky.ID, "", 10)
+	if s := runs[0].Steps[0]; s.Attempts != 2 || s.Error != "" {
+		t.Errorf("flaky step: %+v", s)
+	}
+
+	post(t, e, hook.ID, `{"to":"down"}`, nil)
+	waitFor(t, "the failure to be told of", func() bool {
+		runs, _ := e.Store.ListRuns(tell.ID, "", 10)
+		return len(runs) == 1 && runs[0].Status == "error"
+	})
+	runs, _ = e.Store.ListRuns(down.ID, "", 10)
+	if s := runs[0].Steps[0]; runs[0].Status != "error" || s.Attempts != 2 {
+		t.Errorf("down run: %+v", runs[0])
+	}
+	time.Sleep(100 * time.Millisecond) // the failure of "tell" itself is not told of
+	mu.Lock()
+	defer mu.Unlock()
+	if hits["/down"] != 3 || len(told) != 1 || !strings.Contains(told[0], "规则「down」运行失败") || !strings.Contains(told[0], "HTTP 500") {
+		t.Errorf("hits %v, told %q", hits, told)
+	}
+	events, _ := e.Store.ListEvents(store.EventFilter{Type: builtin.RunFailed})
+	if len(events) != 1 || events[0].Payload["rule_id"] != down.ID {
+		t.Errorf("run.failed events: %+v", events)
+	}
+}

@@ -27,6 +27,11 @@ type Step struct {
 	Params          map[string]any `json:"params,omitempty"`
 	ContinueOnError bool           `json:"continue_on_error,omitempty"`
 	TimeoutSeconds  int            `json:"timeout_seconds,omitempty"`
+	// Retries is how many more times a failed action is tried before the
+	// step counts as failed. RetryWaitSeconds is how long to wait before the
+	// first of them (5 when unset); the wait doubles each time after that.
+	Retries          int `json:"retries,omitempty"`
+	RetryWaitSeconds int `json:"retry_wait_seconds,omitempty"`
 }
 
 // Rule matches events and runs a pipeline of steps for each match.
@@ -176,8 +181,12 @@ func (c *Compiled) Scope(ev *event.Event) bool {
 }
 
 // inScope reports whether the event comes from one of the sources and is of
-// one of the types (globs such as "message.*"); an empty list allows any.
+// one of the types (globs such as "message.*"); an empty list allows any,
+// except that the hub's own events are taken only by those who name it.
 func inScope(sources, types []string, ev *event.Event) bool {
+	if len(sources) == 0 && ev.Source == event.SelfSource {
+		return false
+	}
 	if len(sources) > 0 && !contains(sources, ev.Source) {
 		return false
 	}

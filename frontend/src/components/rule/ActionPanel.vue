@@ -25,6 +25,9 @@ const {
   pickAction,
 } = useEditor()
 
+// A count typed into a field: a whole number from 0 up to `max`, or nothing.
+const clamp = (typed: string, max: number) => Math.min(max, Math.max(0, Math.floor(Number(typed) || 0))) || undefined
+
 // Change what the node uses, keeping its action if the new one can do it too.
 function retarget() {
   pickAction('换一个来执行', (instance) => {
@@ -71,6 +74,30 @@ function retarget() {
       <label class="flex cursor-pointer items-center gap-2"
         ><input v-model="node.continue_on_error" type="checkbox" />失败后仍然执行它后面的节点</label
       >
+      <div class="flex flex-wrap items-center gap-1.5">
+        失败后再试
+        <input
+          class="input w-16 px-2 py-1 text-xs"
+          type="number"
+          min="0"
+          max="10"
+          placeholder="0"
+          :value="node.retries || ''"
+          @input="node.retries = clamp(($event.target as HTMLInputElement).value, 10)"
+        />
+        次<template v-if="node.retries"
+          >，先等
+          <input
+            class="input w-16 px-2 py-1 text-xs"
+            type="number"
+            min="1"
+            placeholder="5"
+            :value="node.retry_wait_seconds || ''"
+            @input="node.retry_wait_seconds = clamp(($event.target as HTMLInputElement).value, 3600)"
+          />
+          秒，之后每次加倍</template
+        >
+      </div>
       <p>
         节点标识 <code class="chip">{{ node.id }}</code
         >，后面的节点用 <code class="chip" v-text="`{{ steps.${node.id}.… }}`" /> 引用它的输出。
