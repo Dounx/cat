@@ -944,3 +944,70 @@ func TestInterruptedRunsAreClosed(t *testing.T) {
 		t.Fatalf("events: %+v", events)
 	}
 }
+
+// The collect action holds a run at its step and lets what follows run once
+// for the whole batch: when there are enough items, or when its time comes.
+func TestCollectHoldsAndPassesOn(t *testing.T) {
+	builtin.CollectTick = 50 * time.Millisecond
+	var mu sync.Mutex
+	got := map[string][]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got[r.URL.Path] = append(got[r.URL.Path], string(b))
+		mu.Unlock()
+	}))
+	defer srv.Close()
+	e := newEngine(t)
+	hook, _ := e.SaveInstance(store.Instance{Plugin: "webhook", Name: "hook", Enabled: true})
+	waitRunning(t, e, hook.ID)
+	waitRunning(t, e, "collect")
+	rule := func(name, kind string, params map[string]any) rules.Rule {
+		params["item"] = "{{ payload.text }}"
+		r, err := e.SaveRule(rules.Rule{Name: name, Enabled: true, Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1"}, Sources: []string{hook.ID}},
+				{Kind: rules.KindCondition, Step: rules.Step{ID: "c1"}, Condition: `payload.kind == "` + kind + `"`},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "batch", Instance: "collect", Action: "add", Params: params}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "send", Instance: "http", Action: "request",
+					Params: map[string]any{"url": srv.URL + "/" + kind, "body": "{{ steps.batch.count }}: {{ steps.batch.text }}"}}},
+			},
+			Edges: []rules.Edge{{From: "t1", To: "c1"}, {From: "c1", To: "batch"}, {From: "batch", To: "send"}},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	byCount := rule("by count", "n", map[string]any{"count": 3})
+	byTime := rule("by time", "t", map[string]any{"every": 0.01}) // 0.6 s
+
+	for _, s := range []string{"a", "b", "c", "d"} {
+		post(t, e, hook.ID, `{"kind":"n","text":"`+s+`"}`, nil)
+		// one at a time, so that they are gathered in order
+		waitFor(t, "run "+s, func() bool {
+			runs, _ := e.Store.ListRuns(byCount.ID, "", 10)
+			return len(runs) > 0 && runs[0].Status == "ok" && strings.Contains(runs[0].Steps[0].Params["item"].(string), s)
+		})
+	}
+	runs, _ := e.Store.ListRuns(byCount.ID, "", 10)
+	if len(runs) != 4 || !runs[3].Steps[0].Held || len(runs[3].Steps) != 1 || len(runs[1].Steps) != 2 || !runs[0].Steps[0].Held {
+		t.Fatalf("runs by count: %+v", runs)
+	}
+	post(t, e, hook.ID, `{"kind":"t","text":"x"}`, nil)
+	post(t, e, hook.ID, `{"kind":"t","text":"y"}`, nil)
+	waitFor(t, "the batch to be passed on in time", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(got["/t"]) == 1
+	})
+	mu.Lock()
+	if len(got["/n"]) != 1 || got["/n"][0] != "3: a\n\nb\n\nc" || !strings.HasPrefix(got["/t"][0], "2: ") {
+		t.Fatalf("got %q", got)
+	}
+	mu.Unlock()
+	waitFor(t, "the run that went on", func() bool {
+		runs, _ := e.Store.ListRuns(byTime.ID, "", 10)
+		return len(runs) == 3 && runs[0].Resumed == "batch" && runs[0].Status == "ok" && len(runs[0].Steps) == 2
+	})
+}

@@ -531,6 +531,10 @@ func (h *host) SetStatus(status, message string) { h.e.ReportStatus(h.rec.ID, st
 
 func (h *host) TriggerErrors(errs map[string]string) { h.e.triggerErrors(h.rec.ID, errs) }
 
+func (h *host) Resume(ruleID, stepID, eventID string, output map[string]any) error {
+	return h.e.Resume(ruleID, stepID, eventID, output, h.rec.ID)
+}
+
 func (h *host) DataDir() string {
 	return h.e.InstanceDir(h.rec.ID)
 }

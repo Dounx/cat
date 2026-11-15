@@ -212,9 +212,11 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
     ]
     for (const prev of upstreamActions(doc, n.id)) {
       // what it gave in the trial run, else in the latest run of the same action
-      let output = trialStep(prev.id)?.output
+      const tried = trialStep(prev.id)
+      let output = tried?.held ? undefined : tried?.output
       for (const run of output ? [] : hub.runs) {
-        output = run.steps?.find((s) => s.action === prev.action && s.output)?.output
+        // a step that held its run says how far it has got, not what it gives
+        output = run.steps?.find((s) => s.action === prev.action && s.output && !s.held)?.output
         if (output) break
       }
       const keys = Object.keys(output || {})

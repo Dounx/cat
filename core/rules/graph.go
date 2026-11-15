@@ -514,7 +514,23 @@ func (c *Compiled) Walk(ev *event.Event, outputs map[string]any, act func(Step, 
 	if c.graph == nil {
 		return
 	}
-	w := &walker{c: c.graph, env: func() map[string]any { return Env(ev, outputs) }, seen: map[string]bool{},
+	c.walker(ev, outputs, act, fail, judge, note).run(c.graph.starts(ev))
+}
+
+// WalkFrom is Walk begun past a node instead of at the triggers: the node
+// counts as done, with whatever outputs holds for it, and the walk takes the
+// wires that leave it. It reports whether the graph has such a node.
+func (c *Compiled) WalkFrom(node string, ev *event.Event, outputs map[string]any, act func(Step, map[string]any) bool, fail func(id string, err error), judge Judge, note func(Visit)) bool {
+	if c.graph == nil || c.graph.nodes[node] == nil {
+		return false
+	}
+	w := c.walker(ev, outputs, act, fail, judge, note)
+	w.seen[node] = true
+	w.run([]string{node})
+	return true
+}
+
+func (c *Compiled) walker(ev *event.Event, outputs map[string]any, act func(Step, map[string]any) bool, fail func(id string, err error), judge Judge, note func(Visit)) *walker {
+	return &walker{c: c.graph, env: func() map[string]any { return Env(ev, outputs) }, seen: map[string]bool{},
 		act: act, fail: fail, judge: judge, note: note}
-	w.run(c.graph.starts(ev))
 }

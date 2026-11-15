@@ -2,7 +2,7 @@
 // what it needs connected (a chat, an AI, something to watch) and, given
 // those, builds the rule; the editor then opens on it like on any other.
 import type { Component } from 'vue'
-import { Bell, Bot, CalendarClock, PenLine, TriangleAlert, Webhook } from 'lucide-vue-next'
+import { Bell, Bot, CalendarClock, Layers, PenLine, TriangleAlert, Webhook } from 'lucide-vue-next'
 import type { HubEvent, Instance, Plugin, Rule } from './types'
 import { SELF } from './editor/picking'
 
@@ -137,6 +137,41 @@ export const templates: Template[] = [
         ],
         edges: [
           { from: 't1', to: 'ai' },
+          { from: 'ai', to: 'send' },
+        ],
+      },
+    }),
+  },
+  {
+    id: 'digest',
+    title: '攒一批，让 AI 汇总',
+    about: '新文章、新消息先攒着，每天到点让 AI 汇总成一份，发到聊天里',
+    icon: Layers,
+    needs: [
+      { key: 'from', title: '攒什么', fits: (p) => p.capabilities.includes('source') && p.id !== SELF },
+      ai,
+      notify,
+    ],
+    build: ({ from, ai, to }, plugins) => ({
+      ...blank(`${from.name} → 攒一批 → ${ai.name} → ${to.name}`),
+      graph: {
+        nodes: [
+          trigger('t1', [from.id]),
+          action('batch', 'collect', 'add', { item: '{{ payload.text }}', at: '9:00' }),
+          action(
+            'ai',
+            ai.id,
+            'chat',
+            params(plugins, ai, 'chat', {
+              prompt:
+                '下面是攒下来的 {{ steps.batch.count }} 条内容，汇总成一份简报，分点列出要点：\n\n{{ steps.batch.text }}',
+            }),
+          ),
+          action('send', to.id, 'send', params(plugins, to, 'send', { text: '{{ steps.ai.text }}' })),
+        ],
+        edges: [
+          { from: 't1', to: 'batch' },
+          { from: 'batch', to: 'ai' },
           { from: 'ai', to: 'send' },
         ],
       },

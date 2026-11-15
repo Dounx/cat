@@ -49,6 +49,9 @@ const failed = (p: Pass) => !!(p.visit.error || p.step?.error)
 // An action the run was at when the hub went down.
 const unfinished = (n: ENode, p: Pass) => props.run.status === 'interrupted' && n.kind === 'action' && !p.step
 
+// What to say of a step that held the run: how much it has gathered.
+const held = (s: StepResult) => `已收下，现在攒了 ${s.output?.count ?? '?'} 条，后面的等这一批发出时再运行`
+
 // What to say of an action the run came to and has nothing from: it is still
 // at it, or the hub went down while it was.
 const cut = computed(() => props.run.status === 'interrupted')
@@ -63,7 +66,9 @@ const nodes = computed<CanvasNode[]>(() =>
     let sub = base.sub
     if (!last) sub = '没有走到'
     else if (n.kind === 'action')
-      sub = last.step ? last.step.error || (last.step.output ? gist(last.step.output) : '完成') : going.value
+      sub = last.step
+        ? last.step.error || (last.step.held ? held(last.step) : last.step.output ? gist(last.step.output) : '完成')
+        : going.value
     return {
       ...base,
       sub: last && n.kind !== 'trigger' ? sub + times : sub,
@@ -122,6 +127,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
         </button>
         <h2 class="min-w-0 truncate text-[15px] font-semibold">{{ run.rule_name }}</h2>
         <span v-if="run.replay" class="chip shrink-0">重放 / 试运行</span>
+        <span v-if="run.resumed" class="chip shrink-0">攒够后接着运行</span>
         <span class="flex shrink-0 items-center gap-1.5 text-xs text-mute">
           <span class="dot" :class="statusDot[run.status]" />{{ statusText[run.status] }}
           <template v-if="duration">· {{ duration }}</template>
@@ -205,7 +211,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
             <span class="min-w-0 truncate font-medium">
               <template v-if="picked.length > 1">第 {{ i + 1 }} 次 · </template>
               <template v-if="node.kind === 'condition'">{{ editor.verdict(node, p.visit) }}</template>
-              <template v-else>{{ p.step ? (p.step.error ? '失败' : '完成') : going }}</template>
+              <template v-else>{{
+                p.step ? (p.step.error ? '失败' : p.step.held ? '已收下，先停在这里' : '完成') : going
+              }}</template>
             </span>
             <span class="flex shrink-0 items-center gap-1.5 font-mono text-xs text-mute">
               <span

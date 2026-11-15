@@ -218,7 +218,8 @@ async function replay() {
         <div v-for="r in selectedRuns" :key="r.id" class="mb-3 rounded-xl border border-line">
           <div class="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
             <span class="min-w-0 truncate font-medium"
-              >{{ r.rule_name }}<span v-if="r.replay" class="chip ml-2">重放 / 试运行</span></span
+              >{{ r.rule_name }}<span v-if="r.replay" class="chip ml-2">重放 / 试运行</span
+              ><span v-if="r.resumed" class="chip ml-2">攒够后接着运行</span></span
             >
             <span class="flex shrink-0 items-center gap-1.5 text-xs text-mute"
               ><span class="dot" :class="statusDot[r.status]" />{{ statusText[r.status] }}
@@ -251,6 +252,9 @@ async function replay() {
             <div v-if="s.error" class="mt-2 rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">
               {{ s.error }}
             </div>
+            <p v-if="s.held" class="mt-1.5 text-xs text-mute">
+              已收下，现在攒了 {{ s.output?.count ?? '?' }} 条。规则先停在这里，后面的等这一批发出时再运行。
+            </p>
             <details class="mt-1.5 text-xs text-mute">
               <summary class="cursor-pointer">用了什么、得到什么</summary>
               <h4 class="label mt-2">参数</h4>

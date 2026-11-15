@@ -121,6 +121,9 @@ export interface StepResult {
   duration_ms: number
   // how many times the action was tried, when more than once
   attempts?: number
+  // the step kept the run from going on, without having failed: what
+  // follows runs later, as a run of its own (a batch being gathered)
+  held?: boolean
 }
 // One node a run came to: by which wire, and for a condition which way it
 // left (`branch`: none when it held, "else", or the choice picked) and what
@@ -143,6 +146,8 @@ export interface Run {
   finished_at?: string
   steps: StepResult[]
   replay?: boolean
+  // the step this run went on from, when an earlier run was held there
+  resumed?: string
   // the path the event took through the rule's graph, node by node
   trace?: Visit[]
   // the rule as it stood for this run; comes only with a run asked for by id

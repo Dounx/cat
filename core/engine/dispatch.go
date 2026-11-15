@@ -210,6 +210,13 @@ func (e *Engine) TestCondition(condition, eventID string) (bool, error) {
 // ---- pipeline ----
 
 func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store.Run {
+	return e.executeFrom(r, ev, replay, nil)
+}
+
+// executeFrom runs a rule for an event, from its triggers or, with from set,
+// from past a step that held an earlier run: that step stands in the new run
+// as done.
+func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, from *store.StepResult) *store.Run {
 	run := &store.Run{
 		ID: id.New(), RuleID: r.ID, RuleName: r.Name, EventID: ev.ID,
 		Status: "running", StartedAt: time.Now(), Steps: []store.StepResult{}, Replay: replay,
@@ -219,10 +226,16 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 	recorded := r.Graph == nil
 	snapshot := r.Rule
 	run.Rule = &snapshot
+	outputs := map[string]any{}
+	if from != nil {
+		recorded = true
+		run.Resumed = from.ID
+		run.Steps = append(run.Steps, *from)
+		outputs[from.ID] = from.Output
+	}
 	if recorded {
 		e.saveRun(run)
 	}
-	outputs := map[string]any{}
 	failed := false
 	// act runs one step and reports whether what follows it may run.
 	act := func(step rules.Step, env map[string]any) bool {
@@ -244,11 +257,18 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 			}
 		}
 		e.saveRun(run)
-		return true
+		// a step that holds ends its branch here, without having failed
+		return !res.Held
 	}
 	if r.Graph != nil {
+		walk := r.Walk
+		if from != nil {
+			walk = func(ev *event.Event, outputs map[string]any, act func(rules.Step, map[string]any) bool, fail func(string, error), judge rules.Judge, note func(rules.Visit)) {
+				r.WalkFrom(from.ID, ev, outputs, act, fail, judge, note)
+			}
+		}
 		// A failed action ends its own branch; the other branches still run.
-		r.Walk(ev, outputs, act, func(nodeID string, err error) {
+		walk(ev, outputs, act, func(nodeID string, err error) {
 			failed, recorded = true, true
 			res := store.StepResult{ID: nodeID, Action: "condition", Error: "条件求值失败：" + err.Error()}
 			if errors.Is(err, rules.ErrLoops) {
@@ -270,7 +290,16 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 			return verdict, nil
 		}, func(v rules.Visit) { run.Trace = append(run.Trace, v) })
 	} else {
-		for _, step := range r.Steps {
+		steps := r.Steps
+		if from != nil { // the steps after the one that held
+			for i, s := range steps {
+				if s.ID == from.ID {
+					steps = steps[i+1:]
+					break
+				}
+			}
+		}
+		for _, step := range steps {
 			if !act(step, rules.Env(ev, outputs)) {
 				break
 			}
@@ -382,6 +411,56 @@ func (e *Engine) describe(instanceID, action string) (string, string) {
 	return instanceID, action
 }
 
+// Resume runs what follows a step of a rule as a new run, the step standing
+// as done with the given output: how an action that held a run (see
+// plugin.ErrHeld) lets it go on later. instanceID is the instance the step
+// was carried out by.
+func (e *Engine) Resume(ruleID, stepID, eventID string, output map[string]any, instanceID string) error {
+	e.mu.RLock()
+	var r *rules.Compiled
+	for _, c := range e.rules {
+		if c.ID == ruleID {
+			r = c
+		}
+	}
+	e.mu.RUnlock()
+	if r == nil {
+		return plugin.ErrGone
+	}
+	var step *rules.Step
+	for i := range r.Steps {
+		if r.Steps[i].ID == stepID {
+			step = &r.Steps[i]
+		}
+	}
+	if r.Graph != nil {
+		for i := range r.Graph.Nodes {
+			if n := &r.Graph.Nodes[i]; n.ID == stepID && n.Kind == rules.KindAction {
+				step = &n.Step
+			}
+		}
+	}
+	if step == nil {
+		return plugin.ErrGone
+	}
+	if !r.Enabled {
+		return fmt.Errorf("规则已停用：%s", r.Name)
+	}
+	ev, err := e.Store.GetEvent(eventID)
+	if err != nil { // pruned by now: the run still needs one to be for
+		ev = &event.Event{ID: eventID, Source: instanceID, Plugin: instanceID, Type: "resumed", Time: time.Now(), Payload: map[string]any{}}
+	}
+	from := &store.StepResult{ID: stepID, Instance: instanceID, Action: step.Action, Output: output}
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.sem <- struct{}{}
+		defer func() { <-e.sem }()
+		e.executeFrom(r, ev, false, from)
+	}()
+	return nil
+}
+
 // TryRule runs a rule, saved or not, for a stored event and waits for the
 // outcome. The actions are really carried out. It returns nil when the event starts nothing in the rule: no trigger
 // takes it, or every path ends before an action.
@@ -486,11 +565,15 @@ func (e *Engine) runStep(step rules.Step, ev *event.Event, ruleID, runID string,
 	e.awaitStarted(target)
 	for attempt := 1; ; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		out, err := e.Invoke(ctx, target, step.Action, params, plugin.InvokeContext{Event: ev, RuleID: ruleID, RunID: runID})
+		out, err := e.Invoke(ctx, target, step.Action, params, plugin.InvokeContext{Event: ev, RuleID: ruleID, RunID: runID, StepID: step.ID})
 		cancel()
 		res.Output, res.Error = out, ""
 		if attempt > 1 {
 			res.Attempts = attempt
+		}
+		if errors.Is(err, plugin.ErrHeld) {
+			res.Held = true
+			break
 		}
 		if err == nil {
 			break

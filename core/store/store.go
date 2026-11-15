@@ -38,6 +38,9 @@ type StepResult struct {
 	DurationMS int64          `json:"duration_ms"`
 	// Attempts is how many times the action was tried, when more than once.
 	Attempts int `json:"attempts,omitempty"`
+	// Held marks a step that kept the run from going on past it without
+	// having failed: what follows runs later, as a run of its own.
+	Held bool `json:"held,omitempty"`
 }
 
 // Run records one execution of a rule against an event.
@@ -51,6 +54,9 @@ type Run struct {
 	FinishedAt *time.Time   `json:"finished_at,omitempty"`
 	Steps      []StepResult `json:"steps"`
 	Replay     bool         `json:"replay,omitempty"`
+	// Resumed is the step a run started from, when it goes on from where an
+	// earlier one was held.
+	Resumed string `json:"resumed,omitempty"`
 	// Trace is the path the event took through a graph rule: every node it
 	// came to, in order. Rule is the rule as it stood for this run, so that
 	// the path can still be drawn after the rule has changed; it is left out

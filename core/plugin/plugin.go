@@ -5,6 +5,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 
 	"github.com/dounx/cat/core/event"
 )
@@ -123,7 +124,19 @@ type InvokeContext struct {
 	RuleID     string       `json:"rule_id,omitempty"`
 	RunID      string       `json:"run_id,omitempty"`
 	InstanceID string       `json:"instance_id,omitempty"`
+	// StepID is the step, or the node of a graph, the action is carried out
+	// for.
+	StepID string `json:"step_id,omitempty"`
 }
+
+// ErrHeld is what an action returns to keep the run from going on past its
+// step, without having failed: it holds on to what it was given, and has
+// what follows run later through Host.Resume.
+var ErrHeld = errors.New("held")
+
+// ErrGone is what Host.Resume returns when the rule or the step to go on
+// from is no longer there.
+var ErrGone = errors.New("the rule or the step is gone")
 
 // Option is one value an instance offers for a field marked "x-pick": "option".
 type Option struct {
@@ -147,6 +160,13 @@ type Host interface {
 	// TriggerErrors reports what is wrong with the triggers last given to the
 	// instance, by trigger id; empty when all of them are fine.
 	TriggerErrors(errs map[string]string)
+	// Resume runs what follows a step of a rule, as a new run: the step
+	// counts as done with the given output, which the nodes after it read as
+	// steps.<id>. eventID names the event the run is for; one that is gone
+	// is stood in for by an empty one. It returns ErrGone when the rule or
+	// the step no longer exists, and another error when the rule is switched
+	// off.
+	Resume(ruleID, stepID, eventID string, output map[string]any) error
 }
 
 // Instance is one configured, running copy of a plugin.
