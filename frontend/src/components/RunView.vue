@@ -46,6 +46,13 @@ function passes(n: ENode): Pass[] {
   return trialVisits(n.id).map((visit, i) => ({ visit, step: steps[i] }))
 }
 const failed = (p: Pass) => !!(p.visit.error || p.step?.error)
+// An action the run was at when the hub went down.
+const unfinished = (n: ENode, p: Pass) => props.run.status === 'interrupted' && n.kind === 'action' && !p.step
+
+// What to say of an action the run came to and has nothing from: it is still
+// at it, or the hub went down while it was.
+const cut = computed(() => props.run.status === 'interrupted')
+const going = computed(() => (cut.value ? '被打断，没有做完' : '运行中…'))
 
 const nodes = computed<CanvasNode[]>(() =>
   doc.nodes.map((n) => {
@@ -56,19 +63,25 @@ const nodes = computed<CanvasNode[]>(() =>
     let sub = base.sub
     if (!last) sub = '没有走到'
     else if (n.kind === 'action')
-      sub = last.step ? last.step.error || (last.step.output ? gist(last.step.output) : '完成') : '运行中…'
+      sub = last.step ? last.step.error || (last.step.output ? gist(last.step.output) : '完成') : going.value
     return {
       ...base,
       sub: last && n.kind !== 'trigger' ? sub + times : sub,
       dim: !last,
-      bad: !!last && failed(last),
-      state: last ? (failed(last) ? 'bad' : last.step || n.kind !== 'action' ? 'ok' : undefined) : undefined,
+      bad: !!last && (failed(last) || unfinished(n, last)),
+      state: last
+        ? failed(last) || unfinished(n, last)
+          ? 'bad'
+          : last.step || n.kind !== 'action'
+            ? 'ok'
+            : undefined
+        : undefined,
     }
   }),
 )
 
-const statusText: Record<string, string> = { ok: '成功', error: '失败', running: '运行中' }
-const statusDot: Record<string, string> = { ok: 'ok', error: 'bad', running: 'warn' }
+const statusText: Record<string, string> = { ok: '成功', error: '失败', running: '运行中', interrupted: '被打断' }
+const statusDot: Record<string, string> = { ok: 'ok', error: 'bad', running: 'warn', interrupted: 'bad' }
 const duration = computed(() => {
   if (!props.run.finished_at) return ''
   const ms = new Date(props.run.finished_at).getTime() - new Date(props.run.started_at).getTime()
@@ -192,10 +205,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
             <span class="min-w-0 truncate font-medium">
               <template v-if="picked.length > 1">第 {{ i + 1 }} 次 · </template>
               <template v-if="node.kind === 'condition'">{{ editor.verdict(node, p.visit) }}</template>
-              <template v-else>{{ p.step ? (p.step.error ? '失败' : '完成') : '运行中…' }}</template>
+              <template v-else>{{ p.step ? (p.step.error ? '失败' : '完成') : going }}</template>
             </span>
             <span class="flex shrink-0 items-center gap-1.5 font-mono text-xs text-mute">
-              <span class="dot" :class="failed(p) ? 'bad' : p.step || node.kind === 'condition' ? 'ok' : 'warn'" />
+              <span
+                class="dot"
+                :class="failed(p) || (cut && !p.step) ? 'bad' : p.step || node.kind === 'condition' ? 'ok' : 'warn'"
+              />
               <template v-if="p.step?.attempts">试了 {{ p.step.attempts }} 次 · </template>
               <template v-if="p.step">{{ p.step.duration_ms }} ms</template>
             </span>

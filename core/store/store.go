@@ -46,7 +46,7 @@ type Run struct {
 	RuleID     string       `json:"rule_id"`
 	RuleName   string       `json:"rule_name"`
 	EventID    string       `json:"event_id"`
-	Status     string       `json:"status"` // running | ok | error
+	Status     string       `json:"status"` // running | ok | error | interrupted
 	StartedAt  time.Time    `json:"started_at"`
 	FinishedAt *time.Time   `json:"finished_at,omitempty"`
 	Steps      []StepResult `json:"steps"`
@@ -238,6 +238,23 @@ func (s *Store) ListRuns(ruleID, eventID string, limit int) ([]Run, error) {
 	q += " ORDER BY id DESC LIMIT ?"
 	args = append(args, limit)
 	return listJSON[Run](s, q, args...)
+}
+
+// InterruptRuns ends the runs still marked as running: the hub that was
+// carrying them out is gone, and they will not go on. It returns them as they
+// now stand, oldest first.
+func (s *Store) InterruptRuns(at time.Time) ([]Run, error) {
+	list, err := listJSON[Run](s, `SELECT data FROM runs WHERE json_extract(data, '$.status')='running' ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		list[i].Status, list[i].FinishedAt = "interrupted", &at
+		if err := s.SaveRun(&list[i]); err != nil {
+			return nil, err
+		}
+	}
+	return list, nil
 }
 
 // ---- instances ----

@@ -903,3 +903,44 @@ func TestRetryAndFailureEvent(t *testing.T) {
 		t.Errorf("run.failed events: %+v", events)
 	}
 }
+
+// A run the last hub left unfinished is closed as interrupted when the next
+// one starts, and told of as a failure.
+func TestInterruptedRunsAreClosed(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ev := &event.Event{ID: "e1", Source: "hook", Plugin: "webhook", Type: "webhook.received", Time: time.Now(), Payload: map[string]any{}}
+	st.SaveEvent(ev)
+	st.SaveRun(&store.Run{ID: "r1", RuleID: "x", RuleName: "long", EventID: "e1", Status: "running", StartedAt: time.Now(),
+		Steps: []store.StepResult{{ID: "s1", Instance: "http", Action: "request"}}})
+	st.SaveRun(&store.Run{ID: "r2", RuleID: "x", RuleName: "long", EventID: "e1", Status: "ok", StartedAt: time.Now()})
+	tell := rules.Rule{ID: "tell", Name: "tell", Enabled: true, Sources: []string{builtin.SelfID},
+		Steps: []rules.Step{{ID: "s1", Instance: "shell", Action: "run", Params: map[string]any{"command": "cat"}}}}
+	st.SaveRule(&tell)
+
+	e := engine.New(st, t.TempDir(), nil)
+	for _, b := range builtin.All() {
+		e.RegisterPlugin(b.Manifest, b.Factory)
+	}
+	if err := e.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+	if r, _ := st.GetRun("r1"); r.Status != "interrupted" || r.FinishedAt == nil {
+		t.Fatalf("r1: %+v", r)
+	}
+	if r, _ := st.GetRun("r2"); r.Status != "ok" {
+		t.Fatalf("r2: %+v", r)
+	}
+	waitFor(t, "word of it", func() bool {
+		runs, _ := st.ListRuns("tell", "", 10)
+		return len(runs) == 1 && runs[0].Status == "ok"
+	})
+	events, _ := st.ListEvents(store.EventFilter{Type: builtin.RunFailed})
+	if text, _ := events[0].Payload["text"].(string); len(events) != 1 || !strings.Contains(text, "被打断") || events[0].Payload["interrupted"] != true {
+		t.Fatalf("events: %+v", events)
+	}
+}

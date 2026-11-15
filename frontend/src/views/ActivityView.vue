@@ -31,6 +31,9 @@ const runsOf = computed(() => {
   for (const r of hub.runs) m.set(r.event_id, [...(m.get(r.event_id) || []), r])
   return m
 })
+// A run that did not come through: an action failed, or the hub went down
+// while it was going.
+const bad = (r: Run) => r.status === 'error' || r.status === 'interrupted'
 const filtered = computed(() => {
   const k = keyword.value.trim().toLowerCase()
   return hub.events.filter((e) => {
@@ -38,7 +41,7 @@ const filtered = computed(() => {
     return (
       (!source.value || e.source === source.value) &&
       (!ruleId.value || runs.some((r) => r.rule_id === ruleId.value)) &&
-      (!onlyFailed.value || runs.some((r) => r.status === 'error')) &&
+      (!onlyFailed.value || runs.some(bad)) &&
       (!k ||
         eventTitle(hub.plugins, e).toLowerCase().includes(k) ||
         e.type.toLowerCase().includes(k) ||
@@ -49,13 +52,13 @@ const filtered = computed(() => {
 })
 const filtering = computed(() => !!(source.value || ruleId.value || onlyFailed.value || keyword.value.trim()))
 
-const statusText: Record<string, string> = { ok: '成功', error: '失败', running: '运行中' }
-const statusDot: Record<string, string> = { ok: 'ok', error: 'bad', running: 'warn' }
+const statusText: Record<string, string> = { ok: '成功', error: '失败', running: '运行中', interrupted: '被打断' }
+const statusDot: Record<string, string> = { ok: 'ok', error: 'bad', running: 'warn', interrupted: 'bad' }
 // One line for what became of an event.
 function outcome(e: HubEvent): { dot: string; text: string } | null {
   const runs = runsOf.value.get(e.id)
   if (!runs?.length) return null
-  const worst = runs.find((r) => r.status === 'error') || runs.find((r) => r.status === 'running') || runs[0]
+  const worst = runs.find(bad) || runs.find((r) => r.status === 'running') || runs[0]
   const names = [...new Set(runs.map((r) => r.rule_name))]
   return { dot: statusDot[worst.status], text: `${names.join('、')} · ${statusText[worst.status]}` }
 }
@@ -261,6 +264,9 @@ async function replay() {
             class="flex items-center gap-2 border-t border-line px-4 py-2.5 text-sm text-mute"
           >
             <span class="dot warn" />运行中…
+          </p>
+          <p v-if="r.status === 'interrupted'" class="border-t border-line px-4 py-2.5 text-sm text-bad">
+            Cat 在这次运行跑完之前退出了，后面的没有再执行。
           </p>
         </div>
 

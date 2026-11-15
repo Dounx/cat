@@ -292,6 +292,29 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 	return run
 }
 
+// awaitStarted waits, for a while, for an instance that is still starting:
+// an event that comes in while the hub starts up finds the instance its rule
+// uses on the way up, not down.
+func (e *Engine) awaitStarted(instanceID string) {
+	deadline := time.After(startWait)
+	for {
+		e.mu.RLock()
+		r, ok := e.running[instanceID]
+		starting := ok && r.status == StatusStarting
+		e.mu.RUnlock()
+		if !starting {
+			return
+		}
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-deadline:
+			return
+		case <-e.stopping:
+			return
+		}
+	}
+}
+
 // reportFailure emits a run.failed event for a run that ended in an error, so
 // that a rule can tell someone. A run started by such an event is not
 // reported in turn: a rule that fails to tell would otherwise go round.
@@ -314,12 +337,16 @@ func (e *Engine) reportFailure(run *store.Run, ev *event.Event) {
 		errs = append(errs, map[string]any{"step": s.ID, "instance": s.Instance, "action": s.Action, "error": s.Error})
 	}
 	text := fmt.Sprintf("规则「%s」运行失败", run.RuleName)
+	if run.Status == "interrupted" {
+		text = fmt.Sprintf("规则「%s」的一次运行被打断：Cat 在它跑完之前退出了（%s 开始，做完了 %d 步）",
+			run.RuleName, run.StartedAt.Local().Format("1月2日 15:04"), len(run.Steps))
+	}
 	if len(lines) > 0 {
 		text += "\n" + strings.Join(lines, "\n")
 	}
 	payload := map[string]any{
 		"text": text, "rule_id": run.RuleID, "rule_name": run.RuleName, "run_id": run.ID,
-		"event_id": run.EventID, "errors": errs,
+		"event_id": run.EventID, "errors": errs, "interrupted": run.Status == "interrupted",
 	}
 	if len(errs) > 0 {
 		first := errs[0].(map[string]any)
@@ -456,6 +483,7 @@ func (e *Engine) runStep(step rules.Step, ev *event.Event, ruleID, runID string,
 	if step.RetryWaitSeconds > 0 {
 		wait = time.Duration(step.RetryWaitSeconds) * time.Second
 	}
+	e.awaitStarted(target)
 	for attempt := 1; ; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		out, err := e.Invoke(ctx, target, step.Action, params, plugin.InvokeContext{Event: ev, RuleID: ruleID, RunID: runID})

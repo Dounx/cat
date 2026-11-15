@@ -29,7 +29,9 @@ const (
 	defaultStepTimeout = 10 * time.Minute
 	defaultRetryWait   = 5 * time.Second
 	maxRetryWait       = 5 * time.Minute
-	keepEvents         = 20000
+	// startWait is how long a step waits for an instance that is starting.
+	startWait  = 30 * time.Second
+	keepEvents = 20000
 )
 
 // Message is pushed to live subscribers (the UI's event stream).
@@ -254,7 +256,30 @@ func (e *Engine) Start() error {
 		}
 		e.launch(rec)
 	}
+	e.interruptRuns()
 	return nil
+}
+
+// interruptRuns closes the runs the last hub left unfinished when it went
+// down (a crash, a kill, the machine switched off): they are marked as
+// interrupted, where they would otherwise read as running for ever, and told
+// of like any run that failed. Nothing is run again: an action that had
+// started may well have been carried out.
+func (e *Engine) interruptRuns() {
+	list, err := e.Store.InterruptRuns(time.Now())
+	if err != nil {
+		e.log.Warn("close unfinished runs", "err", err)
+		return
+	}
+	for i := range list {
+		run := &list[i]
+		e.log.Warn("run was interrupted", "run", run.ID, "rule", run.RuleName, "started", run.StartedAt.Format(time.RFC3339))
+		ev, err := e.Store.GetEvent(run.EventID)
+		if err != nil || run.Replay {
+			continue
+		}
+		e.reportFailure(run, ev)
+	}
 }
 
 // Stop stops all instances and waits for in-flight runs.
