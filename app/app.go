@@ -21,8 +21,13 @@ import (
 	"github.com/dounx/cat/core/logfile"
 	"github.com/dounx/cat/core/pluginhost"
 	"github.com/dounx/cat/core/store"
+	"github.com/dounx/cat/core/update"
 	"github.com/dounx/cat/frontend"
 )
+
+// Version is what this build calls itself. A release build is given its
+// version by the linker; a build without one never updates itself.
+var Version = update.Dev
 
 type Options struct {
 	Addr    string // listen address; ":0" style picks a free port
@@ -36,6 +41,9 @@ type Options struct {
 	PluginDirs []string
 	// MarketURL is the plugin market index (http(s):// or file://).
 	MarketURL string
+	// UpdateURL is the manifest the app updates itself from: empty for the
+	// latest release, "off" for never.
+	UpdateURL string
 	// Secrets overrides where credentials are kept (default: a private file
 	// in the data directory).
 	Secrets engine.Secrets
@@ -49,6 +57,8 @@ type App struct {
 	Store   *store.Store
 	Server  *api.Server
 	Plugins *pluginhost.Host
+	// Updater keeps the app current. A shell sets its Restart.
+	Updater *update.Updater
 	DataDir string
 	// LogPath is the file the log is also written to; empty when it could
 	// not be opened.
@@ -181,6 +191,7 @@ func (a *App) Run(ctx context.Context) error {
 	a.http = &http.Server{Handler: a.Server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	errc := make(chan error, 1)
 	go func() { errc <- a.http.Serve(a.listener) }()
+	go a.Updater.Run(ctx)
 	select {
 	case err := <-errc:
 		a.shutdown()

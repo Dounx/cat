@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Activity, Plug, Workflow } from 'lucide-vue-next'
+import { Activity, ArrowUpCircle, Plug, Workflow } from 'lucide-vue-next'
 import { useHub } from './hub'
 import { get, post } from './api'
+import type { Update } from './types'
 
 const hub = useHub()
 const token = ref('')
@@ -41,6 +42,27 @@ const nav = [
   { to: '/activity', label: '记录', icon: Activity },
 ]
 
+// The hub looks for a newer version of itself by its own clock, and downloads
+// it. Here it is asked to look now, and told to install what it downloaded.
+const checking = ref(false)
+const downloaded = computed(() => {
+  const { done = 0, total = 0 } = hub.update
+  return total > 0 ? ` ${Math.floor((done / total) * 100)}%` : ''
+})
+async function checkUpdate() {
+  checking.value = true
+  const u = await hub.run(() => post<Update>('/update/check'))
+  checking.value = false
+  if (!u) return
+  hub.update = u
+  if (u.state === 'current') hub.notify(`已经是最新版本 ${u.version}`)
+  else if (u.state === 'failed') hub.notify(u.reason || '检查更新失败', true)
+}
+async function applyUpdate() {
+  const u = await hub.run(() => post<Update>('/update/apply'))
+  if (u) hub.update = u
+}
+
 async function login() {
   loginError.value = ''
   try {
@@ -72,10 +94,21 @@ onMounted(async () => {
 <template>
   <div class="flex h-full flex-col">
     <header class="gutter grid h-13 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-4">
-      <RouterLink to="/rules" class="flex items-center gap-2 justify-self-start">
-        <img src="/cat.svg" class="h-6 w-6 transition-transform duration-300 ease-glide hover:-rotate-8" alt="" />
-        <span class="text-[15px] font-semibold tracking-tight">Cat</span>
-      </RouterLink>
+      <div class="flex items-center gap-2 justify-self-start">
+        <RouterLink to="/rules" class="flex items-center gap-2">
+          <img src="/cat.svg" class="h-6 w-6 transition-transform duration-300 ease-glide hover:-rotate-8" alt="" />
+          <span class="text-[15px] font-semibold tracking-tight">Cat</span>
+        </RouterLink>
+        <button
+          v-if="hub.update.state !== 'off'"
+          class="cursor-pointer pt-0.5 text-xs text-mute tabular-nums hover:text-accent disabled:pointer-events-none"
+          title="检查更新"
+          :disabled="checking || hub.update.state === 'downloading' || hub.update.state === 'restarting'"
+          @click="checkUpdate"
+        >
+          {{ checking ? '正在检查…' : hub.update.version }}
+        </button>
+      </div>
       <nav ref="navEl" class="seg">
         <span
           class="thumb"
@@ -92,12 +125,34 @@ onMounted(async () => {
           />
         </RouterLink>
       </nav>
-      <div
-        class="flex items-center gap-2 justify-self-end text-xs text-mute"
-        :title="hub.connected ? '收到的事件和规则的执行结果会实时出现' : '正在尝试重新连接'"
-      >
-        <span class="dot" :class="hub.connected ? 'ok live' : 'bad'" />
-        {{ hub.connected ? '实时连接中' : '连接已断开' }}
+      <div class="flex items-center gap-3 justify-self-end text-xs text-mute">
+        <!-- a newer version: downloaded and one click away, or to be fetched by hand -->
+        <button
+          v-if="hub.update.state === 'ready'"
+          class="btn btn-primary !rounded-full !px-2.5 !py-1 !text-xs"
+          :title="`新版本已经下载好。安装时 Cat 会重新启动，正在执行的规则会中断`"
+          @click="applyUpdate"
+        >
+          <ArrowUpCircle :size="13" />更新到 {{ hub.update.latest }}
+        </button>
+        <a
+          v-else-if="hub.update.state === 'manual'"
+          class="flex items-center gap-1 text-accent hover:underline"
+          :href="hub.update.notes"
+          target="_blank"
+          :title="`${hub.update.reason}，需要手动下载安装`"
+        >
+          <ArrowUpCircle :size="13" />有新版本 {{ hub.update.latest }}
+        </a>
+        <span v-else-if="hub.update.state === 'downloading'">正在下载 {{ hub.update.latest }}{{ downloaded }}</span>
+        <span v-else-if="hub.update.state === 'restarting'">正在重新启动…</span>
+        <span
+          class="flex items-center gap-2"
+          :title="hub.connected ? '收到的事件和规则的执行结果会实时出现' : '正在尝试重新连接'"
+        >
+          <span class="dot" :class="hub.connected ? 'ok live' : 'bad'" />
+          {{ hub.connected ? '实时连接中' : '连接已断开' }}
+        </span>
       </div>
     </header>
 

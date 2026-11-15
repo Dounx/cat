@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"github.com/dounx/cat/core/market"
 	"github.com/dounx/cat/core/mcp"
 	"github.com/dounx/cat/core/pluginhost"
+	"github.com/dounx/cat/core/update"
 )
 
 // extend wires optional subsystems (external plugins, setup wizards, the
@@ -65,6 +67,21 @@ func (a *App) extend() error {
 		})
 	})
 	a.Server.Extend(a.mcpRoutes)
+	kind := update.Catd
+	if a.opts.Desktop {
+		kind = update.Desktop
+	}
+	a.Updater = update.New(a.opts.UpdateURL, Version, kind, filepath.Join(a.DataDir, "update"))
+	var told string
+	a.Updater.Changed = func(s update.Status) {
+		// Once per state: a download reports its progress many times.
+		if state := s.State + s.Latest; state != told {
+			told = state
+			slog.Info("update", "state", s.State, "running", s.Version, "latest", s.Latest, "reason", s.Reason)
+		}
+		a.Engine.Publish("update", s)
+	}
+	a.Server.Extend(a.updateRoutes)
 	a.Server.Desktop = a.opts.Desktop
 	if open := a.opts.OpenURL; open != nil {
 		a.Server.Extend(func(mux *http.ServeMux) {
@@ -126,6 +143,25 @@ func (a *App) mcpRoutes(mux *http.ServeMux) {
 			return
 		}
 		api.WriteJSON(w, 200, map[string]any{"url": a.MCPURL(), "harnesses": list()})
+	})
+}
+
+// updateRoutes tell what version is running and whether a newer one is
+// there, look for one when asked, and install the one that was downloaded.
+func (a *App) updateRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/update", func(w http.ResponseWriter, r *http.Request) {
+		api.WriteJSON(w, 200, a.Updater.Status())
+	})
+	mux.HandleFunc("POST /api/update/check", func(w http.ResponseWriter, r *http.Request) {
+		// Not the request's context: a download goes on when the page is closed.
+		api.WriteJSON(w, 200, a.Updater.Check(context.Background()))
+	})
+	mux.HandleFunc("POST /api/update/apply", func(w http.ResponseWriter, r *http.Request) {
+		if err := a.Updater.Apply(); err != nil {
+			api.WriteErr(w, 400, err.Error())
+			return
+		}
+		api.WriteJSON(w, 200, a.Updater.Status())
 	})
 }
 

@@ -4,6 +4,10 @@ EXE := $(if $(filter windows,$(GOOS)),.exe,)
 GO_PLUGINS := telegram feishu dingtalk email github onebot qqbot wecom rss rsshub webwatch apiwatch schedule claude-desktop chatgpt-desktop deepseek-harness llm magpie jev
 NODE_PLUGINS := discord
 
+# A release build is told its version (CAT_VERSION=0.2.0 make ...); a build
+# without one is "dev" and never updates itself.
+VERSION_FLAG := $(if $(CAT_VERSION),-X github.com/dounx/cat/app.Version=$(CAT_VERSION))
+
 .PHONY: all frontend plugins catd desktop app test fmt fmt-check run dev clean
 
 all: frontend plugins catd
@@ -22,7 +26,7 @@ plugins:
 	done
 
 catd:
-	go build -o bin/catd$(EXE) ./cmd/catd
+	go build $(if $(VERSION_FLAG),-ldflags "$(VERSION_FLAG)") -o bin/catd$(EXE) ./cmd/catd
 
 # The desktop shell is its own Go module (it needs the platform's webview
 # libraries, and CGO everywhere but Windows, which the headless build does
@@ -30,7 +34,7 @@ catd:
 # and the executable is built without a console window.
 desktop: frontend
 	$(if $(filter windows,$(GOOS)),sh desktop/windows/syso.sh)
-	cd desktop && go build -tags production -ldflags "-s -w$(if $(filter windows,$(GOOS)), -H windowsgui)" -o ../bin/cat-desktop$(EXE) .
+	cd desktop && go build -tags production -ldflags "-s -w $(VERSION_FLAG)$(if $(filter windows,$(GOOS)), -H windowsgui)" -o ../bin/cat-desktop$(EXE) .
 
 # Wrap the desktop binary and the plugins into the platform's package:
 # bin/Cat.app on macOS, bin/Cat-linux (and a .deb) on Linux, bin/Cat-windows

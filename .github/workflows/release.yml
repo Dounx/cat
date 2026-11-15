@@ -5,6 +5,7 @@ name: Release
 #   - the desktop app: Cat.app for macOS, a tarball and a .deb for Linux, a zip
 #     for Windows
 #   - the plugin market: one zip per plugin and platform, and index.json
+#   - update.json, which running copies read to update themselves
 #
 # Running it by hand (workflow_dispatch) builds everything and keeps it as
 # workflow artifacts, without publishing.
@@ -124,6 +125,14 @@ jobs:
         with:
           path: assets
           merge-multiple: true
+      # Only the script is needed from the repository.
+      - uses: actions/checkout@v7
+        with:
+          path: source
+          sparse-checkout: scripts
+      # Running copies read this from releases/latest/download/update.json.
+      - name: Write the update manifest
+        run: python3 source/scripts/build-update.py "$GITHUB_REF_NAME" "${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}" assets
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}

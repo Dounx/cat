@@ -319,6 +319,7 @@ git tag v0.2.0 && git push origin v0.2.0
   - `Cat-<版本>-macos-arm64.zip`：首次打开需要在「系统设置 → 隐私与安全性」里放行。
   - `Cat-<版本>-linux-<架构>.tar.gz`（免安装目录）和 `.deb`（装到 `/opt/cat`，依赖 GTK 4 与 WebKitGTK 6.0），有 amd64 和 arm64。
   - `Cat-<版本>-windows-amd64.zip`：免安装目录，首次运行时 SmartScreen 可能提示，选「仍要运行」。
+- `update.json`：这一版的版本号，和每种安装包在每个平台上的下载地址与 SHA-256。运行中的 Cat 靠它更新自己（见下面的「自动更新」）。
 - 插件市场：每个插件每个平台一个 zip，加上 `index.json`。把 `--market` 指向 `https://github.com/<用户>/<仓库>/releases/latest/download/index.json` 就能一直用最新一版的市场。
 
 在 Actions 页面手动运行 Release 只构建、不发布，产物留在这次运行的附件里，可以用来试跑。本地也能打同样的包：
@@ -327,7 +328,19 @@ git tag v0.2.0 && git push origin v0.2.0
 make frontend
 python3 scripts/build-market.py <基础地址>   # 输出到 dist/market
 python3 scripts/build-release.py v0.2.0      # 输出到 dist/release
+python3 scripts/build-update.py v0.2.0 <基础地址> dist/release   # 在 dist/release 里写出 update.json
 ```
+
+### 自动更新
+
+发布出来的 Cat（桌面应用和 `catd`）会自己更新：启动后不久、之后每 6 小时读一次最新 Release 里的 `update.json`，有新版本就在后台下载、校验 SHA-256 并解压。下载好以后界面右上角出现「更新到 x.y.z」，点了才安装：把新文件换到安装位置，然后重新启动（`catd` 原地换成新程序，进程号不变；桌面应用退出后重新打开）。不点就一直用现在的版本。
+
+- 界面左上角的版本号可以点，立即检查一次；桌面应用的托盘菜单里也有「检查更新」。
+- 只替换安装包里有的文件，装在旁边的其它插件和文件不动。
+- 装的位置改不了（比如 `.deb` 装到 `/opt/cat`）或这个平台没有安装包时，只提示有新版本并给出下载页，需要手动安装。
+- `--update <地址>`（或环境变量 `CAT_UPDATE`）换一个 `update.json` 的地址，`--update off` 关掉自动更新。
+- 版本号在构建时写进程序（`CAT_VERSION=0.2.0 make app`）；没有版本号的构建（`make run`、`make dev`）是 `dev`，从不更新自己。
+- 和插件市场一样，安装包没有代码签名，可信度来自 HTTPS 和 `update.json` 里的校验值。
 
 - [写一个插件](docs/plugin-development.md)
 - [插件协议](docs/plugin-protocol.md)

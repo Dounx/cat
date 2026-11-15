@@ -17,6 +17,7 @@ import (
 
 	"github.com/dounx/cat/app"
 	"github.com/dounx/cat/core/engine"
+	"github.com/dounx/cat/core/update"
 	"github.com/dounx/cat/desktop/autostart"
 )
 
@@ -30,10 +31,12 @@ var trayIcon []byte
 var appIcon []byte
 
 func main() {
+	update.AwaitPredecessor()
 	addr := flag.String("addr", envOr("CAT_ADDR", "127.0.0.1:7788"), "listen address")
 	data := flag.String("data", os.Getenv("CAT_DATA"), "data directory (default ~/.cat)")
 	plugins := flag.String("plugins", os.Getenv("CAT_PLUGINS"), "extra plugin directories")
 	marketURL := flag.String("market", os.Getenv("CAT_MARKET"), "plugin market index URL")
+	updateURL := flag.String("update", os.Getenv("CAT_UPDATE"), "update manifest URL; \"off\" never updates (default: the latest release)")
 	hidden := flag.Bool("hidden", false, "start in the tray without opening the window")
 	flag.Parse()
 
@@ -61,7 +64,7 @@ func main() {
 	}
 	hub, err := app.New(app.Options{
 		Addr: *addr, DataDir: *data, PluginDirs: filepath.SplitList(*plugins),
-		Secrets: secrets, Desktop: true, MarketURL: *marketURL,
+		Secrets: secrets, Desktop: true, MarketURL: *marketURL, UpdateURL: *updateURL,
 		OpenURL: func(url string) error { return wails.Browser.OpenURL(url) },
 	})
 	if err != nil {
@@ -73,6 +76,22 @@ func main() {
 	// Said only now: app.New is what opens the log file.
 	if secrets == nil {
 		slog.Warn("no system credential store; secrets are kept in a private file instead")
+	}
+	// An installed update starts the new version beside this one, which
+	// waits for this one to quit: the window comes back, even when this run
+	// was started hidden.
+	hub.Updater.Restart = func() {
+		var args []string
+		for _, a := range os.Args[1:] {
+			if a != "-hidden" && a != "--hidden" {
+				args = append(args, a)
+			}
+		}
+		if err := update.Spawn(hub.Updater.Exe, args); err != nil {
+			slog.Error("the updated app did not start", "err", err)
+			return
+		}
+		wails.Quit()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -109,6 +128,12 @@ func main() {
 			slog.Error("autostart", "err", err)
 		}
 	})
+	if hub.Updater.Status().State != update.Off {
+		menu.Add("检查更新").OnClick(func(*application.Context) {
+			go hub.Updater.Check(context.Background())
+			show()
+		})
+	}
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) { wails.Quit() })
 	tray.SetMenu(menu)

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { auth, get } from './api'
-import type { HubEvent, Instance, Plugin, Rule, Run } from './types'
+import type { HubEvent, Instance, Plugin, Rule, Run, Update } from './types'
 
 const MAX_EVENTS = 500
 const MAX_RUNS = 300
@@ -14,6 +14,8 @@ export const useHub = defineStore('hub', {
     runs: [] as Run[],
     // where the hub is reached from outside, when set: see ingressBase
     publicURL: '',
+    // the hub's own version, and the newer one it found
+    update: { version: '', state: 'off' } as Update,
     connected: false,
     needAuth: false,
     loaded: false,
@@ -65,6 +67,7 @@ export const useHub = defineStore('hub', {
         ])
         Object.assign(this, { plugins, instances, rules, events, runs, loaded: true, needAuth: false })
         this.publicURL = settings.public_url
+        this.update = await get<Update>('/update')
       } catch {
         /* 401 is surfaced through needAuth */
       }
@@ -81,6 +84,14 @@ export const useHub = defineStore('hub', {
     listen() {
       const es = new EventSource('/api/stream')
       es.onopen = () => {
+        // Connected again after the hub went away: when it came back as
+        // another version, this page is the old version's and is loaded anew.
+        if (!this.connected && this.update.version) {
+          const was = this.update.version
+          get<Update>('/update')
+            .then((u) => (u.version === was ? (this.update = u) : location.reload()))
+            .catch(() => {})
+        }
         this.connected = true
       }
       es.onerror = () => {
@@ -105,6 +116,9 @@ export const useHub = defineStore('hub', {
       })
       // a rule has something new to show, e.g. a subscription its source cannot read
       es.addEventListener('rules', () => void this.reloadRules())
+      es.addEventListener('update', (m) => {
+        this.update = JSON.parse((m as MessageEvent).data)
+      })
       // Other kinds (setup, download, ...) are exposed as the latest payload per kind.
       for (const kind of ['setup', 'download', 'plugins']) {
         es.addEventListener(kind, (m) => {

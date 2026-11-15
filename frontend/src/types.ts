@@ -153,3 +153,16 @@ export interface Run {
   // the rule as it stood for this run; comes only with a run asked for by id
   rule?: Rule
 }
+
+// What the hub knows of its own version and of a newer one.
+export interface Update {
+  version: string
+  // off: this build does not update. ready: latest is downloaded, and
+  // installing it restarts the hub. manual: latest has to be installed by hand.
+  state: 'off' | 'current' | 'downloading' | 'ready' | 'manual' | 'failed' | 'restarting'
+  latest?: string
+  notes?: string
+  reason?: string
+  done?: number
+  total?: number
+}

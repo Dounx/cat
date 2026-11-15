@@ -44,7 +44,9 @@ def main():
         print(f"package {name}", flush=True)
         env = dict(os.environ, GOOS=goos, GOARCH=goarch, CGO_ENABLED="0")
         exe = "catd" + (".exe" if goos == "windows" else "")
-        subprocess.run(["go", "build", "-trimpath", "-ldflags", "-s -w", "-o", os.path.join(stage, exe), "./cmd/catd"],
+        subprocess.run(["go", "build", "-trimpath", "-ldflags",
+                        "-s -w -X github.com/dounx/cat/app.Version=" + version.removeprefix("v"),
+                        "-o", os.path.join(stage, exe), "./cmd/catd"],
                        cwd=ROOT, env=env, check=True)
         for entry in plugins:
             artifact = entry["platforms"].get(platform)
