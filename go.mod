@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.0 // indirect
@@ -20,6 +21,8 @@ require (
 	github.com/andybalholm/cascadia v1.3.5
 	github.com/coder/websocket v1.8.15
 	github.com/dounx/cat/sdk/go v0.0.0
+	github.com/emersion/go-imap/v2 v2.0.0-beta.9
+	github.com/emersion/go-message v0.18.2
 	github.com/expr-lang/expr v1.17.8
 	github.com/larksuite/oapi-sdk-go/v3 v3.12.2
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
