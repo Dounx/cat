@@ -291,6 +291,11 @@ func (s *Server) authed(r *http.Request) bool {
 	if c, err := r.Cookie("cat_token"); err == nil && got == "" {
 		got = c.Value
 	}
+	// An MCP client is given one address and nothing else, so for that
+	// endpoint the token may ride in it.
+	if got == "" && r.URL.Path == "/api/mcp" {
+		got = r.URL.Query().Get("token")
+	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.Token)) == 1
 }
 

@@ -3,6 +3,7 @@ package app
 import (
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/dounx/cat/core/api"
 	"github.com/dounx/cat/core/market"
+	"github.com/dounx/cat/core/mcp"
 	"github.com/dounx/cat/core/pluginhost"
 )
 
@@ -62,6 +64,7 @@ func (a *App) extend() error {
 			api.WriteJSON(w, 200, map[string]bool{"ok": true})
 		})
 	})
+	a.Server.Extend(a.mcpRoutes)
 	a.Server.Desktop = a.opts.Desktop
 	if open := a.opts.OpenURL; open != nil {
 		a.Server.Extend(func(mux *http.ServeMux) {
@@ -85,6 +88,45 @@ func (a *App) extend() error {
 		})
 	}
 	return nil
+}
+
+// MCPURL is where an AI on this machine reaches the hub's MCP server.
+func (a *App) MCPURL() string {
+	u := a.URL() + "/api/mcp"
+	if a.opts.Token != "" {
+		u += "?token=" + url.QueryEscape(a.opts.Token)
+	}
+	return u
+}
+
+// mcpRoutes serves the hub's tools to AIs, and installs that server into the
+// harnesses on this machine.
+func (a *App) mcpRoutes(mux *http.ServeMux) {
+	mux.Handle("/api/mcp", &mcp.Server{Engine: a.Engine, Version: "1.0.0"})
+	list := func() []mcp.Status {
+		out := []mcp.Status{}
+		for _, h := range mcp.Harnesses() {
+			out = append(out, mcp.StatusOf(h, a.MCPURL()))
+		}
+		return out
+	}
+	mux.HandleFunc("GET /api/mcp/harnesses", func(w http.ResponseWriter, r *http.Request) {
+		api.WriteJSON(w, 200, map[string]any{"url": a.MCPURL(), "harnesses": list()})
+	})
+	mux.HandleFunc("POST /api/mcp/harnesses/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if err := mcp.Install(r.Context(), r.PathValue("id"), a.MCPURL()); err != nil {
+			api.WriteErr(w, 400, err.Error())
+			return
+		}
+		api.WriteJSON(w, 200, map[string]any{"url": a.MCPURL(), "harnesses": list()})
+	})
+	mux.HandleFunc("DELETE /api/mcp/harnesses/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if err := mcp.Uninstall(r.Context(), r.PathValue("id")); err != nil {
+			api.WriteErr(w, 400, err.Error())
+			return
+		}
+		api.WriteJSON(w, 200, map[string]any{"url": a.MCPURL(), "harnesses": list()})
+	})
 }
 
 // PluginDir is where installed plugins live.

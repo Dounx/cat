@@ -20,6 +20,7 @@ import PageHeader from '../components/PageHeader.vue'
 import Drawer from '../components/Drawer.vue'
 import SchemaForm from '../components/SchemaForm.vue'
 import SetupWizard from '../components/SetupWizard.vue'
+import McpPanel from '../components/McpPanel.vue'
 import { picksFor } from '../picks'
 
 const hub = useHub()
@@ -338,6 +339,7 @@ async function remove(i: Instance) {
           {{ hub.publicURL ? '更改' : '设置对外地址' }}
         </button>
       </p>
+      <McpPanel class="mt-8" />
     </div>
 
     <Transition name="drawer">

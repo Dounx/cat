@@ -233,6 +233,28 @@ Cat 在一次运行跑完之前退出了（崩溃、被强行结束、断电）�
 
 以前的规则（一个条件加一串顺序步骤）不用改，照常运行；在编辑器里打开时会显示成等价的一条链。
 
+## 让 AI 用 Cat（MCP）
+
+规则里的 AI 是 Cat 把事件交给它。反过来，也可以让 AI 应用里的 AI 主动用 Cat：Cat 自带一个 [MCP](https://modelcontextprotocol.io) 服务，装进 AI 应用后，那里的 AI 能往渠道发消息、查收到的事件、新建和修改规则。在 Claude Desktop 里说一句「每天 9 点把这几个 RSS 汇总发到群里」，它会自己把规则建好。
+
+到「接入」页最下面的「让 AI 用 Cat」，在找到的应用后面点「安装」，重开那个应用后生效；「卸载」把它拿掉。
+
+| 应用 | 装到哪里 |
+| --- | --- |
+| Claude Desktop | `claude` 命令的用户级 MCP 服务（`claude mcp add --scope user`），Claude Desktop 的 Code 和 Claude Code 共用 |
+| ChatGPT Desktop | `~/.codex/config.toml` 里的 `[mcp_servers.cat]`，ChatGPT Desktop 的 Codex 和 `codex` 命令共用 |
+| DeepSeek Harness | 每个档案的 `cordis.patch.yml` 里加一个 `cat-mcp` 条目 |
+
+Cat 只增删它自己的那一项，别的配置不动。别的支持 MCP 的应用，把页面上给的地址（`http://127.0.0.1:7788/api/mcp`，Streamable HTTP）填进去就行；Cat 设了 `--token` 时地址里带着令牌。Cat 换了端口或令牌后，页面会提示「装的是另一个地址」，点「重新安装」。
+
+| 工具 | 作用 |
+| --- | --- |
+| `list_connections` | 有哪些接入，各自能做什么动作、要什么参数 |
+| `invoke_action` | 让一个接入做一个动作，比如往某个会话发消息 |
+| `list_events`、`get_event` | 最近收到的事件 |
+| `list_rules`、`save_rule`、`set_rule_enabled`、`delete_rule` | 查看、新建、修改、启停、删除规则 |
+| `list_runs` | 规则的运行记录，每一步的参数、输出和错误 |
+
 ## 已有的插件
 
 | 插件 | 说明 |
@@ -259,6 +281,7 @@ Cat 在一次运行跑完之前退出了（崩溃、被强行结束、断电）�
 ## 安全
 
 - **聊天消息会原样成为给 AI 的指令。** 所以 AI 插件默认只读。Cat 不限制谁发的消息能触发规则：任何能给你的机器人发消息的人都能驱动规则里的 AI，放宽它的权限之前请想清楚谁能给机器人发消息，需要时在规则里用条件节点按发送者筛选。
+- **装了 MCP 的 AI 能做你在 Cat 里能做的一切**，包括用「运行脚本」执行命令、建一条以后一直生效的规则。规则里由聊天消息触发的 AI 默认只允许 `Read,Glob,Grep`，用不了这些工具；除非你确实想让聊天里的人通过 AI 操作 Cat，不要把 `mcp__cat__*` 加进它「允许的工具」。
 - **插件没有沙箱**，以你的用户身份运行。只安装你信任的插件。从市场安装时会校验 SHA-256。
 - 默认只监听本机。要对外提供服务必须设置 `--token`；Webhook 请配置密钥。
 - 密钥类配置存放在系统钥匙串（桌面版）或 `~/.cat/secrets.json`（无界面版，仅靠文件权限保护，未加密）。
