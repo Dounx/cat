@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronRight, Plus } from 'lucide-vue-next'
+import { ChevronRight, FileDown, Plus } from 'lucide-vue-next'
 import { useHub } from '../hub'
 import { get, put } from '../api'
 import type { HubEvent, Rule } from '../types'
@@ -9,19 +9,21 @@ import { ruleFromEvent } from '../templates'
 import PageHeader from '../components/PageHeader.vue'
 import RuleEditor from '../components/RuleEditor.vue'
 import TemplatePicker from '../components/TemplatePicker.vue'
+import RuleImport from '../components/RuleImport.vue'
 
 const hub = useHub()
 const route = useRoute()
 const router = useRouter()
 const editing = ref<Rule | null>(null)
 const choosing = ref(false)
+const importing = ref(false)
 
 function onSaved() {
   editing.value = null
   hub.reloadRules()
 }
 function start(rule: Rule) {
-  choosing.value = false
+  choosing.value = importing.value = false
   editing.value = rule
 }
 
@@ -72,6 +74,7 @@ function describe(r: Rule): string {
 <template>
   <div class="flex h-full flex-col">
     <PageHeader title="规则" hint="什么时候、满足什么条件、做什么">
+      <button class="btn" title="导入别人导出的规则" @click="importing = true"><FileDown :size="15" />导入</button>
       <button v-if="hub.rules.length" class="btn btn-primary" @click="choosing = true">
         <Plus :size="15" />新建规则
       </button>
@@ -110,6 +113,9 @@ function describe(r: Rule): string {
     </div>
     <Transition name="modal">
       <TemplatePicker v-if="choosing" @start="start" @close="choosing = false" />
+    </Transition>
+    <Transition name="modal">
+      <RuleImport v-if="importing" @start="start" @close="importing = false" />
     </Transition>
     <Transition name="drawer">
       <RuleEditor v-if="editing" :rule="editing" @close="editing = null" @saved="onSaved" />

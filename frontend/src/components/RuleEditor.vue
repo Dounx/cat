@@ -15,6 +15,7 @@ import {
   Maximize,
   Redo2,
   Settings2,
+  Share2,
   Trash2,
   Undo2,
   Unlink,
@@ -34,6 +35,7 @@ import Drawer from './Drawer.vue'
 import ContextMenu, { type MenuItem } from './ContextMenu.vue'
 import FlowCanvas, { type CanvasNode, type Point } from './FlowCanvas.vue'
 import ConnectDialog from './ConnectDialog.vue'
+import RuleExport from './RuleExport.vue'
 import ActionPanel from './rule/ActionPanel.vue'
 import ConditionPanel from './rule/ConditionPanel.vue'
 import NodePicker from './rule/NodePicker.vue'
@@ -264,6 +266,12 @@ async function save() {
   )
   if (ok) emit('saved')
 }
+// The rule as it stands on the canvas, saved or not, as text to hand on.
+const sharing = ref<Rule | null>(null)
+function share() {
+  settle()
+  sharing.value = toRule(doc, props.rule, (t) => !!triggerSchema(t))
+}
 async function remove() {
   if (!confirm(`删除规则「${doc.name}」？`)) return
   await hub.run(() => del(`/rules/${props.rule.id}`), '已删除')
@@ -314,6 +322,9 @@ async function remove() {
           <label class="mr-1 flex cursor-pointer items-center gap-2 text-sm text-mute"
             ><input v-model="doc.enabled" type="checkbox" />启用</label
           >
+          <button class="btn btn-ghost px-1.5" title="导出规则，发给别人" aria-label="导出规则" @click="share">
+            <Share2 :size="15" />
+          </button>
           <button
             v-if="rule.id"
             class="btn btn-ghost btn-danger px-1.5"
@@ -356,6 +367,9 @@ async function remove() {
     <ContextMenu v-if="menu" v-bind="menu" @close="menu = null" />
 
     <Teleport to="body">
+      <Transition name="modal">
+        <RuleExport v-if="sharing" :rule="sharing" @close="sharing = null" />
+      </Transition>
       <Transition name="modal">
         <NodePicker
           v-if="picker"
