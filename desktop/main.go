@@ -38,6 +38,7 @@ func main() {
 	marketURL := flag.String("market", os.Getenv("CAT_MARKET"), "plugin market index URL")
 	updateURL := flag.String("update", os.Getenv("CAT_UPDATE"), "update manifest URL; \"off\" never updates (default: the latest release)")
 	hidden := flag.Bool("hidden", false, "start in the tray without opening the window")
+	uiDev := flag.String("ui-dev", os.Getenv("CAT_UI_DEV"), "frontend dev server URL to proxy the UI to (development)")
 	flag.Parse()
 
 	var window *application.WebviewWindow
@@ -48,12 +49,18 @@ func main() {
 		}
 	}
 
+	// A development run is its own instance, so an installed Cat that is
+	// already running does not swallow it.
+	instanceID := "com.dounx.cat"
+	if *uiDev != "" {
+		instanceID += ".dev"
+	}
 	wails := application.New(application.Options{
 		Name: "Cat",
 		Icon: appIcon,
 		Mac:  application.MacOptions{ApplicationShouldTerminateAfterLastWindowClosed: false},
 		SingleInstance: &application.SingleInstanceOptions{
-			UniqueID:               "com.dounx.cat",
+			UniqueID:               instanceID,
 			OnSecondInstanceLaunch: func(application.SecondInstanceData) { show() },
 		},
 	})
@@ -64,7 +71,7 @@ func main() {
 	}
 	hub, err := app.New(app.Options{
 		Addr: *addr, DataDir: *data, PluginDirs: filepath.SplitList(*plugins),
-		Secrets: secrets, Desktop: true, MarketURL: *marketURL, UpdateURL: *updateURL,
+		Secrets: secrets, Desktop: true, UIDev: *uiDev, MarketURL: *marketURL, UpdateURL: *updateURL,
 		OpenURL: func(url string) error { return wails.Browser.OpenURL(url) },
 	})
 	if err != nil {

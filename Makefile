@@ -8,7 +8,7 @@ NODE_PLUGINS := discord
 # without one is "dev" and never updates itself.
 VERSION_FLAG := $(if $(CAT_VERSION),-X github.com/dounx/cat/app.Version=$(CAT_VERSION))
 
-.PHONY: all frontend plugins catd desktop app test fmt fmt-check run dev clean
+.PHONY: all frontend plugins catd desktop app test fmt fmt-check run run-web dev dev-web clean
 
 all: frontend plugins catd
 
@@ -67,20 +67,29 @@ fmt-check:
 	if [ -n "$$out" ]; then echo "Not gofmt-formatted (run 'make fmt'):"; echo "$$out"; exit 1; fi
 	cd frontend && pnpm exec prettier --check $(PRETTIER_PATHS)
 
-# Build everything, then start the hub with the plugins in this source tree,
-# serving the UI that was just built. Nothing is rebuilt while it runs; use
-# `make dev` for that. Extra flags go through ARGS, e.g.
+# Build the desktop app and the plugins, then start it with the plugins in
+# this source tree, serving the UI that was just built. Nothing is rebuilt
+# while it runs; use `make dev` for that. `make run-web` is the same with the
+# headless catd, used from a browser. Extra flags go through ARGS, e.g.
 # `make run ARGS="--addr 127.0.0.1:8080"`.
-run: all
+run: desktop plugins
+	./bin/cat-desktop$(EXE) --plugins ./plugins $(ARGS)
+
+run-web: all
 	./bin/catd$(EXE) --plugins ./plugins $(ARGS)
 
-# Development loop: the hub, rebuilt and restarted when Go or plugin sources
-# change, plus the Vite dev server with hot reload for the UI. The hub proxies
-# its UI to Vite, so http://127.0.0.1:7788 hot-reloads as well. ARGS is passed
-# to catd as in `run`.
+# Development loop: the desktop app, rebuilt and restarted when Go or plugin
+# sources change, plus the Vite dev server with hot reload for the UI. The hub
+# proxies its UI to Vite, so the window (and http://127.0.0.1:7788) hot-reloads.
+# `make dev-web` is the same loop with the headless catd and no window. ARGS is
+# passed to the hub as in `run`.
 dev:
 	@mkdir -p frontend/dist
 	@EXE=$(EXE) MAKE=$(MAKE) sh scripts/dev.sh $(ARGS)
+
+dev-web:
+	@mkdir -p frontend/dist
+	@EXE=$(EXE) MAKE=$(MAKE) DEV_TARGET=web sh scripts/dev.sh $(ARGS)
 
 clean:
 	rm -rf bin frontend/dist/assets

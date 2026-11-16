@@ -20,7 +20,8 @@ QQ / 飞书 / 钉钉 / Discord / Telegram / GitHub / 企业微信 / 邮件 / RSS
 需要 Go 1.24+、Node + pnpm（构建界面）、Bun（构建 TypeScript 插件）。
 
 ```bash
-make run                                 # 构建界面、插件、bin/catd 并启动，然后打开 http://127.0.0.1:7788
+make run                                 # 构建界面、插件、桌面版 bin/cat-desktop 并启动
+make run-web                             # 同上，但用无窗口的 bin/catd，然后打开 http://127.0.0.1:7788
 ```
 
 桌面应用（macOS / Linux / Windows，在哪个系统上构建就打哪个系统的包，插件已打包在内）：
@@ -299,7 +300,8 @@ Cat 只增删它自己的那一项，别的配置不动。别的支持 MCP 的�
 
 ```bash
 make test                                # 全部测试
-make dev                                 # 热重载：打开 http://127.0.0.1:7788，界面改动即时生效，Go / 插件改动后自动重新构建并重启后端
+make dev                                 # 热重载：打开桌面窗口，界面改动即时生效，Go / 插件改动后自动重新构建并重启
+make dev-web                             # 同上，但用无窗口的 catd，在浏览器打开 http://127.0.0.1:7788
 ```
 
 调邮件插件不必用真邮箱：`go run ./plugins/internal/mailtest/cmd/mailtest` 在本机起一个只有一个邮箱的邮件服务器（IMAP 1143、SMTP 1025，都不加密），接入时填它的地址并勾上「不加密连接」，发给它 SMTP 的信都进这个邮箱。
@@ -339,7 +341,7 @@ python3 scripts/build-update.py v0.2.0 <基础地址> dist/release   # 在 dist/
 - 只替换安装包里有的文件，装在旁边的其它插件和文件不动。
 - 装的位置改不了（比如 `.deb` 装到 `/opt/cat`）或这个平台没有安装包时，只提示有新版本并给出下载页，需要手动安装。
 - `--update <地址>`（或环境变量 `CAT_UPDATE`）换一个 `update.json` 的地址，`--update off` 关掉自动更新。
-- 版本号在构建时写进程序（`CAT_VERSION=0.2.0 make app`）；没有版本号的构建（`make run`、`make dev`）是 `dev`，从不更新自己。
+- 版本号在构建时写进程序（`CAT_VERSION=0.2.0 make app`）；没有版本号的构建（`make run`、`make run-web`、`make dev`、`make dev-web`）是 `dev`，从不更新自己。
 - 和插件市场一样，安装包没有代码签名，可信度来自 HTTPS 和 `update.json` 里的校验值。
 
 - [写一个插件](docs/plugin-development.md)

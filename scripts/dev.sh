@@ -1,29 +1,41 @@
 #!/bin/sh
-# Development loop behind `make dev`: the hub plus the Vite dev server.
+# Development loop behind `make dev`: the desktop app (or, with
+# DEV_TARGET=web as `make dev-web` sets it, the headless catd) plus the Vite
+# dev server.
 #
 #   - frontend/src is served by Vite with hot module replacement. The hub
-#     proxies its UI to Vite, so the hub's own address hot-reloads too.
+#     proxies its UI to Vite, so the desktop window (and the hub's address in
+#     a browser) hot-reloads too.
 #   - Go sources, plugin manifests and the TypeScript plugins are polled once
-#     a second; on a change the plugins and catd are rebuilt and the hub is
-#     restarted. A failed build leaves the running hub alone.
+#     a second; on a change the plugins and the hub are rebuilt and restarted
+#     (the desktop window closes and reopens). A failed build leaves the
+#     running hub alone.
 #
-# Arguments are passed on to catd.
+# Arguments are passed on to cat-desktop or catd.
 set -u
 cd "$(dirname "$0")/.."
 
 EXE=${EXE:-}
 MAKE=${MAKE:-make}
 UI_DEV_PORT=${UI_DEV_PORT:-5173}
+DEV_TARGET=${DEV_TARGET:-desktop}
 hub=
 vite=
 stamp=$(mktemp)
 
-build() {
-	"$MAKE" -s plugins catd
-}
+# The desktop build here is a development one: no production tag (so the
+# webview has its inspector) and no frontend build, since the UI comes from
+# Vite.
+if [ "$DEV_TARGET" = web ]; then
+	bin=catd
+	build() { "$MAKE" -s plugins catd; }
+else
+	bin=cat-desktop-dev
+	build() { "$MAKE" -s plugins && (cd desktop && go build -o "../bin/$bin$EXE" .); }
+fi
 
 start_hub() {
-	"./bin/catd$EXE" --plugins ./plugins --ui-dev "http://localhost:$UI_DEV_PORT" "$@" &
+	"./bin/$bin$EXE" --plugins ./plugins --ui-dev "http://localhost:$UI_DEV_PORT" "$@" &
 	hub=$!
 }
 
