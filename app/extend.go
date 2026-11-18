@@ -34,14 +34,44 @@ func (a *App) extend() error {
 	}
 	a.Server.Extend(a.pluginRoutes)
 	mk := market.New(a.opts.MarketURL, a.PluginDir(), a.Plugins, a.Engine)
+	mk.URLFunc = func() string {
+		if v := strings.TrimSpace(a.opts.MarketURL); v != "" {
+			if strings.EqualFold(v, "off") {
+				return ""
+			}
+			return v
+		}
+		if v, ok := a.Engine.Store.KVGet("settings", "market_url"); ok && strings.TrimSpace(v) != "" {
+			if strings.EqualFold(strings.TrimSpace(v), "off") {
+				return ""
+			}
+			return strings.TrimSpace(v)
+		}
+		return market.DefaultURL
+	}
 	a.Server.Extend(func(mux *http.ServeMux) {
 		mux.HandleFunc("GET /api/market", func(w http.ResponseWriter, r *http.Request) {
+			eff := mk.EffectiveURL()
+			locked := strings.TrimSpace(a.opts.MarketURL) != ""
 			list, err := mk.List(r.Context())
 			if err != nil {
-				api.WriteJSON(w, 200, map[string]any{"configured": mk.URL != "", "error": err.Error(), "plugins": []any{}})
+				api.WriteJSON(w, 200, map[string]any{
+					"configured":  eff != "",
+					"url":         eff,
+					"default_url": market.DefaultURL,
+					"locked":      locked,
+					"error":       err.Error(),
+					"plugins":     []any{},
+				})
 				return
 			}
-			api.WriteJSON(w, 200, map[string]any{"configured": true, "plugins": list})
+			api.WriteJSON(w, 200, map[string]any{
+				"configured":  true,
+				"url":         eff,
+				"default_url": market.DefaultURL,
+				"locked":      locked,
+				"plugins":     list,
+			})
 		})
 		mux.HandleFunc("POST /api/market/{id}/install", func(w http.ResponseWriter, r *http.Request) {
 			id := r.PathValue("id")

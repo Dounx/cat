@@ -47,9 +47,14 @@ type Listing struct {
 	Bundled          bool   `json:"bundled"`           // provided by the app itself, not the market
 }
 
+// DefaultURL is the official plugin market index from the latest release.
+const DefaultURL = "https://github.com/Dounx/cat/releases/latest/download/index.json"
+
 type Market struct {
 	// URL of the index; empty means no market is configured.
 	URL string
+	// URLFunc, when set, resolves the current market index URL dynamically.
+	URLFunc func() string
 	// Dir is where plugins are installed (<data>/plugins).
 	Dir     string
 	Host    *pluginhost.Host
@@ -65,12 +70,26 @@ func New(url, dir string, host *pluginhost.Host, eng *engine.Engine) *Market {
 
 var ErrNotConfigured = errors.New("还没有配置插件市场地址（启动参数 --market 或环境变量 CAT_MARKET）")
 
+// EffectiveURL returns the resolved index URL, or "" when disabled or unset.
+func (m *Market) EffectiveURL() string {
+	u := m.URL
+	if m.URLFunc != nil {
+		u = m.URLFunc()
+	}
+	u = strings.TrimSpace(u)
+	if u == "" || strings.EqualFold(u, "off") {
+		return ""
+	}
+	return u
+}
+
 func (m *Market) fetch(ctx context.Context) (*Index, error) {
-	if m.URL == "" {
+	indexURL := m.EffectiveURL()
+	if indexURL == "" {
 		return nil, ErrNotConfigured
 	}
 	var raw []byte
-	if path, ok := strings.CutPrefix(m.URL, "file://"); ok {
+	if path, ok := strings.CutPrefix(indexURL, "file://"); ok {
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
@@ -79,7 +98,7 @@ func (m *Market) fetch(ctx context.Context) (*Index, error) {
 	} else {
 		ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, "GET", m.URL, nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", indexURL, nil)
 		if err != nil {
 			return nil, err
 		}

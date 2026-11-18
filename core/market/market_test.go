@@ -149,4 +149,31 @@ func TestMarketNotConfigured(t *testing.T) {
 	if _, err := m.List(context.Background()); err != market.ErrNotConfigured {
 		t.Fatalf("err = %v", err)
 	}
+	m = market.New("off", t.TempDir(), pluginhost.New(e), e)
+	if _, err := m.List(context.Background()); err != market.ErrNotConfigured {
+		t.Fatalf("off err = %v", err)
+	}
+}
+
+func TestMarketURLFuncAndDefaultURL(t *testing.T) {
+	if !strings.HasPrefix(market.DefaultURL, "https://") || !strings.HasSuffix(market.DefaultURL, "/index.json") {
+		t.Fatalf("unexpected DefaultURL: %q", market.DefaultURL)
+	}
+	st, _ := store.Open(":memory:")
+	defer st.Close()
+	e := engine.New(st, t.TempDir(), nil)
+	idxPath := filepath.Join(t.TempDir(), "index.json")
+	_ = os.WriteFile(idxPath, []byte(`{"plugins":[{"id":"demo","name":"Demo","version":"1.0.0","platforms":{"any":{"url":"https://x/y.zip","sha256":"`+strings.Repeat("a", 64)+`"}}}]}`), 0o600)
+
+	cur := "off"
+	m := market.New("", t.TempDir(), pluginhost.New(e), e)
+	m.URLFunc = func() string { return cur }
+	if _, err := m.List(context.Background()); err != market.ErrNotConfigured {
+		t.Fatalf("expected ErrNotConfigured when off, got %v", err)
+	}
+	cur = "file://" + idxPath
+	list, err := m.List(context.Background())
+	if err != nil || len(list) != 1 || list[0].ID != "demo" {
+		t.Fatalf("URLFunc list = %+v, err = %v", list, err)
+	}
 }

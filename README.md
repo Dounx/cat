@@ -46,7 +46,7 @@ make app
 | `--data` | `CAT_DATA` | 数据目录，默认 `~/.cat` |
 | `--token` | `CAT_TOKEN` | 访问令牌。监听非本机地址时必须设置 |
 | `--plugins` | `CAT_PLUGINS` | 额外的插件目录 |
-| `--market` | `CAT_MARKET` | 插件市场索引地址 |
+| `--market` | `CAT_MARKET` | 插件市场索引地址；填 `off` 关闭（默认读取最新 Release 的 `index.json`） |
 
 Cat 放在反向代理或内网穿透后面时，到「接入」页列表下面设置「对外地址」：Webhook 这类接入显示和复制的接收地址会以它开头，而不是以你打开界面的地址开头。它只改显示的地址，不改 Cat 监听在哪。
 

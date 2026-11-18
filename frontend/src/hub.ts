@@ -14,6 +14,7 @@ export const useHub = defineStore('hub', {
     runs: [] as Run[],
     // where the hub is reached from outside, when set: see ingressBase
     publicURL: '',
+    marketURL: '',
     // the hub's own version, and the newer one it found
     update: { version: '', state: 'off' } as Update,
     connected: false,
@@ -63,10 +64,11 @@ export const useHub = defineStore('hub', {
           get<Rule[]>('/rules'),
           get<HubEvent[]>('/events?limit=200'),
           get<Run[]>('/runs?limit=200'),
-          get<{ public_url: string }>('/settings'),
+          get<{ public_url: string; market_url?: string }>('/settings'),
         ])
         Object.assign(this, { plugins, instances, rules, events, runs, loaded: true, needAuth: false })
         this.publicURL = settings.public_url
+        this.marketURL = settings.market_url || ''
         this.update = await get<Update>('/update')
       } catch {
         /* 401 is surfaced through needAuth */

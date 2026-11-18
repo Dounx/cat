@@ -60,24 +60,52 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/settings", func(w http.ResponseWriter, r *http.Request) {
 		public, _ := e.Store.KVGet(settingsScope, "public_url")
-		writeJSON(w, 200, Settings{PublicURL: public})
+		mkt, _ := e.Store.KVGet(settingsScope, "market_url")
+		writeJSON(w, 200, Settings{PublicURL: public, MarketURL: mkt})
 	})
 	mux.HandleFunc("PUT /api/settings", func(w http.ResponseWriter, r *http.Request) {
-		var in Settings
+		var in struct {
+			PublicURL *string `json:"public_url"`
+			MarketURL *string `json:"market_url"`
+		}
 		if !readJSON(w, r, &in) {
 			return
 		}
-		public, err := normalizePublicURL(in.PublicURL)
-		if err != nil {
-			writeErr(w, 400, err.Error())
-			return
+		if in.PublicURL != nil {
+			public, err := normalizePublicURL(*in.PublicURL)
+			if err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+			if public == "" {
+				err = e.Store.KVDelete(settingsScope, "public_url")
+			} else {
+				err = e.Store.KVSet(settingsScope, "public_url", public)
+			}
+			if err != nil {
+				respond(w, nil, err)
+				return
+			}
 		}
-		if public == "" {
-			err = e.Store.KVDelete(settingsScope, "public_url")
-		} else {
-			err = e.Store.KVSet(settingsScope, "public_url", public)
+		if in.MarketURL != nil {
+			mkt, err := normalizeMarketURL(*in.MarketURL)
+			if err != nil {
+				writeErr(w, 400, err.Error())
+				return
+			}
+			if mkt == "" {
+				err = e.Store.KVDelete(settingsScope, "market_url")
+			} else {
+				err = e.Store.KVSet(settingsScope, "market_url", mkt)
+			}
+			if err != nil {
+				respond(w, nil, err)
+				return
+			}
 		}
-		respond(w, Settings{PublicURL: public}, err)
+		public, _ := e.Store.KVGet(settingsScope, "public_url")
+		mkt, _ := e.Store.KVGet(settingsScope, "market_url")
+		writeJSON(w, 200, Settings{PublicURL: public, MarketURL: mkt})
 	})
 
 	mux.HandleFunc("GET /api/plugins", func(w http.ResponseWriter, r *http.Request) {
@@ -247,6 +275,8 @@ type Settings struct {
 	// where the UI is opened: the address a reverse proxy or a tunnel gives
 	// it. The UI shows ingress addresses under it. Empty means not set.
 	PublicURL string `json:"public_url"`
+	// MarketURL overrides the plugin market index URL ("off" disables it).
+	MarketURL string `json:"market_url"`
 }
 
 // normalizePublicURL checks an address typed in by hand and returns it as it
@@ -265,6 +295,27 @@ func normalizePublicURL(raw string) (string, error) {
 		return "", errors.New("对外地址里不要带 ?、# 或用户名密码")
 	}
 	return u.Scheme + "://" + u.Host + strings.TrimRight(u.EscapedPath(), "/"), nil
+}
+
+func normalizeMarketURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if strings.EqualFold(raw, "off") {
+		return "off", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", errors.New("插件市场地址格式不对")
+	}
+	if u.Scheme == "file" && u.Path != "" {
+		return raw, nil
+	}
+	if (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.User == nil {
+		return raw, nil
+	}
+	return "", errors.New("插件市场地址要以 http://、https:// 或 file:// 开头，或者填 off 关闭")
 }
 
 // guard enforces the API token and rejects cross-site API calls.

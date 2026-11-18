@@ -81,7 +81,10 @@ const kinds: { id: Category | ''; title: string }[] = [
 ]
 const searchEl = ref<HTMLInputElement | null>(null)
 watch(picking, (now, was) => {
-  if (now === 'add' && !was) query.value = kind.value = ''
+  if (now === 'add' && !was) {
+    query.value = kind.value = ''
+    loadMarket()
+  }
   // typing searches at once, coming back from the installed plugins as well
   if (now === 'add') nextTick(() => searchEl.value?.focus())
 })
@@ -130,6 +133,14 @@ async function savePublicURL() {
   hub.publicURL = saved.public_url
   publicURL.value = null
 }
+const marketURL = ref<string | null>(null)
+async function saveMarketURL() {
+  const saved = await hub.run(() => put<{ market_url: string }>('/settings', { market_url: marketURL.value }), '已保存')
+  if (!saved) return
+  hub.marketURL = saved.market_url
+  marketURL.value = null
+  await loadMarket()
+}
 // The copy icon turns into a tick for a moment where it was pressed.
 const copied = ref('')
 async function copy(text: string) {
@@ -152,7 +163,14 @@ interface MarketPlugin {
   installed_version: string
   bundled: boolean
 }
-const market = ref<{ configured: boolean; error?: string; plugins: MarketPlugin[] }>({ configured: false, plugins: [] })
+const market = ref<{
+  configured: boolean
+  url?: string
+  default_url?: string
+  locked?: boolean
+  error?: string
+  plugins: MarketPlugin[]
+}>({ configured: false, plugins: [] })
 const installing = ref('')
 const progress = computed(() => {
   const d = hub.signals.download as { plugin: string; done: number; total: number } | undefined
@@ -457,8 +475,11 @@ async function remove(i: Instance) {
           </div>
           <p v-else class="text-sm text-mute">没有从插件市场装上的插件。</p>
         </template>
-        <template v-if="picking === 'plugins'" #footer>
-          <button class="btn mr-auto" @click="picking = 'add'">返回添加</button>
+        <template v-if="picking === 'plugins' || !market.locked" #footer>
+          <button v-if="picking === 'plugins'" class="btn mr-auto" @click="picking = 'add'">返回添加</button>
+          <button v-else class="btn btn-ghost mr-auto text-xs text-mute" @click="marketURL = hub.marketURL">
+            市场地址{{ hub.marketURL ? '（已自定义）' : '' }}
+          </button>
         </template>
       </Drawer>
     </Transition>
@@ -504,6 +525,26 @@ async function remove(i: Instance) {
         <template #footer>
           <button class="btn" @click="publicURL = null">取消</button>
           <button class="btn btn-primary" @click="savePublicURL">保存</button>
+        </template>
+      </Drawer>
+    </Transition>
+
+    <Transition name="drawer">
+      <Drawer v-if="marketURL !== null" title="插件市场地址" @close="marketURL = null">
+        <p class="mb-4 text-sm text-mute">
+          「添加接入」里显示和安装未捆绑插件时读取的索引地址（<code class="chip">index.json</code>）。
+        </p>
+        <label class="label">索引地址</label>
+        <input
+          v-model="marketURL"
+          class="input font-mono"
+          :placeholder="market.default_url || 'https://github.com/Dounx/cat/releases/latest/download/index.json'"
+          @keydown.enter="saveMarketURL"
+        />
+        <p class="mt-2 text-xs text-mute">留空使用官方默认地址；填 <code class="chip">off</code> 可以关闭插件市场。</p>
+        <template #footer>
+          <button class="btn" @click="marketURL = null">取消</button>
+          <button class="btn btn-primary" @click="saveMarketURL">保存</button>
         </template>
       </Drawer>
     </Transition>

@@ -52,22 +52,34 @@ func TestSettings(t *testing.T) {
 		b, _ := io.ReadAll(res.Body)
 		return res.StatusCode, strings.TrimSpace(string(b))
 	}
-	if code, body := do("GET", ""); code != 200 || body != `{"public_url":""}` {
+	if code, body := do("GET", ""); code != 200 || body != `{"public_url":"","market_url":""}` {
 		t.Fatalf("unset: %d %s", code, body)
 	}
-	if code, body := do("PUT", `{"public_url":"https://cat.example.com/"}`); code != 200 || body != `{"public_url":"https://cat.example.com"}` {
+	if code, body := do("PUT", `{"public_url":"https://cat.example.com/"}`); code != 200 || body != `{"public_url":"https://cat.example.com","market_url":""}` {
 		t.Fatalf("set: %d %s", code, body)
 	}
-	if code, body := do("GET", ""); code != 200 || body != `{"public_url":"https://cat.example.com"}` {
+	if code, body := do("GET", ""); code != 200 || body != `{"public_url":"https://cat.example.com","market_url":""}` {
 		t.Fatalf("kept: %d %s", code, body)
+	}
+	if code, body := do("PUT", `{"market_url":"https://mirror.example.com/index.json"}`); code != 200 || body != `{"public_url":"https://cat.example.com","market_url":"https://mirror.example.com/index.json"}` {
+		t.Fatalf("set market_url: %d %s", code, body)
+	}
+	if code, body := do("PUT", `{"market_url":"OFF"}`); code != 200 || body != `{"public_url":"https://cat.example.com","market_url":"off"}` {
+		t.Fatalf("disable market_url: %d %s", code, body)
+	}
+	if code, _ := do("PUT", `{"market_url":"ftp://example.com/index.json"}`); code != 400 {
+		t.Fatalf("bad market_url: %d", code)
 	}
 	if code, _ := do("PUT", `{"public_url":"cat.example.com"}`); code != 400 {
 		t.Fatalf("not a URL: %d", code)
 	}
-	if code, body := do("PUT", `{"public_url":""}`); code != 200 || body != `{"public_url":""}` {
-		t.Fatalf("cleared: %d %s", code, body)
+	if code, body := do("PUT", `{"public_url":""}`); code != 200 || body != `{"public_url":"","market_url":"off"}` {
+		t.Fatalf("cleared public_url only: %d %s", code, body)
 	}
-	if code, body := do("GET", ""); code != 200 || body != `{"public_url":""}` {
+	if code, body := do("PUT", `{"market_url":""}`); code != 200 || body != `{"public_url":"","market_url":""}` {
+		t.Fatalf("cleared market_url: %d %s", code, body)
+	}
+	if code, body := do("GET", ""); code != 200 || body != `{"public_url":"","market_url":""}` {
 		t.Fatalf("after clearing: %d %s", code, body)
 	}
 }
