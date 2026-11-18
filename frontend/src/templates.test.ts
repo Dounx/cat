@@ -65,6 +65,26 @@ describe('templates', () => {
     const set = { ...when, config: { schedules: '9:00 汇总' } }
     expect(t.build({ when: set, ai, to }, plugins).graph!.nodes[0].params).toBeUndefined()
   })
+
+  it('can notify locally with the built-in notify plugin when no chat channel is connected', () => {
+    const localOnly = [
+      plugin('notify', 'channel', ['send'], { singleton: true, capabilities: ['action'] }),
+      plugin('rss', 'monitor', ['check']),
+      plugin('claude', 'processor', ['chat']),
+      plugin('schedule', 'monitor', []),
+    ]
+    for (const id of ['notify', 'schedule-ai', 'digest', 'failure']) {
+      const t = templates.find((x) => x.id === id)!
+      const chosen: Record<string, Instance> = {}
+      for (const need of t.needs) {
+        const fit = localOnly.find(need.fits)
+        expect(fit, `nothing fits「${need.title}」in ${id}`).toBeTruthy()
+        chosen[need.key] = { ...instance(fit!), id: fit!.id }
+      }
+      const rule = t.build(chosen, localOnly)
+      expect(rule.graph!.nodes.some((n) => n.instance === 'notify' && n.action === 'send')).toBe(true)
+    }
+  })
 })
 
 describe('ruleFromEvent', () => {

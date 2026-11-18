@@ -23,7 +23,11 @@ export interface Template {
 
 const has = (p: Plugin, action: string) => !!p.actions?.some((a) => a.name === action)
 const chat: Need = { key: 'chat', title: '在哪里聊', fits: (p) => p.category === 'channel' && has(p, 'reply') }
-const notify: Need = { key: 'to', title: '发到哪里', fits: (p) => p.category === 'channel' && has(p, 'send') }
+const notify: Need = {
+  key: 'to',
+  title: '发到哪里',
+  fits: (p) => (p.category === 'channel' && has(p, 'send')) || p.id === 'notify',
+}
 const ai: Need = { key: 'ai', title: '交给谁处理', fits: (p) => has(p, 'chat') }
 
 const blank = (name = ''): Rule => ({ id: '', name, enabled: true, sources: [], types: [], condition: '', steps: [] })
@@ -94,7 +98,7 @@ export const templates: Template[] = [
   {
     id: 'notify',
     title: '有变化就通知我',
-    about: 'RSS 有新文章、网页或接口变了，把内容发到聊天里',
+    about: 'RSS 有新文章、网页或接口变了，发到聊天里或弹出本机通知',
     icon: Bell,
     needs: [
       {
@@ -180,7 +184,7 @@ export const templates: Template[] = [
   {
     id: 'failure',
     title: '规则失败时通知我',
-    about: '哪条规则的动作失败了，把原因发到聊天里',
+    about: '哪条规则的动作失败了，把原因发到聊天里或弹出本机通知',
     icon: TriangleAlert,
     needs: [notify],
     build: ({ to }, plugins) => ({

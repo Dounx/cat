@@ -20,10 +20,12 @@ const connecting = ref<null | { need: Need; plugin: Plugin }>(null)
 const adding = ref('') // the need whose list of plugins to connect is open
 
 const fitting = (n: Need) =>
-  hub.instances.filter((i) => {
-    const p = hub.pluginOf(i.plugin)
-    return !!p && n.fits(p)
-  })
+  hub.instances
+    .filter((i) => {
+      const p = hub.pluginOf(i.plugin)
+      return !!p && n.fits(p)
+    })
+    .sort((a, b) => Number(hub.given(a)) - Number(hub.given(b)))
 const connectable = (n: Need) => hub.plugins.filter((p) => !p.singleton && !p.default_instance && n.fits(p))
 const ready = computed(() => !!picked.value?.needs.every((n) => hub.instanceOf(chosen[n.key])))
 
