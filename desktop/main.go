@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"flag"
 	"log/slog"
 	"os"
@@ -69,16 +70,26 @@ func main() {
 	if k := (keychain{service: "Cat Event Hub"}); k.usable() {
 		secrets = k
 	}
+	var logDir string
 	hub, err := app.New(app.Options{
 		Addr: *addr, DataDir: *data, PluginDirs: filepath.SplitList(*plugins),
 		Secrets: secrets, Desktop: true, UIDev: *uiDev, MarketURL: *marketURL, UpdateURL: *updateURL,
 		OpenURL: func(url string) error { return wails.Browser.OpenURL(url) },
+		OpenLogs: func() error {
+			if logDir == "" {
+				return errors.New("日志目录不可用")
+			}
+			return openPath(logDir)
+		},
 	})
 	if err != nil {
 		// Through the logger, so it reaches the log file when the failure
 		// came after that was opened.
 		slog.Error("cat cannot start", "err", err)
 		os.Exit(1)
+	}
+	if hub.LogPath != "" {
+		logDir = filepath.Dir(hub.LogPath)
 	}
 	// Said only now: app.New is what opens the log file.
 	if secrets == nil {
@@ -127,8 +138,23 @@ func main() {
 	}
 	tray.SetTooltip("Cat 事件中心")
 	menu := wails.NewMenu()
+	troubleItem := menu.Add("")
+	troubleItem.SetHidden(true)
+	troubleItem.OnClick(func(*application.Context) {
+		if window != nil {
+			window.SetURL(hub.URL() + "/connections")
+		}
+		show()
+	})
 	menu.Add("打开 Cat").OnClick(func(*application.Context) { show() })
 	menu.Add("在浏览器中打开").OnClick(func(*application.Context) { _ = wails.Browser.OpenURL(hub.URL()) })
+	if logDir != "" {
+		menu.Add("打开日志目录").OnClick(func(*application.Context) {
+			if err := openPath(logDir); err != nil {
+				slog.Error("open logs", "err", err)
+			}
+		})
+	}
 	menu.AddSeparator()
 	menu.AddCheckbox("登录时启动", autostart.Enabled()).OnClick(func(c *application.Context) {
 		if err := autostart.Set(c.ClickedMenuItem().Checked()); err != nil {
@@ -144,6 +170,39 @@ func main() {
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) { wails.Quit() })
 	tray.SetMenu(menu)
+
+	go func() {
+		ch, stopSub := hub.Engine.Subscribe()
+		defer stopSub()
+		var lastLabel, lastTip, lastItem string
+		refresh := func() {
+			label, tip, item := traySummary(hub.Engine.Plugins(), hub.Engine.Instances())
+			if label == lastLabel && tip == lastTip && item == lastItem {
+				return
+			}
+			lastLabel, lastTip, lastItem = label, tip, item
+			tray.SetLabel(label)
+			tray.SetTooltip(tip)
+			if item == "" {
+				troubleItem.SetHidden(true)
+			} else {
+				troubleItem.SetLabel(item)
+				troubleItem.SetHidden(false)
+			}
+			menu.Update()
+		}
+		refresh()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case m := <-ch:
+				if m.Kind == "instance" || m.Kind == "plugins" {
+					refresh()
+				}
+			}
+		}
+	}()
 
 	err = wails.Run()
 	cancel()

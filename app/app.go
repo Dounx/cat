@@ -47,9 +47,11 @@ type Options struct {
 	// Secrets overrides where credentials are kept (default: a private file
 	// in the data directory).
 	Secrets engine.Secrets
-	// Desktop marks the desktop shell; OpenURL opens a link in the browser.
-	Desktop bool
-	OpenURL func(url string) error
+	// Desktop marks the desktop shell; OpenURL opens a link in the browser and
+	// OpenLogs opens the log directory in the system file manager.
+	Desktop  bool
+	OpenURL  func(url string) error
+	OpenLogs func() error
 }
 
 type App struct {

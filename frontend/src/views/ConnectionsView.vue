@@ -180,7 +180,15 @@ const progress = computed(() => {
 async function loadMarket() {
   market.value = await get('/market').catch(() => market.value)
 }
-onMounted(loadMarket)
+const isDesktop = ref(false)
+async function openLogs() {
+  await hub.run(() => post('/open-logs'))
+}
+onMounted(async () => {
+  loadMarket()
+  const st = await get<{ desktop?: boolean }>('/status').catch(() => ({ desktop: false }))
+  isDesktop.value = !!st.desktop
+})
 watch(
   () => hub.signals.plugins,
   () => {
@@ -345,18 +353,23 @@ async function remove(i: Instance) {
           <input type="checkbox" :checked="i.enabled" :title="i.enabled ? '停用' : '启用'" @change="toggle(i)" />
         </div>
       </TransitionGroup>
-      <p v-if="takesCalls" class="text-xs text-mute">
-        <template v-if="hub.publicURL">接收地址以对外地址 {{ hub.publicURL }} 开头。</template>
-        <template v-else-if="localOnly">
-          接收地址以 {{ hub.ingressBase }} 开头，只有这台电脑上的程序访问得到。要让外面的服务调用，
-        </template>
-        <template v-else
-          >接收地址以打开这个页面的地址 {{ hub.ingressBase }} 开头。外面访问 Cat 用的是别的地址时，</template
-        >
-        <button class="cursor-pointer text-accent hover:underline" @click="publicURL = hub.publicURL">
-          {{ hub.publicURL ? '更改' : '设置对外地址' }}
+      <div v-if="takesCalls || isDesktop" class="flex flex-wrap items-center justify-between gap-2 text-xs text-mute">
+        <p v-if="takesCalls">
+          <template v-if="hub.publicURL">接收地址以对外地址 {{ hub.publicURL }} 开头。</template>
+          <template v-else-if="localOnly">
+            接收地址以 {{ hub.ingressBase }} 开头，只有这台电脑上的程序访问得到。要让外面的服务调用，
+          </template>
+          <template v-else
+            >接收地址以打开这个页面的地址 {{ hub.ingressBase }} 开头。外面访问 Cat 用的是别的地址时，</template
+          >
+          <button class="cursor-pointer text-accent hover:underline" @click="publicURL = hub.publicURL">
+            {{ hub.publicURL ? '更改' : '设置对外地址' }}
+          </button>
+        </p>
+        <button v-if="isDesktop" class="ml-auto cursor-pointer text-mute hover:text-accent" @click="openLogs">
+          打开日志目录
         </button>
-      </p>
+      </div>
       <McpPanel class="mt-8" />
     </div>
 

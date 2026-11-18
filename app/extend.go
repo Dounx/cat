@@ -134,6 +134,17 @@ func (a *App) extend() error {
 			})
 		})
 	}
+	if openLogs := a.opts.OpenLogs; openLogs != nil {
+		a.Server.Extend(func(mux *http.ServeMux) {
+			mux.HandleFunc("POST /api/open-logs", func(w http.ResponseWriter, r *http.Request) {
+				if err := openLogs(); err != nil {
+					api.WriteErr(w, 500, err.Error())
+					return
+				}
+				api.WriteJSON(w, 200, map[string]bool{"ok": true})
+			})
+		})
+	}
 	return nil
 }
 
