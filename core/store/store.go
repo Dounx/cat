@@ -149,6 +149,9 @@ func (s *Store) GetEvent(id string) (*event.Event, error) {
 // EventFilter narrows ListEvents. Before is an exclusive id cursor.
 type EventFilter struct {
 	Source, Type, Before string
+	RuleID               string
+	OnlyFailed           bool
+	Query                string
 	Limit                int
 }
 
@@ -167,11 +170,22 @@ func (s *Store) ListEvents(f EventFilter) ([]event.Event, error) {
 		where = append(where, "id<?")
 		args = append(args, f.Before)
 	}
+	if f.RuleID != "" {
+		where = append(where, "EXISTS (SELECT 1 FROM runs r WHERE r.event_id = events.id AND r.rule_id = ?)")
+		args = append(args, f.RuleID)
+	}
+	if f.OnlyFailed {
+		where = append(where, "EXISTS (SELECT 1 FROM runs r WHERE r.event_id = events.id AND json_extract(r.data, '$.status') IN ('error', 'interrupted'))")
+	}
+	if q := strings.TrimSpace(f.Query); q != "" {
+		where = append(where, "(instr(lower(data), lower(?)) > 0 OR instr(lower(type), lower(?)) > 0)")
+		args = append(args, q, q)
+	}
 	q := `SELECT data FROM events`
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	if f.Limit <= 0 || f.Limit > 500 {
+	if f.Limit <= 0 || f.Limit > 501 {
 		f.Limit = 100
 	}
 	q += " ORDER BY id DESC LIMIT ?"
@@ -251,6 +265,21 @@ func (s *Store) SaveRun(r *Run) error {
 
 func (s *Store) GetRun(id string) (*Run, error) {
 	return getJSON[Run](s, `SELECT data FROM runs WHERE id=?`, id)
+}
+
+// ListRunsForEvents returns runs associated with the given event IDs, newest first.
+func (s *Store) ListRunsForEvents(eventIDs []string) ([]Run, error) {
+	if len(eventIDs) == 0 {
+		return []Run{}, nil
+	}
+	placeholders := make([]string, len(eventIDs))
+	args := make([]any, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	q := `SELECT data FROM runs WHERE event_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY id DESC`
+	return listJSON[Run](s, q, args...)
 }
 
 func (s *Store) ListRuns(ruleID, eventID string, limit int) ([]Run, error) {

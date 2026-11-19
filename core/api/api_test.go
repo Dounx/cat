@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/dounx/cat/core/engine"
+	"github.com/dounx/cat/core/event"
 	"github.com/dounx/cat/core/store"
 )
 
@@ -148,5 +151,71 @@ func TestCancelRunAPI(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != 404 {
 		t.Fatalf("missing run cancel status = %d, want 404", res.StatusCode)
+	}
+}
+
+func TestActivityPagingAndFilters(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	eng := engine.New(st, t.TempDir(), nil)
+	srv := httptest.NewServer((&Server{Engine: eng}).Handler())
+	defer srv.Close()
+
+	// Seed 5 events and attach runs to #2 (ok, r1) and #4 (error, r2).
+	var ids []string
+	for i := 1; i <= 5; i++ {
+		id := fmt.Sprintf("00000000000000000000000%d", i)
+		text := fmt.Sprintf("item-%d", i)
+		if i == 2 {
+			text = "needle-alpha-002"
+		}
+		if err := st.SaveEvent(&event.Event{ID: id, Source: "hook1", Plugin: "webhook", Type: "webhook.received", Payload: map[string]any{"text": text}}); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	_ = st.SaveRun(&store.Run{ID: "run1", RuleID: "r1", RuleName: "Rule 1", EventID: ids[1], Status: "ok"})
+	_ = st.SaveRun(&store.Run{ID: "run2", RuleID: "r2", RuleName: "Rule 2", EventID: ids[3], Status: "error"})
+
+	fetchPage := func(qs string) (evs []map[string]any, runs []map[string]any, hasMore bool) {
+		t.Helper()
+		res, err := http.Get(srv.URL + "/api/events?with_runs=1&" + qs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var out struct {
+			Events  []map[string]any `json:"events"`
+			Runs    []map[string]any `json:"runs"`
+			HasMore bool             `json:"has_more"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Events, out.Runs, out.HasMore
+	}
+
+	evs1, runs1, more1 := fetchPage("limit=2")
+	if len(evs1) != 2 || !more1 || evs1[0]["id"] != ids[4] || len(runs1) != 1 || runs1[0]["id"] != "run2" {
+		t.Fatalf("page 1: len=%d more=%v first=%v runs=%+v", len(evs1), more1, evs1[0]["id"], runs1)
+	}
+	evs2, runs2, more2 := fetchPage("limit=2&before=" + evs1[1]["id"].(string))
+	if len(evs2) != 2 || !more2 || len(runs2) != 1 || runs2[0]["id"] != "run1" {
+		t.Fatalf("page 2: evs=%d more=%v runs=%+v", len(evs2), more2, runs2)
+	}
+	evsQ, runsQ, moreQ := fetchPage("q=NEEDLE-alpha")
+	if len(evsQ) != 1 || evsQ[0]["id"] != ids[1] || len(runsQ) != 1 || moreQ {
+		t.Fatalf("query search: evs=%+v runs=%+v more=%v", evsQ, runsQ, moreQ)
+	}
+	evsF, runsF, _ := fetchPage("failed=1")
+	if len(evsF) != 1 || evsF[0]["id"] != ids[3] || len(runsF) != 1 {
+		t.Fatalf("failed filter: evs=%+v runs=%+v", evsF, runsF)
+	}
+	evsR, _, _ := fetchPage("rule_id=r1")
+	if len(evsR) != 1 || evsR[0]["id"] != ids[1] {
+		t.Fatalf("rule_id filter: evs=%+v", evsR)
 	}
 }

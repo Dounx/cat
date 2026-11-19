@@ -2,7 +2,7 @@
 // What came in and what was done about it, as one list: each event with the
 // rules it set off and how they fared. An event's details show every action
 // taken for it.
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ChevronRight, Inbox, Plus, RotateCcw, Search, Square, Workflow } from 'lucide-vue-next'
 import { useHub, clock, summarize } from '../hub'
@@ -24,33 +24,97 @@ const keyword = ref('')
 const selected = ref<HubEvent | null>(null)
 const selectedRuns = ref<Run[]>([])
 
+const PAGE_SIZE = 80
+const pageEvents = ref<HubEvent[]>([])
+const pageRuns = ref<Run[]>([])
+const hasMore = ref(false)
+const loading = ref(false)
+const loadingMore = ref(false)
+let reqSeq = 0
+let searchTimer: number | undefined
+
 const sources = computed(() => hub.instances.filter((i) => hub.pluginOf(i.plugin)?.capabilities.includes('source')))
-// The runs each event set off, newest first.
+// The runs each event set off, newest first (combining paged runs with live SSE updates).
 const runsOf = computed(() => {
+  const byId = new Map<string, Run>()
+  for (const r of pageRuns.value) byId.set(r.id, r)
+  for (const r of hub.runs) byId.set(r.id, r)
   const m = new Map<string, Run[]>()
-  for (const r of hub.runs) m.set(r.event_id, [...(m.get(r.event_id) || []), r])
+  for (const r of byId.values()) {
+    const list = m.get(r.event_id) || []
+    list.push(r)
+    m.set(r.event_id, list)
+  }
+  for (const list of m.values()) {
+    list.sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
+  }
   return m
 })
 // A run that did not come through: an action failed, or the hub went down
 // while it was going.
 const bad = (r: Run) => r.status === 'error' || r.status === 'interrupted'
-const filtered = computed(() => {
-  const k = keyword.value.trim().toLowerCase()
-  return hub.events.filter((e) => {
-    const runs = runsOf.value.get(e.id) || []
-    return (
-      (!source.value || e.source === source.value) &&
-      (!ruleId.value || runs.some((r) => r.rule_id === ruleId.value)) &&
-      (!onlyFailed.value || runs.some(bad)) &&
-      (!k ||
-        eventTitle(hub.plugins, e).toLowerCase().includes(k) ||
-        e.type.toLowerCase().includes(k) ||
-        JSON.stringify(e.payload).toLowerCase().includes(k) ||
-        (e.actor?.name || '').toLowerCase().includes(k))
-    )
-  })
-})
 const filtering = computed(() => !!(source.value || ruleId.value || onlyFailed.value || keyword.value.trim()))
+const filtered = computed(() => pageEvents.value)
+
+async function loadPage(append = false) {
+  const seq = ++reqSeq
+  if (append) loadingMore.value = true
+  else loading.value = true
+  try {
+    const qs = new URLSearchParams({ with_runs: '1', limit: String(PAGE_SIZE) })
+    if (source.value) qs.set('source', source.value)
+    if (ruleId.value) qs.set('rule_id', ruleId.value)
+    if (onlyFailed.value) qs.set('failed', '1')
+    const q = keyword.value.trim()
+    if (q) qs.set('q', q)
+    if (append && pageEvents.value.length) {
+      qs.set('before', pageEvents.value[pageEvents.value.length - 1].id)
+    }
+    const res = await get<{ events: HubEvent[]; runs: Run[]; has_more: boolean }>(`/events?${qs.toString()}`)
+    if (seq !== reqSeq) return
+    if (append) {
+      const seen = new Set(pageEvents.value.map((e) => e.id))
+      pageEvents.value = [...pageEvents.value, ...(res.events || []).filter((e) => !seen.has(e.id))]
+      const runMap = new Map(pageRuns.value.map((r) => [r.id, r]))
+      for (const r of res.runs || []) runMap.set(r.id, r)
+      pageRuns.value = [...runMap.values()]
+    } else {
+      pageEvents.value = res.events || []
+      pageRuns.value = res.runs || []
+    }
+    hasMore.value = !!res.has_more
+  } catch (e: any) {
+    if (seq === reqSeq) hub.notify(e.message || '加载记录失败', true)
+  } finally {
+    if (seq === reqSeq) {
+      loading.value = false
+      loadingMore.value = false
+    }
+  }
+}
+
+onMounted(() => loadPage(false))
+onBeforeUnmount(() => clearTimeout(searchTimer))
+
+watch([source, ruleId, onlyFailed], () => loadPage(false))
+watch(keyword, () => {
+  clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => loadPage(false), 180)
+})
+watch(
+  () => hub.events[0],
+  (ev) => {
+    if (!ev || ruleId.value || onlyFailed.value) return
+    if (source.value && ev.source !== source.value) return
+    const k = keyword.value.trim().toLowerCase()
+    if (k && !ev.type.toLowerCase().includes(k) && !JSON.stringify(ev).toLowerCase().includes(k)) {
+      return
+    }
+    if (!pageEvents.value.some((x) => x.id === ev.id)) {
+      pageEvents.value = [ev, ...pageEvents.value]
+    }
+  },
+)
 
 const statusText: Record<string, string> = {
   ok: '成功',
@@ -202,6 +266,11 @@ async function replay() {
             </tr>
           </TransitionGroup>
         </table>
+      </div>
+      <div v-if="hasMore" class="mt-4 flex justify-center">
+        <button class="btn" :disabled="loadingMore" @click="loadPage(true)">
+          {{ loadingMore ? '加载中…' : '加载更多' }}
+        </button>
       </div>
     </div>
 

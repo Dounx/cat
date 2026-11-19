@@ -167,8 +167,49 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		limit, _ := strconv.Atoi(q.Get("limit"))
-		list, err := e.Store.ListEvents(store.EventFilter{Source: q.Get("source"), Type: q.Get("type"), Before: q.Get("before"), Limit: limit})
-		respond(w, list, err)
+		failed := q.Get("failed") == "1" || strings.EqualFold(q.Get("failed"), "true")
+		withRuns := q.Get("with_runs") == "1" || strings.EqualFold(q.Get("with_runs"), "true")
+		f := store.EventFilter{
+			Source:     q.Get("source"),
+			Type:       q.Get("type"),
+			Before:     q.Get("before"),
+			RuleID:     q.Get("rule_id"),
+			OnlyFailed: failed,
+			Query:      q.Get("q"),
+			Limit:      limit,
+		}
+		if !withRuns {
+			list, err := e.Store.ListEvents(f)
+			respond(w, list, err)
+			return
+		}
+		pageSize := limit
+		if pageSize <= 0 || pageSize > 200 {
+			pageSize = 80
+		}
+		f.Limit = pageSize + 1
+		list, err := e.Store.ListEvents(f)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		hasMore := len(list) > pageSize
+		if hasMore {
+			list = list[:pageSize]
+		}
+		ids := make([]string, len(list))
+		for i := range list {
+			ids[i] = list[i].ID
+		}
+		runs, err := e.Store.ListRunsForEvents(ids)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		for i := range runs {
+			runs[i].Rule = nil
+		}
+		writeJSON(w, 200, map[string]any{"events": list, "runs": runs, "has_more": hasMore})
 	})
 	mux.HandleFunc("GET /api/events/{id}", func(w http.ResponseWriter, r *http.Request) {
 		ev, err := e.Store.GetEvent(r.PathValue("id"))
