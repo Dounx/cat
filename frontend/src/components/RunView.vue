@@ -50,8 +50,11 @@ const failed = (p: Pass) => !!(p.visit.error || p.step?.error)
 // An action the run was at when the hub went down.
 const unfinished = (n: ENode, p: Pass) => props.run.status === 'interrupted' && n.kind === 'action' && !p.step
 
-// What to say of a step that held the run: how much it has gathered.
-const held = (s: StepResult) => `已收下，现在攒了 ${s.output?.count ?? '?'} 条，后面的等这一批发出时再运行`
+// What to say of a step that held the run (cooldown skip or collect batch).
+const held = (s: StepResult) =>
+  typeof s.output?.note === 'string' && s.output.note
+    ? s.output.note
+    : `已收下，现在攒了 ${s.output?.count ?? '?'} 条，后面的等这一批发出时再运行`
 
 // What to say of an action the run came to and has nothing from: it is still
 // at it, or the hub went down while it was.
@@ -250,7 +253,15 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
               <template v-if="picked.length > 1">第 {{ i + 1 }} 次 · </template>
               <template v-if="node.kind === 'condition'">{{ editor.verdict(node, p.visit) }}</template>
               <template v-else>{{
-                p.step ? (p.step.error ? '失败' : p.step.held ? '已收下，先停在这里' : '完成') : going
+                p.step
+                  ? p.step.error
+                    ? '失败'
+                    : p.step.held
+                      ? typeof p.step.output?.note === 'string' && p.step.output.note
+                        ? '冷却跳过'
+                        : '已收下，先停在这里'
+                      : '完成'
+                  : going
               }}</template>
             </span>
             <span class="flex shrink-0 items-center gap-1.5 font-mono text-xs text-mute">

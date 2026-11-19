@@ -15,7 +15,7 @@ type Entry struct {
 
 // All returns every built-in plugin.
 func All() []Entry {
-	return []Entry{webhookEntry(), websocketEntry(), httpEntry(), shellEntry(), collectEntry(), notifyEntry(), selfEntry()}
+	return []Entry{webhookEntry(), websocketEntry(), httpEntry(), shellEntry(), collectEntry(), cooldownEntry(), notifyEntry(), selfEntry()}
 }
 
 const (

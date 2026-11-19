@@ -406,7 +406,11 @@ async function replay() {
               {{ s.error }}
             </div>
             <p v-if="s.held" class="mt-1.5 text-xs text-mute">
-              已收下，现在攒了 {{ s.output?.count ?? '?' }} 条。规则先停在这里，后面的等这一批发出时再运行。
+              {{
+                typeof s.output?.note === 'string' && s.output.note
+                  ? s.output.note
+                  : `已收下，现在攒了 ${s.output?.count ?? '?'} 条。规则先停在这里，后面的等这一批发出时再运行。`
+              }}
             </p>
             <details class="mt-1.5 text-xs text-mute">
               <summary class="cursor-pointer">用了什么、得到什么</summary>
