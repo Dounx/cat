@@ -32,7 +32,7 @@ var versions = []string{"2025-06-18", "2025-11-25", "2025-03-26", "2024-11-05"}
 const instructions = `Cat 是一个事件中心：聊天软件、订阅、定时等「接入」发出事件，「规则」按条件判断后触发动作（发消息、交给 AI、发 HTTP 请求……）。
 - 要发消息或做别的事：先用 list_connections 看有哪些接入和它们的动作，再用 invoke_action 调用。发到哪个会话，从 list_events 里最近的事件取 conversation.id。
 - 要了解发生过什么：list_events 看收到的事件，list_runs 看规则对它们做了什么。
-- 要新建或修改规则：先用 list_rules 看现有规则的写法，照着用 save_rule 保存。动作会真的执行，改动前想清楚。`
+- 要新建或修改规则：先用 list_rules 看现有规则的写法，可用 try_rule 拿一个历史事件先试运行草稿（不保存规则，但动作会真的执行），确认无误后再用 save_rule 保存；也可使用 replay_event 重放历史事件。`
 
 type Server struct {
 	Engine  *engine.Engine
@@ -394,6 +394,69 @@ var tools = []tool{
 				list[i].Rule, list[i].Trace = nil, nil
 			}
 			return list, nil
+		},
+	},
+	{
+		name:  "try_rule",
+		about: "拿一个历史事件试运行一条规则（传入未保存的 rule 对象，或已保存的 rule_id），等待结果返回。不会保存规则，但规则里的动作会真的执行。",
+		schema: object([]string{"event_id"}, map[string]any{
+			"event_id": prop("string", "用来试运行的历史事件 id"),
+			"rule_id":  prop("string", "已保存规则的 id（与 rule 二选一）"),
+			"rule":     map[string]any{"type": "object", "description": "未保存或改过的规则对象：name、graph{nodes, edges}（与 rule_id 二选一）"},
+		}),
+		run: func(_ context.Context, s *Server, args map[string]any) (any, error) {
+			eventID := str(args, "event_id")
+			if eventID == "" {
+				return nil, errors.New("缺少 event_id")
+			}
+			var r rules.Rule
+			if args["rule"] != nil {
+				raw, _ := json.Marshal(args["rule"])
+				if err := json.Unmarshal(raw, &r); err != nil {
+					return nil, fmt.Errorf("规则的格式不对：%w", err)
+				}
+				if r.Graph == nil && len(r.Steps) == 0 {
+					return nil, errors.New("规则要有 graph（nodes 和 edges）")
+				}
+			} else if rid := str(args, "rule_id"); rid != "" {
+				list, _ := s.Engine.Store.ListRules()
+				i := slices.IndexFunc(list, func(x rules.Rule) bool { return x.ID == rid })
+				if i < 0 {
+					return nil, errors.New("没有 id 为 " + rid + " 的规则")
+				}
+				r = list[i]
+			} else {
+				return nil, errors.New("请提供 rule 或 rule_id")
+			}
+			run, err := s.Engine.TryRule(r, eventID)
+			if err != nil {
+				return nil, err
+			}
+			if run == nil {
+				return map[string]any{"matched": false}, nil
+			}
+			copied := *run
+			copied.Rule, copied.Trace = nil, nil
+			return map[string]any{"matched": true, "run": copied}, nil
+		},
+	},
+	{
+		name:  "replay_event",
+		about: "把一个历史事件重新交给规则跑一遍。不填 rule_id 时交给所有匹配且已启用的规则，填了则只跑那一条（即使停用也能跑）。",
+		schema: object([]string{"event_id"}, map[string]any{
+			"event_id": prop("string", "要重放的历史事件 id"),
+			"rule_id":  prop("string", "只对这条规则重放（可选）"),
+		}),
+		run: func(_ context.Context, s *Server, args map[string]any) (any, error) {
+			eventID := str(args, "event_id")
+			if eventID == "" {
+				return nil, errors.New("缺少 event_id")
+			}
+			n, err := s.Engine.Replay(eventID, str(args, "rule_id"))
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"matched": n}, nil
 		},
 	},
 }

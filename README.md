@@ -260,6 +260,7 @@ Cat 只增删它自己的那一项，别的配置不动。别的支持 MCP 的�
 | `invoke_action` | 让一个接入做一个动作，比如往某个会话发消息 |
 | `list_events`、`get_event` | 最近收到的事件 |
 | `list_rules`、`save_rule`、`set_rule_enabled`、`delete_rule` | 查看、新建、修改、启停、删除规则 |
+| `try_rule`、`replay_event` | 拿历史事件试运行草稿或已有规则、重放历史事件 |
 | `list_runs` | 规则的运行记录，每一步的参数、输出和错误 |
 
 ## 已有的插件

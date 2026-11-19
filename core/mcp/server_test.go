@@ -9,6 +9,7 @@ import (
 
 	"github.com/dounx/cat/core/builtin"
 	"github.com/dounx/cat/core/engine"
+	"github.com/dounx/cat/core/event"
 	"github.com/dounx/cat/core/mcp"
 	"github.com/dounx/cat/core/store"
 )
@@ -117,5 +118,42 @@ func TestServer(t *testing.T) {
 	}
 	if stored, _ = st.ListRules(); len(stored) != 0 {
 		t.Errorf("still there: %+v", stored)
+	}
+
+	// try_rule & replay_event against a stored event
+	evID, err := e.Emit(&event.Event{Source: "webhook", Plugin: "webhook", Type: "webhook.received", Payload: map[string]any{"text": "hello mcp"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const echoGraph = `"graph":{"nodes":[{"id":"t1","kind":"trigger"},{"id":"s1","kind":"action","instance":"shell","action":"run","params":{"command":"echo mcp-trial-ok"}}],"edges":[{"from":"t1","to":"s1"}]}`
+	tried, failed := call("try_rule", `{"event_id":"`+evID+`","rule":{"name":"draft trial",`+echoGraph+`}}`)
+	if failed {
+		t.Fatalf("try_rule failed: %v", tried)
+	}
+	tm := tried.(map[string]any)
+	if tm["matched"] != true {
+		t.Fatalf("try_rule not matched: %+v", tm)
+	}
+	runObj := tm["run"].(map[string]any)
+	steps := runObj["steps"].([]any)
+	stdout := steps[0].(map[string]any)["output"].(map[string]any)["stdout"].(string)
+	if runObj["status"] != "ok" || !strings.Contains(stdout, "mcp-trial-ok") {
+		t.Fatalf("try_rule run = %+v", runObj)
+	}
+	// Non-matching draft rule returns matched: false
+	unmatched, failed := call("try_rule", `{"event_id":"`+evID+`","rule":{"name":"nope","graph":{"nodes":[{"id":"t1","kind":"trigger","sources":["other"]},{"id":"s1","kind":"action","instance":"shell","action":"run","params":{"command":"echo no"}}],"edges":[{"from":"t1","to":"s1"}]}}}`)
+	if failed || unmatched.(map[string]any)["matched"] != false {
+		t.Fatalf("expected unmatched try_rule: %v %v", unmatched, failed)
+	}
+
+	// Save rule disabled and replay_event explicitly targeting rule_id
+	saved, failed := call("save_rule", `{"rule":{"name":"replay target","enabled":false,`+echoGraph+`}}`)
+	if failed {
+		t.Fatalf("save_rule: %v", saved)
+	}
+	rid := saved.(map[string]any)["id"].(string)
+	replayed, failed := call("replay_event", `{"event_id":"`+evID+`","rule_id":"`+rid+`"}`)
+	if failed || replayed.(map[string]any)["matched"].(float64) != 1 {
+		t.Fatalf("replay_event: %v %v", replayed, failed)
 	}
 }
