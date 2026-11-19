@@ -1146,3 +1146,38 @@ func TestCancelRun(t *testing.T) {
 		t.Fatalf("cancelled run emitted run.failed: %+v", failedEvs)
 	}
 }
+
+type noisyPlugin struct{ plugin.Base }
+
+func (n *noisyPlugin) Start(_ context.Context, h plugin.Host) error {
+	for i := 1; i <= 250; i++ {
+		h.Log("info", "line-"+strings.Repeat("x", 0)+string(rune('0'+i%10)))
+	}
+	h.Log("warn", "last-warning")
+	return nil
+}
+
+func TestInstanceLogsRingBuffer(t *testing.T) {
+	e := newEngine(t)
+	e.RegisterPlugin(plugin.Manifest{ID: "noisy", Name: "Noisy"}, func(map[string]any) (plugin.Instance, error) {
+		return &noisyPlugin{}, nil
+	})
+	inst, err := e.SaveInstance(store.Instance{Plugin: "noisy", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, e, inst.ID)
+	logs := e.InstanceLogs(inst.ID)
+	if len(logs) != 200 {
+		t.Fatalf("expected ring cap 200, got %d", len(logs))
+	}
+	if logs[len(logs)-1].Level != "warn" || logs[len(logs)-1].Message != "last-warning" {
+		t.Fatalf("unexpected last log: %+v", logs[len(logs)-1])
+	}
+	if err := e.DeleteInstance(inst.ID); err != nil {
+		t.Fatal(err)
+	}
+	if left := e.InstanceLogs(inst.ID); len(left) != 0 {
+		t.Fatalf("expected logs cleared after delete, got %d", len(left))
+	}
+}

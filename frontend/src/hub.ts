@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { auth, get } from './api'
-import type { HubEvent, Instance, Plugin, Rule, Run, Update } from './types'
+import type { HubEvent, Instance, LogEntry, Plugin, Rule, Run, Update } from './types'
 
 const MAX_EVENTS = 500
 const MAX_RUNS = 300
@@ -22,6 +22,7 @@ export const useHub = defineStore('hub', {
     loaded: false,
     toast: null as null | { text: string; bad: boolean },
     signals: {} as Record<string, unknown>,
+    lastLog: null as LogEntry | null,
   }),
   getters: {
     pluginOf: (s) => (id: string) => s.plugins.find((p) => p.id === id),
@@ -120,6 +121,9 @@ export const useHub = defineStore('hub', {
       es.addEventListener('rules', () => void this.reloadRules())
       es.addEventListener('update', (m) => {
         this.update = JSON.parse((m as MessageEvent).data)
+      })
+      es.addEventListener('log', (m) => {
+        this.lastLog = JSON.parse((m as MessageEvent).data)
       })
       // Other kinds (setup, download, ...) are exposed as the latest payload per kind.
       for (const kind of ['setup', 'download', 'plugins']) {

@@ -163,6 +163,14 @@ func (s *Server) Handler() http.Handler {
 		saved, err := e.SaveInstance(cur.Instance)
 		respond(w, saved, err)
 	})
+	mux.HandleFunc("GET /api/instances/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if _, ok := e.Instance(id); !ok {
+			writeErr(w, 404, "instance not found")
+			return
+		}
+		writeJSON(w, 200, e.InstanceLogs(id))
+	})
 
 	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

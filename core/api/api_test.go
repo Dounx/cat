@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/dounx/cat/core/engine"
 	"github.com/dounx/cat/core/event"
+	"github.com/dounx/cat/core/plugin"
 	"github.com/dounx/cat/core/store"
 )
 
@@ -217,5 +219,52 @@ func TestActivityPagingAndFilters(t *testing.T) {
 	evsR, _, _ := fetchPage("rule_id=r1")
 	if len(evsR) != 1 || evsR[0]["id"] != ids[1] {
 		t.Fatalf("rule_id filter: evs=%+v", evsR)
+	}
+}
+
+func TestInstanceLogsAPI(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	eng := engine.New(st, t.TempDir(), nil)
+	if err := eng.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(eng.Stop)
+	srv := httptest.NewServer((&Server{Engine: eng}).Handler())
+	defer srv.Close()
+
+	res404, err := http.Get(srv.URL + "/api/instances/nope/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res404.Body.Close()
+	if res404.StatusCode != 404 {
+		t.Fatalf("missing instance logs status = %d, want 404", res404.StatusCode)
+	}
+
+	eng.RegisterPlugin(plugin.Manifest{ID: "badp", Name: "Bad"}, func(map[string]any) (plugin.Instance, error) {
+		return nil, errors.New("boom")
+	})
+	inst, err := eng.SaveInstance(store.Instance{Plugin: "badp", Name: "bad", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.Get(srv.URL + "/api/instances/" + inst.ID + "/logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("logs status = %d", res.StatusCode)
+	}
+	var entries []engine.LogEntry
+	if err := json.NewDecoder(res.Body).Decode(&entries); err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 || entries[0].Level != "error" {
+		t.Fatalf("expected error log entry, got %+v", entries)
 	}
 }

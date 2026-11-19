@@ -10,12 +10,13 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  ScrollText,
   Search,
   Trash2,
 } from 'lucide-vue-next'
-import { useHub } from '../hub'
+import { useHub, clock } from '../hub'
 import { del, get, post, put } from '../api'
-import type { Instance, Plugin } from '../types'
+import type { Instance, LogEntry, Plugin } from '../types'
 import PageHeader from '../components/PageHeader.vue'
 import Drawer from '../components/Drawer.vue'
 import SchemaForm from '../components/SchemaForm.vue'
@@ -283,6 +284,39 @@ async function remove(i: Instance) {
   await hub.run(() => del(`/instances/${i.id}`), '已删除')
   hub.reloadInstances()
 }
+
+const logInst = ref<Instance | null>(null)
+const logLines = ref<LogEntry[]>([])
+const loadingLogs = ref(false)
+async function openInstanceLogs(i: Instance) {
+  logInst.value = i
+  await reloadLogs()
+}
+async function reloadLogs() {
+  if (!logInst.value) return
+  loadingLogs.value = true
+  try {
+    logLines.value = (await get<LogEntry[]>(`/instances/${encodeURIComponent(logInst.value.id)}/logs`)) || []
+  } catch (e: any) {
+    hub.notify(e.message || '加载日志失败', true)
+  } finally {
+    loadingLogs.value = false
+  }
+}
+watch(
+  () => hub.lastLog,
+  (entry) => {
+    if (!entry || !logInst.value || entry.instance !== logInst.value.id) return
+    logLines.value = [...logLines.value, entry].slice(-200)
+  },
+)
+const levelClass = (lvl: string) => {
+  const l = (lvl || '').toLowerCase()
+  if (l === 'error') return 'text-bad'
+  if (l === 'warn' || l === 'warning') return 'text-warn'
+  if (l === 'debug') return 'text-faint'
+  return 'text-mute'
+}
 </script>
 
 <template>
@@ -342,6 +376,9 @@ async function remove(i: Instance) {
             </RouterLink>
           </div>
           <div class="reveal flex items-center">
+            <button class="btn btn-ghost px-2" title="日志" aria-label="日志" @click="openInstanceLogs(i)">
+              <ScrollText :size="15" />
+            </button>
             <button class="btn btn-ghost px-2" title="编辑" @click="edit(i)"><Pencil :size="15" /></button>
             <button class="btn btn-ghost px-2" title="重启" @click="restart(i)">
               <RefreshCw :size="15" :class="{ spin: restarting === i.id }" />
@@ -559,6 +596,34 @@ async function remove(i: Instance) {
           <button class="btn" @click="marketURL = null">取消</button>
           <button class="btn btn-primary" @click="saveMarketURL">保存</button>
         </template>
+      </Drawer>
+    </Transition>
+
+    <Transition name="drawer">
+      <Drawer v-if="logInst" :title="`日志 · ${logInst.name}`" wide @close="logInst = null">
+        <template #actions>
+          <button class="btn" :disabled="loadingLogs" @click="reloadLogs">
+            <RefreshCw :size="14" :class="{ spin: loadingLogs }" />刷新
+          </button>
+        </template>
+        <p class="mb-3 text-xs text-mute">最近最多保留 200 条本接入的运行日志，新日志会实时追加。</p>
+        <div v-if="!logLines.length && !loadingLogs" class="card px-4 py-8 text-center text-sm text-mute">
+          还没有日志输出。
+        </div>
+        <div
+          v-else
+          class="divide-y divide-line overflow-hidden rounded-xl border border-line bg-sunken/40 font-mono text-xs"
+        >
+          <div
+            v-for="(entry, idx) in logLines"
+            :key="`${entry.time}-${idx}`"
+            class="flex items-start gap-2.5 px-3 py-2"
+          >
+            <span class="shrink-0 whitespace-nowrap text-faint tabular-nums">{{ clock(entry.time) }}</span>
+            <span class="w-11 shrink-0 uppercase" :class="levelClass(entry.level)">{{ entry.level || 'info' }}</span>
+            <span class="min-w-0 flex-1 break-all whitespace-pre-wrap text-ink">{{ entry.message }}</span>
+          </div>
+        </div>
       </Drawer>
     </Transition>
 

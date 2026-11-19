@@ -30,8 +30,9 @@ const (
 	defaultRetryWait   = 5 * time.Second
 	maxRetryWait       = 5 * time.Minute
 	// startWait is how long a step waits for an instance that is starting.
-	startWait  = 30 * time.Second
-	keepEvents = 20000
+	startWait       = 30 * time.Second
+	keepEvents      = 20000
+	maxInstanceLogs = 200
 )
 
 // Message is pushed to live subscribers (the UI's event stream).
@@ -100,6 +101,9 @@ type Engine struct {
 	runsMu sync.Mutex
 	runs   map[string]context.CancelFunc
 
+	logsMu sync.Mutex
+	logs   map[string][]LogEntry
+
 	sem     chan struct{}
 	wg      sync.WaitGroup
 	emitted int
@@ -124,6 +128,7 @@ func New(st *store.Store, dataDir string, log *slog.Logger) *Engine {
 		trigErrs: map[string]map[string]string{},
 		subs:     map[chan Message]struct{}{},
 		runs:     map[string]context.CancelFunc{},
+		logs:     map[string][]LogEntry{},
 		sem:      make(chan struct{}, 16),
 		stopping: make(chan struct{}),
 	}
@@ -366,6 +371,11 @@ func (e *Engine) setStatus(r *running, status, errMsg string) {
 	view := InstanceView{Instance: e.masked(rec), Status: status, Error: errMsg}
 	if current {
 		e.publish(Message{Kind: "instance", Data: view})
+		if status == StatusError && errMsg != "" {
+			entry := LogEntry{Instance: rec.ID, Level: "error", Message: errMsg, Time: time.Now()}
+			e.appendLog(entry)
+			e.publish(Message{Kind: "log", Data: entry})
+		}
 	}
 }
 
@@ -442,6 +452,9 @@ func (e *Engine) DeleteInstance(instanceID string) error {
 	delete(e.running, instanceID)
 	delete(e.trigErrs, instanceID)
 	e.mu.Unlock()
+	e.logsMu.Lock()
+	delete(e.logs, instanceID)
+	e.logsMu.Unlock()
 	if r != nil {
 		e.halt(r)
 		if e.Secrets != nil {
@@ -508,7 +521,29 @@ func (h *host) Emit(ev *event.Event) (string, error) {
 
 func (h *host) Log(level, msg string) {
 	h.e.log.Log(context.Background(), logLevel(level), "plugin: "+msg, "instance", h.rec.ID, "plugin", h.rec.Plugin)
-	h.e.publish(Message{Kind: "log", Data: LogEntry{Instance: h.rec.ID, Level: level, Message: msg, Time: time.Now()}})
+	entry := LogEntry{Instance: h.rec.ID, Level: level, Message: msg, Time: time.Now()}
+	h.e.appendLog(entry)
+	h.e.publish(Message{Kind: "log", Data: entry})
+}
+
+func (e *Engine) appendLog(entry LogEntry) {
+	e.logsMu.Lock()
+	defer e.logsMu.Unlock()
+	list := append(e.logs[entry.Instance], entry)
+	if len(list) > maxInstanceLogs {
+		list = append([]LogEntry(nil), list[len(list)-maxInstanceLogs:]...)
+	}
+	e.logs[entry.Instance] = list
+}
+
+// InstanceLogs returns the recent log entries (up to 200) recorded for an instance.
+func (e *Engine) InstanceLogs(instanceID string) []LogEntry {
+	e.logsMu.Lock()
+	defer e.logsMu.Unlock()
+	src := e.logs[instanceID]
+	out := make([]LogEntry, len(src))
+	copy(out, src)
+	return out
 }
 
 // logLevel maps a plugin's level name onto the hub's own; anything it does

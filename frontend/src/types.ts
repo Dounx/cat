@@ -166,3 +166,10 @@ export interface Update {
   done?: number
   total?: number
 }
+
+export interface LogEntry {
+  instance: string
+  level: string
+  message: string
+  time: string
+}
