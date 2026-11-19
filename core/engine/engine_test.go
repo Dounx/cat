@@ -1011,3 +1011,87 @@ func TestCollectHoldsAndPassesOn(t *testing.T) {
 		return len(runs) == 3 && runs[0].Resumed == "batch" && runs[0].Status == "ok" && len(runs[0].Steps) == 2
 	})
 }
+
+type fakeChat struct {
+	plugin.Base
+	mu      sync.Mutex
+	typing  int
+	replied int
+}
+
+func (f *fakeChat) Invoke(ctx context.Context, action string, _ map[string]any, _ plugin.InvokeContext) (map[string]any, error) {
+	switch action {
+	case "typing":
+		f.mu.Lock()
+		f.typing++
+		f.mu.Unlock()
+		return map[string]any{}, nil
+	case "slow":
+		select {
+		case <-time.After(110 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return map[string]any{"ok": true}, nil
+	case "reply":
+		f.mu.Lock()
+		f.replied++
+		f.mu.Unlock()
+		return map[string]any{"message_id": "m1"}, nil
+	}
+	return nil, plugin.ErrUnknownAction(action)
+}
+
+func TestTypingKeepalive(t *testing.T) {
+	orig := engine.TypingInterval
+	engine.TypingInterval = 25 * time.Millisecond
+	defer func() { engine.TypingInterval = orig }()
+
+	e := newEngine(t)
+	fc := &fakeChat{}
+	e.RegisterPlugin(plugin.Manifest{
+		ID: "fakechat", Name: "FakeChat", Capabilities: []string{plugin.CapAction},
+	}, func(map[string]any) (plugin.Instance, error) { return fc, nil })
+	chat, err := e.SaveInstance(store.Instance{Plugin: "fakechat", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, e, chat.ID)
+	hook, _ := e.SaveInstance(store.Instance{Plugin: "webhook", Enabled: true})
+	waitRunning(t, e, hook.ID)
+
+	r, err := e.SaveRule(rules.Rule{
+		Name: "keepalive", Enabled: true,
+		Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1"}, Sources: []string{hook.ID}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s1", Instance: chat.ID, Action: "typing"}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s2", Instance: chat.ID, Action: "slow"}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s3", Instance: chat.ID, Action: "reply"}},
+			},
+			Edges: []rules.Edge{{From: "t1", To: "s1"}, {From: "s1", To: "s2"}, {From: "s2", To: "s3"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	post(t, e, hook.ID, `{"text":"ping"}`, nil)
+	waitFor(t, "run ok", func() bool {
+		runs, _ := e.Store.ListRuns(r.ID, "", 5)
+		return len(runs) == 1 && runs[0].Status == "ok"
+	})
+	fc.mu.Lock()
+	afterReply := fc.typing
+	replied := fc.replied
+	fc.mu.Unlock()
+	if replied != 1 || afterReply < 3 {
+		t.Fatalf("expected >=3 typing calls and 1 reply, got typing=%d replied=%d", afterReply, replied)
+	}
+	time.Sleep(80 * time.Millisecond)
+	fc.mu.Lock()
+	later := fc.typing
+	fc.mu.Unlock()
+	if later != afterReply {
+		t.Fatalf("typing did not stop after reply: %d -> %d", afterReply, later)
+	}
+}

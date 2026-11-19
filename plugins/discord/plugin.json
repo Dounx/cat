@@ -27,7 +27,7 @@
       "description": "在触发事件所在的频道或私信里回复。输出：message_id。",
       "params": {
         "type": "object",
-        "x-order": ["text", "files", "quote"],
+        "x-order": ["text", "files", "edit_message_id", "quote"],
         "properties": {
           "text": { "type": "string", "title": "内容", "format": "textarea" },
           "files": {
@@ -35,6 +35,11 @@
             "title": "附件（可选）",
             "format": "textarea",
             "description": "本地文件路径（每行一个），或用「插入变量」填入 {{ payload.attachments }}。"
+          },
+          "edit_message_id": {
+            "type": "string",
+            "title": "编辑已有消息 ID（可选）",
+            "description": "填上前面发出的消息 ID（如 {{ steps.placeholder.message_id }}），会原地替换那条消息的内容。"
           },
           "quote": { "type": "boolean", "title": "引用原消息", "default": true }
         }
@@ -46,7 +51,7 @@
       "params": {
         "type": "object",
         "required": ["channel_id"],
-        "x-order": ["channel_id", "text", "files"],
+        "x-order": ["channel_id", "text", "files", "edit_message_id"],
         "properties": {
           "channel_id": { "type": "string", "title": "发到哪个频道", "x-pick": "conversation", "description": "从最近的频道里选，或直接写频道 ID。" },
           "text": { "type": "string", "title": "内容", "format": "textarea" },
@@ -55,6 +60,11 @@
             "title": "附件（可选）",
             "format": "textarea",
             "description": "本地文件路径（每行一个），或用「插入变量」填入 {{ payload.attachments }}。"
+          },
+          "edit_message_id": {
+            "type": "string",
+            "title": "编辑已有消息 ID（可选）",
+            "description": "填上前面发出的消息 ID，会原地替换那条消息的内容。"
           }
         }
       }

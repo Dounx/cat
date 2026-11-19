@@ -61,6 +61,15 @@ func newFake(t *testing.T) *fakeTelegram {
 			}
 			f.sent = append(f.sent, params)
 			reply(map[string]any{"message_id": 500 + len(f.sent), "chat": map[string]any{"id": -100}})
+		case "editMessageText":
+			if params["parse_mode"] == "Markdown" && strings.Contains(params["text"].(string), "*broken") {
+				w.WriteHeader(400)
+				json.NewEncoder(w).Encode(map[string]any{"ok": false, "error_code": 400, "description": "can't parse entities"})
+				return
+			}
+			params["method"] = "editMessageText"
+			f.sent = append(f.sent, params)
+			reply(map[string]any{"message_id": params["message_id"], "chat": map[string]any{"id": -100}})
 		case "sendChatAction":
 			f.sent = append(f.sent, params)
 			reply(true)
@@ -302,5 +311,25 @@ func TestAttachmentsDownloadAndSend(t *testing.T) {
 	sent := f.sentCopy()
 	if len(sent) != 2 || sent[0]["method"] != "sendPhoto" || sent[0]["caption"] != "回传" || sent[1]["method"] != "sendDocument" {
 		t.Fatalf("sent = %+v", sent)
+	}
+}
+
+func TestEditMessageText(t *testing.T) {
+	f := newFake(t)
+	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"token": "good-token", "api_base": f.URL}})
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ev := cat.Event{Conversation: &cat.Conversation{ID: "-100"}, Payload: map[string]any{"message_id": "7"}}
+	out, err := h.Invoke("reply", map[string]any{"text": "*broken markdown final", "edit_message_id": "501", "markdown": true}, &ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["message_id"] != "501" {
+		t.Fatalf("edit output = %+v", out)
+	}
+	sent := f.sentCopy()
+	if len(sent) != 1 || sent[0]["method"] != "editMessageText" || sent[0]["message_id"].(float64) != 501 || sent[0]["parse_mode"] != nil {
+		t.Fatalf("edit sent = %+v", sent)
 	}
 }

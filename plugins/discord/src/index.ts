@@ -313,6 +313,20 @@ class Bot {
     return { message_id: ids[ids.length - 1], message_ids: ids, channel_id: channelId }
   }
 
+  async edit(channelId: string, messageId: string, text: unknown, signal: AbortSignal) {
+    const body = text === undefined || text === null ? '' : typeof text === 'string' ? text : JSON.stringify(text)
+    if (!body.trim()) throw new Error('消息内容为空')
+    const part = split(body, MAX_TEXT)[0]
+    const edited = await this.api.call<{ id: string }>(
+      'PATCH',
+      `/channels/${channelId}/messages/${messageId}`,
+      { content: part },
+      signal,
+    )
+    const id = edited?.id || messageId
+    return { message_id: id, message_ids: [id], channel_id: channelId }
+  }
+
   typing(channelId: string, signal: AbortSignal) {
     return this.api.call('POST', `/channels/${channelId}/typing`, undefined, signal)
   }
@@ -370,17 +384,24 @@ run({
     await bot.start()
   },
   actions: {
-    reply: (p, ctx, _h, signal) =>
-      bot!.send(
-        conversationOf(ctx, '回复'),
+    reply: (p, ctx, _h, signal) => {
+      const ch = conversationOf(ctx, '回复')
+      const editId = String(p.edit_message_id ?? '').trim()
+      if (editId) return bot!.edit(ch, editId, p.text, signal)
+      return bot!.send(
+        ch,
         p.text,
         p.quote === false ? undefined : (ctx.event?.payload?.message_id as string),
         namedFiles(p),
         signal,
-      ),
+      )
+    },
     send: (p, _ctx, _h, signal) => {
       if (!p.channel_id) throw new Error('缺少频道 ID')
-      return bot!.send(String(p.channel_id), p.text, undefined, namedFiles(p), signal)
+      const ch = String(p.channel_id)
+      const editId = String(p.edit_message_id ?? '').trim()
+      if (editId) return bot!.edit(ch, editId, p.text, signal)
+      return bot!.send(ch, p.text, undefined, namedFiles(p), signal)
     },
     typing: async (_p, ctx, _h, signal) => {
       await bot!.typing(conversationOf(ctx, '正在输入'), signal)

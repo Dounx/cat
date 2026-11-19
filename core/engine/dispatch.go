@@ -216,6 +216,10 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 	return e.executeFrom(r, ev, replay, nil)
 }
 
+// TypingInterval is how often an active "typing" step is refreshed while a run
+// continues working before replying. Tests shorten it.
+var TypingInterval = 4 * time.Second
+
 // executeFrom runs a rule for an event, from its triggers or, with from set,
 // from past a step that held an earlier run: that step stands in the new run
 // as done.
@@ -224,6 +228,19 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 		ID: id.New(), RuleID: r.ID, RuleName: r.Name, EventID: ev.ID,
 		Status: "running", StartedAt: time.Now(), Steps: []store.StepResult{}, Replay: replay,
 	}
+	typingStops := map[string]context.CancelFunc{}
+	stopTyping := func(target string) {
+		if cancel, ok := typingStops[target]; ok {
+			cancel()
+			delete(typingStops, target)
+		}
+	}
+	defer func() {
+		for k, cancel := range typingStops {
+			cancel()
+			delete(typingStops, k)
+		}
+	}()
 	// A graph rule's run is recorded from its first action on: an event that
 	// takes a branch leading nowhere leaves no run behind.
 	recorded := r.Graph == nil
@@ -246,12 +263,43 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 			recorded = true
 			e.saveRun(run)
 		}
+		target := step.Instance
+		if target == rules.SourceInstance {
+			target = ev.Source
+		}
+		if step.Action == "reply" || step.Action == "send" {
+			stopTyping(target)
+		}
 		res := e.runStep(step, ev, r.ID, run.ID, env)
 		run.Steps = append(run.Steps, res)
 		if res.Output != nil {
 			outputs[step.ID] = res.Output
 		} else {
 			outputs[step.ID] = map[string]any{}
+		}
+		if res.Error == "" && !res.Held && step.Action == "typing" && TypingInterval > 0 {
+			if _, active := typingStops[target]; !active {
+				tctx, tcancel := context.WithCancel(context.Background())
+				typingStops[target] = tcancel
+				params := res.Params
+				ictx := plugin.InvokeContext{Event: ev, RuleID: r.ID, RunID: run.ID, StepID: step.ID}
+				go func(tgt string, p map[string]any) {
+					tk := time.NewTicker(TypingInterval)
+					defer tk.Stop()
+					for {
+						select {
+						case <-tctx.Done():
+							return
+						case <-e.stopping:
+							return
+						case <-tk.C:
+							cctx, ccancel := context.WithTimeout(tctx, 10*time.Second)
+							_, _ = e.Invoke(cctx, tgt, "typing", p, ictx)
+							ccancel()
+						}
+					}
+				}(target, params)
+			}
 		}
 		if res.Error != "" {
 			failed = true

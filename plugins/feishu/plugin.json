@@ -31,10 +31,11 @@
       "description": "在触发事件所在的会话里回复。输出：message_id。",
       "params": {
         "type": "object",
-        "x-order": ["text", "files", "quote", "markdown"],
+        "x-order": ["text", "files", "edit_message_id", "quote", "markdown"],
         "properties": {
           "text": { "type": "string", "title": "内容", "format": "textarea" },
           "files": { "type": "string", "title": "附件（可选）", "format": "textarea", "description": "本地文件路径（每行一个），或用「插入变量」填入 {{ payload.attachments }} 直接转发收到的附件。" },
+          "edit_message_id": { "type": "string", "title": "编辑已有消息 ID（可选）", "description": "填上前面发出的消息 ID（如 {{ steps.placeholder.message_id }}），会原地更新那条消息的内容。" },
           "quote": { "type": "boolean", "title": "引用原消息", "default": true },
           "markdown": { "type": "boolean", "title": "按 Markdown 渲染", "default": true }
         }
@@ -46,15 +47,16 @@
       "params": {
         "type": "object",
         "required": ["chat_id"],
-        "x-order": ["chat_id", "text", "files", "markdown"],
+        "x-order": ["chat_id", "text", "files", "edit_message_id", "markdown"],
         "properties": {
           "chat_id": { "type": "string", "title": "发到哪个会话", "x-pick": "conversation", "description": "从最近的会话里选，或直接写群的 chat_id（oc_ 开头）、用户的 open_id（ou_ 开头）。" },
           "text": { "type": "string", "title": "内容", "format": "textarea" },
           "files": { "type": "string", "title": "附件（可选）", "format": "textarea", "description": "本地文件路径（每行一个），或用「插入变量」填入 {{ payload.attachments }} 直接转发收到的附件。" },
+          "edit_message_id": { "type": "string", "title": "编辑已有消息 ID（可选）", "description": "填上前面发出的消息 ID，会原地更新那条消息的内容。" },
           "markdown": { "type": "boolean", "title": "按 Markdown 渲染", "default": true }
         }
       }
     },
-    { "name": "typing", "title": "显示「正在输入」", "description": "飞书不支持，此动作什么也不做，仅为与其他平台的规则保持一致。" }
+    { "name": "typing", "title": "显示「正在输入」", "description": "给触发消息贴上「正在输入」表情反应（Typing），在回复发出时自动撤回。" }
   ]
 }

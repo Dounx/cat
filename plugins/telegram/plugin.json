@@ -27,10 +27,11 @@
       "description": "在触发事件所在的会话里回复。输出：message_id。",
       "params": {
         "type": "object",
-        "x-order": ["text", "files", "quote", "markdown"],
+        "x-order": ["text", "files", "edit_message_id", "quote", "markdown"],
         "properties": {
           "text": { "type": "string", "title": "内容", "format": "textarea" },
           "files": { "type": "string", "title": "附件（可选）", "format": "textarea", "description": "本地文件路径（每行一个），或用「插入变量」填入 {{ payload.attachments }} 直接转发收到的附件。" },
+          "edit_message_id": { "type": "string", "title": "编辑已有消息 ID（可选）", "description": "填上前面发出的消息 ID（如 {{ steps.placeholder.message_id }}），会原地替换那条消息的内容而不是重发。" },
           "quote": { "type": "boolean", "title": "引用原消息", "default": true },
           "markdown": { "type": "boolean", "title": "按 Markdown 渲染（失败时退回纯文本）" }
         }
@@ -42,11 +43,12 @@
       "params": {
         "type": "object",
         "required": ["chat_id"],
-        "x-order": ["chat_id", "text", "files", "markdown"],
+        "x-order": ["chat_id", "text", "files", "edit_message_id", "markdown"],
         "properties": {
           "chat_id": { "type": "string", "title": "发到哪个会话", "x-pick": "conversation", "description": "从最近的会话里选，或直接写会话 ID。" },
           "text": { "type": "string", "title": "内容", "format": "textarea" },
           "files": { "type": "string", "title": "附件（可选）", "format": "textarea", "description": "本地文件路径（每行一个），或用「插入变量」填入 {{ payload.attachments }} 直接转发收到的附件。" },
+          "edit_message_id": { "type": "string", "title": "编辑已有消息 ID（可选）", "description": "填上前面发出的消息 ID，会原地替换那条消息的内容而不是重发。" },
           "markdown": { "type": "boolean", "title": "按 Markdown 渲染（失败时退回纯文本）" }
         }
       }

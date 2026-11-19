@@ -84,6 +84,16 @@ func newFake(t *testing.T) *fakeDiscord {
 		f.mu.Unlock()
 		json.NewEncoder(w).Encode(map[string]string{"id": "m" + string(rune('0'+n))})
 	})
+	mux.HandleFunc("PATCH /channels/{id}/messages/{mid}", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		body["channel"] = r.PathValue("id")
+		body["edited"] = r.PathValue("mid")
+		f.mu.Lock()
+		f.posts = append(f.posts, body)
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]string{"id": r.PathValue("mid")})
+	})
 	mux.HandleFunc("POST /channels/{id}/typing", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.typing++
@@ -277,6 +287,17 @@ func TestDiscord(t *testing.T) {
 	f.mu.Unlock()
 	if names, _ := uploadPost["_files"].([]string); len(names) != 1 || names[0] != "pic.png" {
 		t.Fatalf("multipart upload post = %#v", uploadPost)
+	}
+
+	// Edit existing message in place via edit_message_id.
+	if out, err := e.Invoke(context.Background(), inst.ID, "reply", map[string]any{"text": "final answer", "edit_message_id": "m1"}, plugin.InvokeContext{Event: &ev}); err != nil || out["message_id"] != "m1" {
+		t.Fatalf("edit reply: %v %v", out, err)
+	}
+	f.mu.Lock()
+	editPost := f.posts[len(f.posts)-1]
+	f.mu.Unlock()
+	if editPost["edited"] != "m1" || editPost["content"] != "final answer" {
+		t.Fatalf("edit post = %#v", editPost)
 	}
 
 	// Dropping the socket makes the plugin reconnect and resume its session.

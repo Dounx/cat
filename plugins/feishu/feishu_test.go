@@ -20,8 +20,11 @@ import (
 // who the bot is, names one chat and records the messages sent.
 type fakeFeishu struct {
 	*httptest.Server
-	mu   sync.Mutex
-	sent []map[string]any
+	mu               sync.Mutex
+	sent             []map[string]any
+	updated          []map[string]any
+	reactionsCreated int
+	reactionsDeleted int
 }
 
 func newFake(t *testing.T) *fakeFeishu {
@@ -52,6 +55,29 @@ func newFake(t *testing.T) *fakeFeishu {
 			reply(map[string]any{"code": 0, "data": map[string]any{"image_key": "img_k1"}})
 		case path == "/open-apis/im/v1/files":
 			reply(map[string]any{"code": 0, "data": map[string]any{"file_key": "file_k1"}})
+		case strings.HasPrefix(path, "/open-apis/im/v1/messages/") && strings.Contains(path, "/reactions"):
+			f.mu.Lock()
+			if r.Method == http.MethodPost {
+				f.reactionsCreated++
+				f.mu.Unlock()
+				reply(map[string]any{"code": 0, "data": map[string]any{"reaction_id": "react_1"}})
+			} else if r.Method == http.MethodDelete {
+				f.reactionsDeleted++
+				f.mu.Unlock()
+				reply(map[string]any{"code": 0, "data": map[string]any{"reaction_id": "react_1"}})
+			} else {
+				f.mu.Unlock()
+				w.WriteHeader(405)
+			}
+		case strings.HasPrefix(path, "/open-apis/im/v1/messages/") && r.Method == http.MethodPut:
+			f.mu.Lock()
+			if body == nil {
+				body = map[string]any{}
+			}
+			body["path"] = path
+			f.updated = append(f.updated, body)
+			f.mu.Unlock()
+			reply(map[string]any{"code": 0, "data": map[string]any{"message_id": strings.TrimPrefix(path, "/open-apis/im/v1/messages/")}})
 		case strings.HasPrefix(path, "/open-apis/im/v1/messages"):
 			f.mu.Lock()
 			body["path"] = path
@@ -177,5 +203,23 @@ func TestFeishu(t *testing.T) {
 	}
 	if len(f.sent) != 4 || f.sent[2]["msg_type"] != "image" || f.sent[3]["msg_type"] != "file" {
 		t.Fatalf("uploaded messages = %+v", f.sent[2:])
+	}
+
+	// typing reaction creates once (deduped), clears on reply, and edit updates in place
+	if err := b.startTyping(ctx, "om_1"); err != nil {
+		t.Fatalf("startTyping 1: %v", err)
+	}
+	if err := b.startTyping(ctx, "om_1"); err != nil {
+		t.Fatalf("startTyping 2: %v", err)
+	}
+	b.clearTyping(ctx, "om_1")
+	if out, err := b.edit(ctx, "oc_group", "om_sent1", "更新后的回复", false); err != nil || out.(map[string]any)["message_id"] != "om_sent1" {
+		t.Fatalf("edit: %v %v", out, err)
+	}
+	f.mu.Lock()
+	rc, rd, upd := f.reactionsCreated, f.reactionsDeleted, f.updated
+	f.mu.Unlock()
+	if rc != 1 || rd != 1 || len(upd) != 1 || upd[0]["msg_type"] != "text" || !strings.Contains(upd[0]["content"].(string), "更新后的回复") {
+		t.Fatalf("typing/edit state: created=%d deleted=%d updated=%+v", rc, rd, upd)
 	}
 }

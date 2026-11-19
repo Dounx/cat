@@ -157,12 +157,18 @@ func New() cat.Plugin {
 				if quote, ok := p["quote"].(bool); !ok || quote {
 					replyTo = toInt(ev.Payload["message_id"])
 				}
+				if editID := toInt(p["edit_message_id"]); editID != 0 {
+					return b.edit(ctx, ev.Conversation.ID, editID, text(p), p["markdown"] == true)
+				}
 				return b.sendWithFiles(ctx, ev.Conversation.ID, text(p), cat.Files(p), replyTo, toInt(ev.Payload["thread_id"]), p["markdown"] == true)
 			},
 			"send": func(ctx context.Context, h *cat.Host, p map[string]any, _ cat.ActionContext) (any, error) {
 				chatID := fmt.Sprint(p["chat_id"])
 				if p["chat_id"] == nil || chatID == "" {
 					return nil, errors.New("缺少会话 ID")
+				}
+				if editID := toInt(p["edit_message_id"]); editID != 0 {
+					return b.edit(ctx, chatID, editID, text(p), p["markdown"] == true)
 				}
 				return b.sendWithFiles(ctx, chatID, text(p), cat.Files(p), 0, 0, p["markdown"] == true)
 			},
@@ -394,6 +400,35 @@ func (b *bot) send(ctx context.Context, chatID, body string, replyTo, threadID i
 		ids = append(ids, strconv.FormatInt(sent.MessageID, 10))
 	}
 	return map[string]any{"message_id": ids[len(ids)-1], "message_ids": ids, "chat_id": chatID}, nil
+}
+
+func (b *bot) edit(ctx context.Context, chatID string, editID int64, body string, markdown bool) (any, error) {
+	if strings.TrimSpace(body) == "" {
+		return nil, errors.New("消息内容为空")
+	}
+	parts := split(body, maxText)
+	params := map[string]any{"chat_id": chatID, "message_id": editID, "text": parts[0]}
+	var sent message
+	var err error
+	if markdown {
+		params["parse_mode"] = "Markdown"
+		err = b.call(ctx, "editMessageText", params, &sent)
+		var apiErr *apiError
+		if errors.As(err, &apiErr) && apiErr.Code == 400 {
+			delete(params, "parse_mode")
+			err = b.call(ctx, "editMessageText", params, &sent)
+		}
+	} else {
+		err = b.call(ctx, "editMessageText", params, &sent)
+	}
+	if err != nil {
+		return nil, err
+	}
+	id := strconv.FormatInt(editID, 10)
+	if sent.MessageID != 0 {
+		id = strconv.FormatInt(sent.MessageID, 10)
+	}
+	return map[string]any{"message_id": id, "message_ids": []string{id}, "chat_id": chatID}, nil
 }
 
 func (b *bot) poll(ctx context.Context, h *cat.Host) {

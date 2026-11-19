@@ -58,12 +58,18 @@ type bot struct {
 	// leave its own messages alone.
 	openID, name string
 
-	mu    sync.Mutex
-	chats map[string]string // chat id → name, "" when it cannot be read
+	mu              sync.Mutex
+	chats           map[string]string // chat id → name, "" when it cannot be read
+	typingReactions map[string]string // trigger message_id → reaction_id
 }
 
 func newBot(cfg map[string]any, h *cat.Host) (*bot, error) {
-	b := &bot{appID: str(cfg, "app_id"), secret: str(cfg, "app_secret"), chats: map[string]string{}}
+	b := &bot{
+		appID:           str(cfg, "app_id"),
+		secret:          str(cfg, "app_secret"),
+		chats:           map[string]string{},
+		typingReactions: map[string]string{},
+	}
 	if b.appID == "" || b.secret == "" {
 		return nil, errors.New("缺少 App ID 或 App Secret")
 	}
@@ -317,6 +323,89 @@ func (b *bot) send(ctx context.Context, to, body, replyTo string, markdown bool)
 	return map[string]any{"message_id": res.MessageID, "message_ids": ids, "chat_id": to}, nil
 }
 
+func (b *bot) edit(ctx context.Context, to, messageID, body string, md bool) (any, error) {
+	if strings.TrimSpace(body) == "" {
+		return nil, errors.New("消息内容为空")
+	}
+	msgType := "text"
+	var content string
+	if md {
+		postJSON, err := normalize.SimpleMarkdownToPost("", body, nil)
+		if err == nil {
+			msgType = "post"
+			content = postJSON
+		}
+	}
+	if content == "" {
+		raw, _ := json.Marshal(map[string]string{"text": body})
+		content = string(raw)
+	}
+	req := larkim.NewUpdateMessageReqBuilder().
+		MessageId(messageID).
+		Body(larkim.NewUpdateMessageReqBodyBuilder().MsgType(msgType).Content(content).Build()).
+		Build()
+	resp, err := b.client.Im.V1.Message.Update(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("飞书更新消息失败：%w", err)
+	}
+	if !resp.Success() {
+		return nil, fmt.Errorf("飞书更新消息失败（%d）：%s", resp.Code, resp.Msg)
+	}
+	return map[string]any{"message_id": messageID, "message_ids": []string{messageID}, "chat_id": to}, nil
+}
+
+func (b *bot) startTyping(ctx context.Context, msgID string) error {
+	if msgID == "" {
+		return nil
+	}
+	b.mu.Lock()
+	if _, exists := b.typingReactions[msgID]; exists {
+		b.mu.Unlock()
+		return nil
+	}
+	b.mu.Unlock()
+
+	req := larkim.NewCreateMessageReactionReqBuilder().
+		MessageId(msgID).
+		Body(larkim.NewCreateMessageReactionReqBodyBuilder().
+			ReactionType(larkim.NewEmojiBuilder().EmojiType("Typing").Build()).
+			Build()).
+		Build()
+	resp, err := b.client.Im.V1.MessageReaction.Create(ctx, req)
+	if err != nil {
+		return err
+	}
+	if !resp.Success() {
+		return fmt.Errorf("飞书添加正在输入表情失败（%d）：%s", resp.Code, resp.Msg)
+	}
+	if resp.Data != nil && resp.Data.ReactionId != nil && *resp.Data.ReactionId != "" {
+		b.mu.Lock()
+		b.typingReactions[msgID] = *resp.Data.ReactionId
+		b.mu.Unlock()
+	}
+	return nil
+}
+
+func (b *bot) clearTyping(ctx context.Context, msgID string) {
+	if msgID == "" {
+		return
+	}
+	b.mu.Lock()
+	reactionID, ok := b.typingReactions[msgID]
+	if ok {
+		delete(b.typingReactions, msgID)
+	}
+	b.mu.Unlock()
+	if !ok || reactionID == "" {
+		return
+	}
+	req := larkim.NewDeleteMessageReactionReqBuilder().
+		MessageId(msgID).
+		ReactionId(reactionID).
+		Build()
+	_, _ = b.client.Im.V1.MessageReaction.Delete(ctx, req)
+}
+
 // markdown reads the "markdown" parameter, on unless switched off.
 func markdown(p map[string]any) bool {
 	on, set := p["markdown"].(bool)
@@ -346,9 +435,14 @@ func New() cat.Plugin {
 				if ev == nil || ev.Conversation == nil {
 					return nil, errors.New("「回复」需要由一条聊天消息触发；要主动发消息请用「发送到指定会话」")
 				}
+				triggerMsgID, _ := ev.Payload["message_id"].(string)
+				b.clearTyping(ctx, triggerMsgID)
+				if editID := str(p, "edit_message_id"); editID != "" {
+					return b.edit(ctx, ev.Conversation.ID, editID, text(p), markdown(p))
+				}
 				replyTo := ""
 				if quote, set := p["quote"].(bool); !set || quote {
-					replyTo, _ = ev.Payload["message_id"].(string)
+					replyTo = triggerMsgID
 				}
 				return b.sendWithFiles(ctx, ev.Conversation.ID, text(p), cat.Files(p), replyTo, markdown(p))
 			},
@@ -357,9 +451,18 @@ func New() cat.Plugin {
 				if to == "" {
 					return nil, errors.New("缺少会话 ID")
 				}
+				if editID := str(p, "edit_message_id"); editID != "" {
+					return b.edit(ctx, to, editID, text(p), markdown(p))
+				}
 				return b.sendWithFiles(ctx, to, text(p), cat.Files(p), "", markdown(p))
 			},
-			"typing": func(context.Context, *cat.Host, map[string]any, cat.ActionContext) (any, error) {
+			"typing": func(ctx context.Context, h *cat.Host, _ map[string]any, actx cat.ActionContext) (any, error) {
+				if actx.Event != nil {
+					msgID, _ := actx.Event.Payload["message_id"].(string)
+					if err := b.startTyping(ctx, msgID); err != nil {
+						h.Log("debug", "feishu typing reaction: %v", err)
+					}
+				}
 				return map[string]any{}, nil
 			},
 		},
