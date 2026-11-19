@@ -4,8 +4,9 @@
 // was given and what it gave.
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watchEffect } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowLeft, Pencil, X } from 'lucide-vue-next'
+import { ArrowLeft, Pencil, Square, X } from 'lucide-vue-next'
 import { useHub, summarize } from '../hub'
+import { post } from '../api'
 import type { HubEvent, Rule, Run, StepResult, Visit } from '../types'
 import { eventTitle } from '../labels'
 import { conditionOf, fromRule, type Doc, type ENode } from '../graph'
@@ -55,7 +56,9 @@ const held = (s: StepResult) => `已收下，现在攒了 ${s.output?.count ?? '
 // What to say of an action the run came to and has nothing from: it is still
 // at it, or the hub went down while it was.
 const cut = computed(() => props.run.status === 'interrupted')
-const going = computed(() => (cut.value ? '被打断，没有做完' : '运行中…'))
+const going = computed(() =>
+  cut.value ? '被打断，没有做完' : props.run.status === 'cancelled' ? '已手动停止' : '运行中…',
+)
 
 const nodes = computed<CanvasNode[]>(() =>
   doc.nodes.map((n) => {
@@ -85,8 +88,32 @@ const nodes = computed<CanvasNode[]>(() =>
   }),
 )
 
-const statusText: Record<string, string> = { ok: '成功', error: '失败', running: '运行中', interrupted: '被打断' }
-const statusDot: Record<string, string> = { ok: 'ok', error: 'bad', running: 'warn', interrupted: 'bad' }
+const statusText: Record<string, string> = {
+  ok: '成功',
+  error: '失败',
+  running: '运行中',
+  interrupted: '被打断',
+  cancelled: '已停止',
+}
+const statusDot: Record<string, string> = {
+  ok: 'ok',
+  error: 'bad',
+  running: 'warn',
+  interrupted: 'bad',
+  cancelled: '',
+}
+const cancelling = ref(false)
+async function cancelRun() {
+  if (cancelling.value) return
+  cancelling.value = true
+  try {
+    await post(`/runs/${encodeURIComponent(props.run.id)}/cancel`)
+  } catch (e: any) {
+    hub.notify(e.message || '停止失败', true)
+  } finally {
+    cancelling.value = false
+  }
+}
 const duration = computed(() => {
   if (!props.run.finished_at) return ''
   const ms = new Date(props.run.finished_at).getTime() - new Date(props.run.started_at).getTime()
@@ -133,14 +160,25 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
           <template v-if="duration">· {{ duration }}</template>
           · {{ new Date(run.started_at).toLocaleString() }}
         </span>
-        <button
-          v-if="current"
-          class="btn ml-auto shrink-0"
-          title="打开这条规则现在的样子"
-          @click="router.push({ path: '/rules', query: { rule: current.id } })"
-        >
-          <Pencil :size="14" />编辑规则
-        </button>
+        <div class="ml-auto flex shrink-0 items-center gap-2">
+          <button
+            v-if="run.status === 'running'"
+            class="btn btn-danger shrink-0"
+            :disabled="cancelling"
+            title="停止这次运行"
+            @click="cancelRun"
+          >
+            <Square :size="12" />{{ cancelling ? '正在停止…' : '停止' }}
+          </button>
+          <button
+            v-if="current"
+            class="btn shrink-0"
+            title="打开这条规则现在的样子"
+            @click="router.push({ path: '/rules', query: { rule: current.id } })"
+          >
+            <Pencil :size="14" />编辑规则
+          </button>
+        </div>
       </header>
     </template>
 

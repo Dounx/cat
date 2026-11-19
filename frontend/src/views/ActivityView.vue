@@ -4,7 +4,7 @@
 // taken for it.
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronRight, Inbox, Plus, RotateCcw, Search, Workflow } from 'lucide-vue-next'
+import { ChevronRight, Inbox, Plus, RotateCcw, Search, Square, Workflow } from 'lucide-vue-next'
 import { useHub, clock, summarize } from '../hub'
 import { get, post } from '../api'
 import type { HubEvent, Rule, Run, StepResult } from '../types'
@@ -52,8 +52,34 @@ const filtered = computed(() => {
 })
 const filtering = computed(() => !!(source.value || ruleId.value || onlyFailed.value || keyword.value.trim()))
 
-const statusText: Record<string, string> = { ok: '成功', error: '失败', running: '运行中', interrupted: '被打断' }
-const statusDot: Record<string, string> = { ok: 'ok', error: 'bad', running: 'warn', interrupted: 'bad' }
+const statusText: Record<string, string> = {
+  ok: '成功',
+  error: '失败',
+  running: '运行中',
+  interrupted: '被打断',
+  cancelled: '已停止',
+}
+const statusDot: Record<string, string> = {
+  ok: 'ok',
+  error: 'bad',
+  running: 'warn',
+  interrupted: 'bad',
+  cancelled: '',
+}
+const cancelling = ref<Record<string, boolean>>({})
+async function cancelRun(r: Run) {
+  if (cancelling.value[r.id]) return
+  cancelling.value = { ...cancelling.value, [r.id]: true }
+  try {
+    await post(`/runs/${encodeURIComponent(r.id)}/cancel`)
+  } catch (e: any) {
+    hub.notify(e.message || '停止失败', true)
+  } finally {
+    const next = { ...cancelling.value }
+    delete next[r.id]
+    cancelling.value = next
+  }
+}
 // One line for what became of an event.
 function outcome(e: HubEvent): { dot: string; text: string } | null {
   const runs = runsOf.value.get(e.id)
@@ -321,11 +347,17 @@ async function replay() {
               <JsonView :value="s.output ?? null" />
             </details>
           </div>
-          <p
+          <div
             v-if="r.status === 'running'"
-            class="flex items-center gap-2 border-t border-line px-4 py-2.5 text-sm text-mute"
+            class="flex items-center justify-between gap-2 border-t border-line px-4 py-2.5 text-sm text-mute"
           >
-            <span class="dot warn" />运行中…
+            <span class="flex items-center gap-2"><span class="dot warn" />运行中…</span>
+            <button class="btn btn-danger" :disabled="cancelling[r.id]" title="停止这次运行" @click="cancelRun(r)">
+              <Square :size="12" />{{ cancelling[r.id] ? '正在停止…' : '停止' }}
+            </button>
+          </div>
+          <p v-if="r.status === 'cancelled'" class="border-t border-line px-4 py-2.5 text-sm text-mute">
+            已手动停止这次运行。
           </p>
           <p v-if="r.status === 'interrupted'" class="border-t border-line px-4 py-2.5 text-sm text-bad">
             Cat 在这次运行跑完之前退出了，后面的没有再执行。

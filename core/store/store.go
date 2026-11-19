@@ -50,7 +50,7 @@ type Run struct {
 	RuleID     string       `json:"rule_id"`
 	RuleName   string       `json:"rule_name"`
 	EventID    string       `json:"event_id"`
-	Status     string       `json:"status"` // running | ok | error | interrupted
+	Status     string       `json:"status"` // running | ok | error | interrupted | cancelled
 	StartedAt  time.Time    `json:"started_at"`
 	FinishedAt *time.Time   `json:"finished_at,omitempty"`
 	Steps      []StepResult `json:"steps"`

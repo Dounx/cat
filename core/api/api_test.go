@@ -130,3 +130,23 @@ func TestServeBlob(t *testing.T) {
 		t.Fatalf("traversal should 404, got %d", res3.StatusCode)
 	}
 }
+
+func TestCancelRunAPI(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	eng := engine.New(st, t.TempDir(), nil)
+	srv := httptest.NewServer((&Server{Engine: eng}).Handler())
+	defer srv.Close()
+
+	res, err := http.Post(srv.URL+"/api/runs/missing-id/cancel", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 404 {
+		t.Fatalf("missing run cancel status = %d, want 404", res.StatusCode)
+	}
+}

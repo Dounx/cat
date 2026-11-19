@@ -254,6 +254,13 @@ func (s *Server) Handler() http.Handler {
 		run, err := e.Store.GetRun(r.PathValue("id"))
 		respond(w, run, err)
 	})
+	mux.HandleFunc("POST /api/runs/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if !e.CancelRun(r.PathValue("id")) {
+			writeErr(w, 404, "这次运行已经结束或不存在")
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+	})
 	mux.HandleFunc("GET /api/blobs/{rel...}", s.serveBlob)
 
 	for _, fn := range s.extras {

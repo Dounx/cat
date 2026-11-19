@@ -220,6 +220,18 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 // continues working before replying. Tests shorten it.
 var TypingInterval = 4 * time.Second
 
+// CancelRun stops a running rule execution if it is still in flight.
+func (e *Engine) CancelRun(runID string) bool {
+	e.runsMu.Lock()
+	cancel, ok := e.runs[runID]
+	e.runsMu.Unlock()
+	if !ok {
+		return false
+	}
+	cancel()
+	return true
+}
+
 // executeFrom runs a rule for an event, from its triggers or, with from set,
 // from past a step that held an earlier run: that step stands in the new run
 // as done.
@@ -228,6 +240,16 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 		ID: id.New(), RuleID: r.ID, RuleName: r.Name, EventID: ev.ID,
 		Status: "running", StartedAt: time.Now(), Steps: []store.StepResult{}, Replay: replay,
 	}
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	e.runsMu.Lock()
+	e.runs[run.ID] = cancelRun
+	e.runsMu.Unlock()
+	defer func() {
+		cancelRun()
+		e.runsMu.Lock()
+		delete(e.runs, run.ID)
+		e.runsMu.Unlock()
+	}()
 	typingStops := map[string]context.CancelFunc{}
 	stopTyping := func(target string) {
 		if cancel, ok := typingStops[target]; ok {
@@ -259,6 +281,9 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 	failed := false
 	// act runs one step and reports whether what follows it may run.
 	act := func(step rules.Step, env map[string]any) bool {
+		if runCtx.Err() != nil {
+			return false
+		}
 		if !recorded {
 			recorded = true
 			e.saveRun(run)
@@ -270,16 +295,20 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 		if step.Action == "reply" || step.Action == "send" {
 			stopTyping(target)
 		}
-		res := e.runStep(step, ev, r.ID, run.ID, env)
+		res := e.runStep(runCtx, step, ev, r.ID, run.ID, env)
 		run.Steps = append(run.Steps, res)
 		if res.Output != nil {
 			outputs[step.ID] = res.Output
 		} else {
 			outputs[step.ID] = map[string]any{}
 		}
+		if runCtx.Err() != nil {
+			e.saveRun(run)
+			return false
+		}
 		if res.Error == "" && !res.Held && step.Action == "typing" && TypingInterval > 0 {
 			if _, active := typingStops[target]; !active {
-				tctx, tcancel := context.WithCancel(context.Background())
+				tctx, tcancel := context.WithCancel(runCtx)
 				typingStops[target] = tcancel
 				params := res.Params
 				ictx := plugin.InvokeContext{Event: ev, RuleID: r.ID, RunID: run.ID, StepID: step.ID}
@@ -320,6 +349,9 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 		}
 		// A failed action ends its own branch; the other branches still run.
 		walk(ev, outputs, act, func(nodeID string, err error) {
+			if runCtx.Err() != nil {
+				return
+			}
 			failed, recorded = true, true
 			res := store.StepResult{ID: nodeID, Action: "condition", Error: "条件求值失败：" + err.Error()}
 			if errors.Is(err, rules.ErrLoops) {
@@ -328,10 +360,21 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 			run.Steps = append(run.Steps, res)
 			e.saveRun(run)
 		}, func(n *rules.Node, env map[string]any) (any, error) {
+			if runCtx.Err() != nil {
+				return nil, runCtx.Err()
+			}
 			// Asking is real work, so the run shows from here on, and what
 			// the instance said is there for later nodes as steps.<id>.
-			recorded = true
-			res, verdict := e.judge(n, ev, r.ID, run.ID, env)
+			if !recorded {
+				recorded = true
+				e.saveRun(run)
+			}
+			res, verdict := e.judge(runCtx, n, ev, r.ID, run.ID, env)
+			if runCtx.Err() != nil {
+				run.Steps = append(run.Steps, res)
+				e.saveRun(run)
+				return nil, runCtx.Err()
+			}
 			if res.Error != "" {
 				return nil, errors.New(res.Error)
 			}
@@ -361,12 +404,16 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 	}
 	now := time.Now()
 	run.FinishedAt = &now
-	run.Status = "ok"
-	if failed {
+	switch {
+	case runCtx.Err() != nil:
+		run.Status = "cancelled"
+	case failed:
 		run.Status = "error"
+	default:
+		run.Status = "ok"
 	}
 	e.saveRun(run)
-	if failed && !replay {
+	if failed && runCtx.Err() == nil && !replay {
 		e.reportFailure(run, ev)
 	}
 	return run
@@ -375,7 +422,7 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 // awaitStarted waits, for a while, for an instance that is still starting:
 // an event that comes in while the hub starts up finds the instance its rule
 // uses on the way up, not down.
-func (e *Engine) awaitStarted(instanceID string) {
+func (e *Engine) awaitStarted(ctx context.Context, instanceID string) {
 	deadline := time.After(startWait)
 	for {
 		e.mu.RLock()
@@ -388,6 +435,8 @@ func (e *Engine) awaitStarted(instanceID string) {
 		select {
 		case <-time.After(50 * time.Millisecond):
 		case <-deadline:
+			return
+		case <-ctx.Done():
 			return
 		case <-e.stopping:
 			return
@@ -539,7 +588,7 @@ func (e *Engine) TryRule(r rules.Rule, eventID string) (*store.Run, error) {
 // choices to pick from (yes or no when the node lists none). The instance
 // answers with the one it picked under "choice". The verdict is that choice,
 // or for a yes-or-no condition whether it was yes.
-func (e *Engine) judge(n *rules.Node, ev *event.Event, ruleID, runID string, env map[string]any) (store.StepResult, any) {
+func (e *Engine) judge(runCtx context.Context, n *rules.Node, ev *event.Event, ruleID, runID string, env map[string]any) (store.StepResult, any) {
 	step := n.Step
 	if step.Action == "" {
 		step.Action = rules.JudgeAction
@@ -557,7 +606,7 @@ func (e *Engine) judge(n *rules.Node, ev *event.Event, ruleID, runID string, env
 		list[i] = c
 	}
 	step.Params["choices"] = list
-	res := e.runStep(step, ev, ruleID, runID, env)
+	res := e.runStep(runCtx, step, ev, ruleID, runID, env)
 	if res.Error != "" {
 		return res, nil
 	}
@@ -584,7 +633,7 @@ func (e *Engine) saveRun(run *store.Run) {
 }
 
 // runStep carries out one step, its parameters rendered with env.
-func (e *Engine) runStep(step rules.Step, ev *event.Event, ruleID, runID string, env map[string]any) store.StepResult {
+func (e *Engine) runStep(runCtx context.Context, step rules.Step, ev *event.Event, ruleID, runID string, env map[string]any) store.StepResult {
 	target := step.Instance
 	if target == rules.SourceInstance {
 		target = ev.Source
@@ -613,14 +662,22 @@ func (e *Engine) runStep(step rules.Step, ev *event.Event, ruleID, runID string,
 	if step.RetryWaitSeconds > 0 {
 		wait = time.Duration(step.RetryWaitSeconds) * time.Second
 	}
-	e.awaitStarted(target)
+	e.awaitStarted(runCtx, target)
+	if runCtx.Err() != nil {
+		res.Error = "已手动停止"
+		return res
+	}
 	for attempt := 1; ; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(runCtx, timeout)
 		out, err := e.Invoke(ctx, target, step.Action, params, plugin.InvokeContext{Event: ev, RuleID: ruleID, RunID: runID, StepID: step.ID})
 		cancel()
 		res.Output, res.Error = out, ""
 		if attempt > 1 {
 			res.Attempts = attempt
+		}
+		if runCtx.Err() != nil {
+			res.Error = "已手动停止"
+			break
 		}
 		if errors.Is(err, plugin.ErrHeld) {
 			res.Held = true
@@ -636,6 +693,9 @@ func (e *Engine) runStep(step rules.Step, ev *event.Event, ruleID, runID string,
 		e.log.Info("step failed, trying again", "rule", ruleID, "step", step.ID, "attempt", attempt, "wait", wait, "err", err)
 		select {
 		case <-time.After(wait):
+		case <-runCtx.Done():
+			res.Error = "已手动停止"
+			return res
 		case <-e.stopping:
 			return res
 		}

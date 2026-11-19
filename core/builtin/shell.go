@@ -54,6 +54,7 @@ func (s *shell) Invoke(ctx context.Context, action string, p map[string]any, ict
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
+	configureShellCancel(cmd)
 	cmd.Dir = str(p, "cwd")
 	evJSON, _ := json.Marshal(ictx.Event)
 	cmd.Env = append(os.Environ(), "CAT_EVENT="+string(evJSON))

@@ -1095,3 +1095,54 @@ func TestTypingKeepalive(t *testing.T) {
 		t.Fatalf("typing did not stop after reply: %d -> %d", afterReply, later)
 	}
 }
+
+func TestCancelRun(t *testing.T) {
+	e := newEngine(t)
+	hook, _ := e.SaveInstance(store.Instance{Plugin: "webhook", Enabled: true})
+	waitRunning(t, e, hook.ID)
+	waitRunning(t, e, "shell")
+
+	r, err := e.SaveRule(rules.Rule{
+		Name: "long-sleep", Enabled: true,
+		Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1"}, Sources: []string{hook.ID}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s1", Instance: "shell", Action: "run", Params: map[string]any{"command": "sleep 60"}}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s2", Instance: "shell", Action: "run", Params: map[string]any{"command": "echo after"}}},
+			},
+			Edges: []rules.Edge{{From: "t1", To: "s1"}, {From: "s1", To: "s2"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	post(t, e, hook.ID, `{"text":"go"}`, nil)
+	var runID string
+	waitFor(t, "run started", func() bool {
+		runs, _ := e.Store.ListRuns(r.ID, "", 5)
+		if len(runs) == 1 && runs[0].Status == "running" {
+			runID = runs[0].ID
+			return true
+		}
+		return false
+	})
+	if !e.CancelRun(runID) {
+		t.Fatal("CancelRun returned false for running run")
+	}
+	waitFor(t, "run cancelled", func() bool {
+		got, err := e.Store.GetRun(runID)
+		return err == nil && got.Status == "cancelled"
+	})
+	got, _ := e.Store.GetRun(runID)
+	if len(got.Steps) != 1 || got.Steps[0].Error != "已手动停止" {
+		t.Fatalf("unexpected cancelled steps: %+v", got.Steps)
+	}
+	if e.CancelRun(runID) {
+		t.Fatal("CancelRun should return false after completion")
+	}
+	// Cancellation must not emit a run.failed event.
+	failedEvs, _ := e.Store.ListEvents(store.EventFilter{Type: builtin.RunFailed})
+	if len(failedEvs) != 0 {
+		t.Fatalf("cancelled run emitted run.failed: %+v", failedEvs)
+	}
+}

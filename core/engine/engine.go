@@ -97,6 +97,9 @@ type Engine struct {
 	subMu sync.Mutex
 	subs  map[chan Message]struct{}
 
+	runsMu sync.Mutex
+	runs   map[string]context.CancelFunc
+
 	sem     chan struct{}
 	wg      sync.WaitGroup
 	emitted int
@@ -120,6 +123,7 @@ func New(st *store.Store, dataDir string, log *slog.Logger) *Engine {
 		ruleErrs: map[string]string{},
 		trigErrs: map[string]map[string]string{},
 		subs:     map[chan Message]struct{}{},
+		runs:     map[string]context.CancelFunc{},
 		sem:      make(chan struct{}, 16),
 		stopping: make(chan struct{}),
 	}
