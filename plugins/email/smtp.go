@@ -10,16 +10,24 @@ import (
 	"errors"
 	"fmt"
 	"mime"
+	"mime/multipart"
 	"net"
+	"net/http"
 	"net/smtp"
+	"net/textproto"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	cat "github.com/dounx/cat/sdk/go"
 )
 
 // outgoing is a mail to send.
 type outgoing struct {
 	to, cc        []string
 	subject, body string
+	files         []cat.FileRef
 	// set on a reply, so that mail programs keep it with what it answers
 	inReplyTo  string
 	references []string
@@ -119,22 +127,74 @@ func (a *account) compose(m outgoing, id string) []byte {
 	}
 	line(sentHeader, "1")
 	line("MIME-Version", "1.0")
-	line("Content-Type", "text/plain; charset=utf-8")
-	line("Content-Transfer-Encoding", "base64")
+	if len(m.files) == 0 {
+		line("Content-Type", "text/plain; charset=utf-8")
+		line("Content-Transfer-Encoding", "base64")
+		b.WriteString("\r\n")
+		writeBase64Lines(&b, []byte(strings.ReplaceAll(strings.ReplaceAll(m.body, "\r\n", "\n"), "\n", "\r\n")))
+		return b.Bytes()
+	}
+	mw := multipart.NewWriter(&b)
+	line("Content-Type", fmt.Sprintf("multipart/mixed; boundary=%q", mw.Boundary()))
 	b.WriteString("\r\n")
-	enc := base64.StdEncoding.EncodeToString([]byte(strings.ReplaceAll(strings.ReplaceAll(m.body, "\r\n", "\n"), "\n", "\r\n")))
+	if strings.TrimSpace(m.body) != "" {
+		pw, _ := mw.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {"text/plain; charset=utf-8"},
+			"Content-Transfer-Encoding": {"base64"},
+		})
+		writeBase64Lines(pw, []byte(strings.ReplaceAll(strings.ReplaceAll(m.body, "\r\n", "\n"), "\n", "\r\n")))
+	}
+	for _, f := range m.files {
+		raw, err := os.ReadFile(f.Path)
+		if err != nil {
+			continue
+		}
+		name := f.Name
+		if name == "" {
+			name = filepath.Base(f.Path)
+		}
+		ct := mime.TypeByExtension(filepath.Ext(name))
+		if ct == "" {
+			ct = http.DetectContentType(raw)
+		}
+		encName := mime.QEncoding.Encode("utf-8", name)
+		pw, _ := mw.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {ct + `; name="` + encName + `"`},
+			"Content-Disposition":       {`attachment; filename="` + encName + `"`},
+			"Content-Transfer-Encoding": {"base64"},
+		})
+		writeBase64Lines(pw, raw)
+	}
+	_ = mw.Close()
+	return b.Bytes()
+}
+
+func writeBase64Lines(w interface{ Write([]byte) (int, error) }, data []byte) {
+	enc := base64.StdEncoding.EncodeToString(data)
 	for len(enc) > 76 {
-		b.WriteString(enc[:76] + "\r\n")
+		_, _ = w.Write([]byte(enc[:76] + "\r\n"))
 		enc = enc[76:]
 	}
-	b.WriteString(enc + "\r\n")
-	return b.Bytes()
+	_, _ = w.Write([]byte(enc + "\r\n"))
 }
 
 // send delivers a mail and says under which id it went.
 func (a *account) send(ctx context.Context, m outgoing) (any, error) {
-	if strings.TrimSpace(m.body) == "" {
-		return nil, errors.New("正文为空")
+	if strings.TrimSpace(m.body) == "" && len(m.files) == 0 {
+		return nil, errors.New("正文和附件不能同时为空")
+	}
+	for _, f := range m.files {
+		info, err := os.Stat(f.Path)
+		if err != nil || info.IsDir() {
+			return nil, fmt.Errorf("找不到附件文件：%s", f.Path)
+		}
+		if info.Size() > 15<<20 {
+			name := f.Name
+			if name == "" {
+				name = filepath.Base(f.Path)
+			}
+			return nil, fmt.Errorf("附件 %s 超过 15 MB 限制", name)
+		}
 	}
 	if len(m.to) == 0 {
 		return nil, errors.New("缺少收件人")

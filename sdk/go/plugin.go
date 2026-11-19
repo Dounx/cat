@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/dounx/cat/sdk/go/jsonrpc"
@@ -55,9 +56,11 @@ type Host struct {
 	conn *jsonrpc.Conn
 	// Config is the instance configuration, shaped by plugin.json's config_schema.
 	Config map[string]any
-	// InstanceID identifies this instance; DataDir is its private storage.
+	// InstanceID identifies this instance; DataDir is its private storage;
+	// BlobsDir is the shared directory for saved event attachments.
 	InstanceID string
 	DataDir    string
+	BlobsDir   string
 
 	mu       sync.Mutex
 	triggers []Trigger
@@ -192,13 +195,17 @@ func Serve(p Plugin, r io.Reader, w io.Writer) error {
 			Instance struct {
 				ID string `json:"id"`
 			} `json:"instance"`
-			Config  map[string]any `json:"config"`
-			DataDir string         `json:"data_dir"`
+			Config   map[string]any `json:"config"`
+			DataDir  string         `json:"data_dir"`
+			BlobsDir string         `json:"blobs_dir"`
 		}
 		if err := json.Unmarshal(raw, &in); err != nil {
 			return nil, err
 		}
-		host.Config, host.InstanceID, host.DataDir = in.Config, in.Instance.ID, in.DataDir
+		host.Config, host.InstanceID, host.DataDir, host.BlobsDir = in.Config, in.Instance.ID, in.DataDir, in.BlobsDir
+		if host.BlobsDir == "" && host.DataDir != "" {
+			host.BlobsDir = filepath.Join(host.DataDir, "blobs")
+		}
 		if host.Config == nil {
 			host.Config = map[string]any{}
 		}

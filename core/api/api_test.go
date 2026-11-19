@@ -4,6 +4,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -81,5 +83,50 @@ func TestSettings(t *testing.T) {
 	}
 	if code, body := do("GET", ""); code != 200 || body != `{"public_url":"","market_url":""}` {
 		t.Fatalf("after clearing: %d %s", code, body)
+	}
+}
+
+func TestServeBlob(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	eng := engine.New(st, t.TempDir(), nil)
+	srv := httptest.NewServer((&Server{Engine: eng}).Handler())
+	defer srv.Close()
+
+	day := filepath.Join(eng.BlobsDir(), "20261118")
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(day, "pic.png"), []byte("\x89PNG\r\n\x1a\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(day, "bad.svg"), []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`), 0o600)
+
+	res, err := http.Get(srv.URL + "/api/blobs/20261118/pic.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 || res.Header.Get("Content-Disposition") != "inline" {
+		t.Fatalf("png headers: %d %+v", res.StatusCode, res.Header)
+	}
+
+	res2, err := http.Get(srv.URL + "/api/blobs/20261118/bad.svg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2.Body.Close()
+	if res2.StatusCode != 200 || !strings.HasPrefix(res2.Header.Get("Content-Disposition"), "attachment") {
+		t.Fatalf("svg should force attachment: %d %q", res2.StatusCode, res2.Header.Get("Content-Disposition"))
+	}
+
+	res3, err := http.Get(srv.URL + "/api/blobs/../cat.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res3.Body.Close()
+	if res3.StatusCode != 404 {
+		t.Fatalf("traversal should 404, got %d", res3.StatusCode)
 	}
 }

@@ -16,6 +16,7 @@ import (
 type Options struct {
 	Bin            string // path to the claude executable
 	Cwd            string
+	ExtraDirs      []string // extra readable directories (--add-dir)
 	PermissionMode string   // dontAsk | acceptEdits | auto | bypassPermissions
 	AllowedTools   []string // tools usable without asking
 	Model          string
@@ -48,6 +49,11 @@ func Args(o Options, resume string) []string {
 	}
 	if o.SystemPrompt != "" {
 		args = append(args, "--append-system-prompt", o.SystemPrompt)
+	}
+	for _, dir := range o.ExtraDirs {
+		if dir != "" {
+			args = append(args, "--add-dir", dir)
+		}
 	}
 	if resume != "" {
 		args = append(args, "--resume", resume)

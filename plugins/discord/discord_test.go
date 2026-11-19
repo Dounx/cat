@@ -55,9 +55,28 @@ func newFake(t *testing.T) *fakeDiscord {
 			json.NewEncoder(w).Encode(map[string]string{"url": "ws" + strings.TrimPrefix(f.URL, "http") + "/gateway"})
 		}
 	})
+	mux.HandleFunc("GET /cdn/{name}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Write([]byte("\x89PNG\r\n\x1a\ndiscord-img"))
+	})
 	mux.HandleFunc("POST /channels/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
-		var body map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		body := map[string]any{}
+		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+			if err := r.ParseMultipartForm(8 << 20); err == nil {
+				if pj := r.FormValue("payload_json"); pj != "" {
+					_ = json.Unmarshal([]byte(pj), &body)
+				}
+				var names []string
+				for _, fhs := range r.MultipartForm.File {
+					for _, fh := range fhs {
+						names = append(names, fh.Filename)
+					}
+				}
+				body["_files"] = names
+			}
+		} else {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
 		body["channel"] = r.PathValue("id")
 		f.mu.Lock()
 		f.posts = append(f.posts, body)
@@ -228,6 +247,36 @@ func TestDiscord(t *testing.T) {
 	}
 	if _, err := e.Invoke(context.Background(), inst.ID, "reply", map[string]any{"text": "x"}, plugin.InvokeContext{}); err == nil {
 		t.Fatal("reply without a triggering message should fail")
+	}
+
+	// Attachment download to blobs_dir + multipart upload back via files param.
+	f.push(t, 4, "MESSAGE_CREATE", map[string]any{
+		"id": "M8", "channel_id": "C1", "content": "", "timestamp": "2026-01-02T03:05:00Z",
+		"author":      map[string]any{"id": "U1", "username": "ann"},
+		"attachments": []map[string]any{{"filename": "pic.png", "content_type": "image/png", "url": f.URL + "/cdn/pic.png"}},
+	})
+	waitFor(t, "attachment event", func() bool {
+		l, _ := e.Store.ListEvents(store.EventFilter{Type: "message.created"})
+		return len(l) == 2
+	})
+	list, _ = e.Store.ListEvents(store.EventFilter{Type: "message.created"})
+	evAtt := list[0]
+	atts, _ := evAtt.Payload["attachments"].([]any)
+	if len(atts) != 1 || atts[0].(map[string]any)["kind"] != "image" {
+		t.Fatalf("expected downloaded image attachment, got %#v", evAtt.Payload["attachments"])
+	}
+	blobPath, _ := atts[0].(map[string]any)["path"].(string)
+	if got, err := os.ReadFile(blobPath); err != nil || !strings.Contains(string(got), "discord-img") {
+		t.Fatalf("saved blob bytes = %q err = %v", got, err)
+	}
+	if _, err := e.Invoke(context.Background(), inst.ID, "reply", map[string]any{"text": "got file", "files": atts}, plugin.InvokeContext{Event: &evAtt}); err != nil {
+		t.Fatalf("reply with files failed: %v", err)
+	}
+	f.mu.Lock()
+	uploadPost := f.posts[len(f.posts)-1]
+	f.mu.Unlock()
+	if names, _ := uploadPost["_files"].([]string); len(names) != 1 || names[0] != "pic.png" {
+		t.Fatalf("multipart upload post = %#v", uploadPost)
 	}
 
 	// Dropping the socket makes the plugin reconnect and resume its session.

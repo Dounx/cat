@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -152,5 +154,55 @@ func TestWrongPasswordAndServers(t *testing.T) {
 	}
 	if p := guess("me@corp.example"); p.imap != "imap.corp.example:993" || p.smtp != "smtp.corp.example:465" {
 		t.Errorf("own domain: %+v", p)
+	}
+}
+
+func TestAttachmentRoundTrip(t *testing.T) {
+	srv, err := mailtest.Start("127.0.0.1:0", "127.0.0.1:0", "cat@mail.test", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	blobs := t.TempDir()
+	h := cattest.New(t, New(), cattest.Options{
+		BlobsDir: blobs,
+		Config: map[string]any{
+			"address": "cat@mail.test", "password": "secret", "imap": srv.IMAP, "smtp": srv.SMTP,
+			"insecure": true, "interval": 5.0,
+		},
+	})
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Deliver(incoming); err != nil {
+		t.Fatal(err)
+	}
+	ev := h.NextEvent()
+	atts := ev.Payload["attachments"].([]any)
+	att := atts[0].(map[string]any)
+	blobPath, _ := att["path"].(string)
+	if blobPath == "" || !strings.HasPrefix(blobPath, blobs) {
+		t.Fatalf("expected downloaded blob under %q, got %+v", blobs, att)
+	}
+	if got, err := os.ReadFile(blobPath); err != nil || string(got) != "%PDF" {
+		t.Fatalf("blob bytes = %q, err = %v", got, err)
+	}
+
+	// Forward an extra local PNG file alongside text.
+	pngPath := filepath.Join(t.TempDir(), "chart.png")
+	_ = os.WriteFile(pngPath, []byte("\x89PNG\r\n\x1a\n"), 0o600)
+	if _, err := h.Invoke("reply", map[string]any{"files": []any{att, pngPath}}, &ev); err != nil {
+		t.Fatal(err)
+	}
+	sent := srv.Sent()
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 sent mail, got %d", len(sent))
+	}
+	parsed, err := read([]byte(sent[0].Data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.attachments) != 2 || parsed.attachments[0]["name"] != att["name"] || parsed.attachments[1]["name"] != "chart.png" {
+		t.Fatalf("sent attachments = %+v", parsed.attachments)
 	}
 }

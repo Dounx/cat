@@ -27,10 +27,15 @@
       "description": "在触发事件所在的频道或私信里回复。输出：message_id。",
       "params": {
         "type": "object",
-        "required": ["text"],
-        "x-order": ["text", "quote"],
+        "x-order": ["text", "files", "quote"],
         "properties": {
           "text": { "type": "string", "title": "内容", "format": "textarea" },
+          "files": {
+            "type": "string",
+            "title": "附件（可选）",
+            "format": "textarea",
+            "description": "本地文件路径（每行一个），或用「插入变量」填入 {{ payload.attachments }}。"
+          },
           "quote": { "type": "boolean", "title": "引用原消息", "default": true }
         }
       }
@@ -40,11 +45,17 @@
       "title": "发送到指定频道",
       "params": {
         "type": "object",
-        "required": ["channel_id", "text"],
-        "x-order": ["channel_id", "text"],
+        "required": ["channel_id"],
+        "x-order": ["channel_id", "text", "files"],
         "properties": {
           "channel_id": { "type": "string", "title": "发到哪个频道", "x-pick": "conversation", "description": "从最近的频道里选，或直接写频道 ID。" },
-          "text": { "type": "string", "title": "内容", "format": "textarea" }
+          "text": { "type": "string", "title": "内容", "format": "textarea" },
+          "files": {
+            "type": "string",
+            "title": "附件（可选）",
+            "format": "textarea",
+            "description": "本地文件路径（每行一个），或用「插入变量」填入 {{ payload.attachments }}。"
+          }
         }
       }
     },

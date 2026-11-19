@@ -1,7 +1,18 @@
 // cat-plugin-discord: connects Cat to Discord through a bot's Gateway
 // connection (events) and the REST API (actions). No dependencies beyond the
 // SDK: the Gateway protocol is small enough to speak directly.
-import { CancelledError, run, type ActionContext, type CatEvent, type Host, type Setup } from '@cat-hub/plugin-sdk'
+import { readFile, stat } from 'node:fs/promises'
+import { basename } from 'node:path'
+import {
+  CancelledError,
+  namedFiles,
+  run,
+  type ActionContext,
+  type CatEvent,
+  type FileRef,
+  type Host,
+  type Setup,
+} from '@cat-hub/plugin-sdk'
 
 const DEFAULT_API = 'https://discord.com/api/v10'
 const MAX_TEXT = 2000
@@ -25,16 +36,18 @@ class Api {
     this.base = (base || DEFAULT_API).replace(/\/+$/, '')
   }
   async call<T = any>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    const isForm = typeof FormData !== 'undefined' && body instanceof FormData
     for (let attempt = 0; ; attempt++) {
+      const headers: Record<string, string> = {
+        Authorization: 'Bot ' + this.token,
+        'User-Agent': 'DiscordBot (cat-event-hub, 0.1)',
+      }
+      if (!isForm) headers['Content-Type'] = 'application/json'
       const res = await fetch(this.base + path, {
         method,
         signal,
-        headers: {
-          Authorization: 'Bot ' + this.token,
-          'Content-Type': 'application/json',
-          'User-Agent': 'DiscordBot (cat-event-hub, 0.1)',
-        },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        headers,
+        body: isForm ? (body as FormData) : body === undefined ? undefined : JSON.stringify(body),
       })
       if (res.status === 429 && attempt < 3) {
         // rate limited: wait as told, then retry
@@ -173,7 +186,7 @@ class Bot {
           ws.close(4000)
           break
         case 0:
-          this.dispatch(msg.t, msg.d, onReady)
+          this.dispatch(msg.t, msg.d, onReady).catch((e) => this.host.log('error', 'dispatch: ' + e.message))
           break
       }
     }
@@ -198,7 +211,7 @@ class Bot {
     }
   }
 
-  private dispatch(type: string, d: any, onReady?: () => void) {
+  private async dispatch(type: string, d: any, onReady?: () => void) {
     if (type === 'READY' || type === 'RESUMED') {
       if (type === 'READY') {
         this.sessionId = d.session_id
@@ -215,6 +228,25 @@ class Bot {
     if (type !== 'MESSAGE_CREATE' && type !== 'MESSAGE_UPDATE') return
     if (!d.author || d.author.id === this.me.id) return // ignore our own messages
     const text: string = d.content ?? ''
+    let attachments: any[] | undefined
+    if (Array.isArray(d.attachments) && d.attachments.length > 0) {
+      attachments = []
+      for (const a of d.attachments) {
+        if (this.host.blobsDir && a.url) {
+          try {
+            const res = await fetch(a.url, { signal: this.signal })
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            const buf = new Uint8Array(await res.arrayBuffer())
+            const mime = String(a.content_type || res.headers.get('content-type') || '').trim()
+            attachments.push(await this.host.saveBlob(a.filename || 'attachment', mime, buf))
+            continue
+          } catch (e: any) {
+            this.host.log('warn', `下载 Discord 附件失败（${a.filename ?? a.url}）：${e.message}`)
+          }
+        }
+        attachments.push({ kind: 'file', url: a.url, name: a.filename })
+      }
+    }
     const event: CatEvent = {
       type: type === 'MESSAGE_CREATE' ? 'message.created' : 'message.edited',
       time: d.timestamp,
@@ -227,20 +259,46 @@ class Bot {
         username: d.author.username,
         ...(d.guild_id ? { guild_id: d.guild_id } : {}),
         ...(d.referenced_message ? { reply_to_message_id: d.referenced_message.id } : {}),
-        ...(d.attachments?.length
-          ? { attachments: d.attachments.map((a: any) => ({ kind: 'file', url: a.url, name: a.filename })) }
-          : {}),
+        ...(attachments?.length ? { attachments } : {}),
       },
       raw: d,
     }
     this.host.emit(event).catch((e) => this.host.log('error', 'emit: ' + e.message))
   }
 
-  async send(channelId: string, text: unknown, replyTo: string | undefined, signal: AbortSignal) {
-    const body = typeof text === 'string' ? text : JSON.stringify(text ?? '')
-    if (!body.trim()) throw new Error('消息内容为空')
+  async send(channelId: string, text: unknown, replyTo: string | undefined, fileRefs: FileRef[], signal: AbortSignal) {
+    const body = text === undefined || text === null ? '' : typeof text === 'string' ? text : JSON.stringify(text)
+    if (!body.trim() && fileRefs.length === 0) throw new Error('消息内容和附件不能同时为空')
+    const parts = body.trim() ? split(body, MAX_TEXT) : []
     const ids: string[] = []
-    for (const [i, part] of split(body, MAX_TEXT).entries()) {
+    if (fileRefs.length > 0) {
+      const form = new FormData()
+      const payload: Record<string, unknown> = {}
+      if (parts[0]) payload.content = parts[0]
+      if (replyTo) payload.message_reference = { message_id: replyTo, fail_if_not_exists: false }
+      form.append('payload_json', JSON.stringify(payload))
+      for (const [idx, ref] of fileRefs.entries()) {
+        const info = await stat(ref.path).catch(() => null)
+        if (!info || info.isDirectory()) throw new Error(`找不到附件文件：${ref.path}`)
+        if (info.size > 25 << 20) throw new Error(`附件 ${ref.name || basename(ref.path)} 超过 25 MB 限制`)
+        const data = await readFile(ref.path)
+        const name = ref.name || basename(ref.path)
+        form.append(`files[${idx}]`, new Blob([new Uint8Array(data)]), name)
+      }
+      const sent = await this.api.call<{ id: string }>('POST', `/channels/${channelId}/messages`, form, signal)
+      ids.push(sent.id)
+      for (const part of parts.slice(1)) {
+        const extra = await this.api.call<{ id: string }>(
+          'POST',
+          `/channels/${channelId}/messages`,
+          { content: part },
+          signal,
+        )
+        ids.push(extra.id)
+      }
+      return { message_id: ids[ids.length - 1], message_ids: ids, channel_id: channelId }
+    }
+    for (const [i, part] of parts.entries()) {
       const sent = await this.api.call<{ id: string }>(
         'POST',
         `/channels/${channelId}/messages`,
@@ -317,11 +375,12 @@ run({
         conversationOf(ctx, '回复'),
         p.text,
         p.quote === false ? undefined : (ctx.event?.payload?.message_id as string),
+        namedFiles(p),
         signal,
       ),
     send: (p, _ctx, _h, signal) => {
       if (!p.channel_id) throw new Error('缺少频道 ID')
-      return bot!.send(String(p.channel_id), p.text, undefined, signal)
+      return bot!.send(String(p.channel_id), p.text, undefined, namedFiles(p), signal)
     },
     typing: async (_p, ctx, _h, signal) => {
       await bot!.typing(conversationOf(ctx, '正在输入'), signal)

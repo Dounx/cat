@@ -122,3 +122,32 @@ func TestSetup(t *testing.T) {
 		t.Fatalf("config: %+v", cfg)
 	}
 }
+
+func TestAttachmentsAddDir(t *testing.T) {
+	bin := faketest.Script(t, "claude", faketest.Claude)
+	calls := faketest.Log(t)
+	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin}})
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Invoke("chat", map[string]any{
+		"prompt": "看下附件",
+		"files":  []any{map[string]any{"path": "/tmp/blobs/a.png"}, "/tmp/blobs/b.txt"},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	all := calls()
+	var args []string
+	for _, l := range all {
+		if strings.HasPrefix(l, "ARGS:") {
+			args = append(args, l)
+		}
+	}
+	if len(args) != 1 || !strings.Contains(args[0], "--add-dir /tmp/blobs") {
+		t.Fatalf("expected --add-dir /tmp/blobs in %v", args)
+	}
+	joined := strings.Join(all, "\n")
+	if !strings.Contains(joined, "/tmp/blobs/a.png") || !strings.Contains(joined, "/tmp/blobs/b.txt") {
+		t.Fatalf("expected file paths in prompt log: %q", joined)
+	}
+}

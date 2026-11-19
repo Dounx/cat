@@ -31,10 +31,10 @@
       "description": "回复触发事件的那封邮件，接在同一个会话里。输出：message_id、to。",
       "params": {
         "type": "object",
-        "required": ["text"],
-        "x-order": ["text", "subject", "reply_all"],
+        "x-order": ["text", "files", "subject", "reply_all"],
         "properties": {
           "text": { "type": "string", "title": "正文", "format": "textarea" },
+          "files": { "type": "string", "title": "附件（可选）", "format": "textarea", "description": "本地文件路径（每行一个），或用「插入变量」填入 {{ payload.attachments }} 直接转发收到的附件。" },
           "subject": { "type": "string", "title": "主题（可选）", "description": "留空用「Re: 原主题」。" },
           "reply_all": { "type": "boolean", "title": "回复全部", "description": "原邮件的其他收件人和抄送人也收到。" }
         }
@@ -45,12 +45,13 @@
       "title": "发一封邮件",
       "params": {
         "type": "object",
-        "required": ["to", "text"],
-        "x-order": ["to", "subject", "text"],
+        "required": ["to"],
+        "x-order": ["to", "subject", "text", "files"],
         "properties": {
           "to": { "type": "string", "title": "发给谁", "x-pick": "conversation", "description": "邮箱地址，多个用逗号分隔；也可以从最近来过信的人里选。" },
           "subject": { "type": "string", "title": "主题" },
-          "text": { "type": "string", "title": "正文", "format": "textarea" }
+          "text": { "type": "string", "title": "正文", "format": "textarea" },
+          "files": { "type": "string", "title": "附件（可选）", "format": "textarea", "description": "本地文件路径（每行一个），或用「插入变量」填入 {{ payload.attachments }} 直接转发收到的附件。" }
         }
       }
     },

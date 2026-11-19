@@ -67,6 +67,7 @@
         ],
         "x-order": [
           "prompt",
+          "files",
           "session_key",
           "system_prompt",
           "new_session"
@@ -78,6 +79,12 @@
             "format": "textarea",
             "default": "{{ payload.text }}",
             "description": "通常填 {{ payload.text }}，也可以在前后加上固定的说明。"
+          },
+          "files": {
+            "type": "string",
+            "title": "附件文件（可选）",
+            "format": "textarea",
+            "description": "本地文件路径（每行一个），或用「插入变量」填入 {{ payload.attachments }}。Claude 会得到这些路径的读取权限。"
           },
           "session_key": {
             "type": "string",

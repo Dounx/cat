@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -149,5 +151,69 @@ func TestLLMJudge(t *testing.T) {
 	}
 	if !strings.Contains(system, "- 甲") && !strings.Contains(system, "- bug") {
 		t.Fatalf("the choices were not put to the model: %q", system)
+	}
+}
+
+func TestLLMVisionAndTextFiles(t *testing.T) {
+	blobsDir := t.TempDir()
+	pngPath := filepath.Join(blobsDir, "sample.png")
+	txtPath := filepath.Join(blobsDir, "note.txt")
+	if err := os.WriteFile(pngPath, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(txtPath, []byte("alpha-text-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotReq map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok-vision"}}]}`))
+	}))
+	defer srv.Close()
+
+	h := cattest.New(t, New(), cattest.Options{
+		BlobsDir: blobsDir,
+		Config: map[string]any{
+			"base_url": srv.URL + "/v1",
+			"api_key":  "test-key",
+			"model":    "gpt-4o",
+		},
+	})
+	h.Start()
+
+	filesJSON := `[{"name":"sample.png","mime":"image/png","path":` + `"` + filepath.ToSlash(pngPath) + `"` + `},{"name":"note.txt","mime":"text/plain","path":` + `"` + filepath.ToSlash(txtPath) + `"` + `}]`
+	out, err := h.Invoke("chat", map[string]any{
+		"prompt": "inspect these",
+		"files":  filesJSON,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Invoke chat failed: %v", err)
+	}
+	if out["text"] != "ok-vision" {
+		t.Fatalf("unexpected text: %#v", out)
+	}
+
+	msgs, _ := gotReq["messages"].([]any)
+	if len(msgs) == 0 {
+		t.Fatalf("missing messages: %#v", gotReq)
+	}
+	last, _ := msgs[len(msgs)-1].(map[string]any)
+	parts, ok := last["content"].([]any)
+	if !ok {
+		t.Fatalf("expected multipart content array, got %T (%#v)", last["content"], last["content"])
+	}
+	raw, _ := json.Marshal(parts)
+	s := string(raw)
+	if !strings.Contains(s, "inspect these") || !strings.Contains(s, "alpha-text-content") || !strings.Contains(s, "data:image/png;base64,") {
+		t.Fatalf("unexpected multipart content: %s", s)
 	}
 }

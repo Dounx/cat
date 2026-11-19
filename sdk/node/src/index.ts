@@ -4,9 +4,27 @@
 // to over stdin/stdout (JSON-RPC 2.0, one message per line). Describe it in
 // plugin.json, then call run() with your handlers. Never write to stdout
 // yourself: it carries the protocol. Use host.log() or stderr.
+import { randomBytes } from 'node:crypto'
+import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { basename, dirname, extname, join } from 'node:path'
 import { createInterface } from 'node:readline'
 
 export const PROTOCOL_VERSION = 1
+
+export interface Attachment {
+  kind: 'image' | 'audio' | 'video' | 'file'
+  name: string
+  mime: string
+  type: string
+  size: number
+  path: string
+  rel: string
+}
+
+export interface FileRef {
+  path: string
+  name?: string
+}
 
 export interface Conversation {
   id: string
@@ -219,6 +237,8 @@ export class Host {
   instanceId = ''
   /** A private, persistent directory for this instance. */
   dataDir = ''
+  /** Shared directory for saved event attachments. */
+  blobsDir = ''
   /**
    * What the enabled rules ask this instance to watch, as of the latest
    * update. Already filled in when start() runs.
@@ -246,6 +266,36 @@ export class Host {
   }
   async stateSet(key: string, value: string): Promise<void> {
     await this.conn.call('state.set', { key, value })
+  }
+  /** Writes an attachment under blobsDir (or dataDir/blobs) and returns its metadata. */
+  async saveBlob(name: string, mimeType: string, data: Uint8Array, maxBytes = 10 << 20): Promise<Attachment> {
+    const dir = this.blobsDir || (this.dataDir ? join(this.dataDir, 'blobs') : '')
+    if (!dir) throw new Error('blobs directory is not set')
+    if (data.byteLength > maxBytes) {
+      throw new Error(`附件超过 ${maxBytes >> 20} MB 限制`)
+    }
+    const cleanMime =
+      (mimeType || 'application/octet-stream').split(';')[0].trim().toLowerCase() || 'application/octet-stream'
+    const cleanName = sanitizeBlobName(name)
+    let kind: Attachment['kind'] = 'file'
+    if (cleanMime.startsWith('image/')) kind = 'image'
+    else if (cleanMime.startsWith('audio/')) kind = 'audio'
+    else if (cleanMime.startsWith('video/')) kind = 'video'
+    const day = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    const prefix = randomBytes(6).toString('hex')
+    const rel = `${day}/${prefix}-${cleanName}`
+    const abs = join(dir, day, `${prefix}-${cleanName}`)
+    await mkdir(dirname(abs), { recursive: true, mode: 0o700 })
+    const tmp = join(dirname(abs), `.blob-${randomBytes(6).toString('hex')}`)
+    try {
+      await writeFile(tmp, data)
+      await chmod(tmp, 0o600)
+      await rename(tmp, abs)
+    } catch (e) {
+      await rm(tmp, { force: true }).catch(() => {})
+      throw e
+    }
+    return { kind, name: cleanName, mime: cleanMime, type: cleanMime, size: data.byteLength, path: abs, rel }
   }
   /**
    * Asks Cat to make a dependency declared in plugin.json available
@@ -364,6 +414,7 @@ export function run(
     host.config = p.config ?? {}
     host.instanceId = p.instance?.id ?? ''
     host.dataDir = p.data_dir ?? ''
+    host.blobsDir = p.blobs_dir ?? (host.dataDir ? host.dataDir + '/blobs' : '')
     return { protocol: PROTOCOL_VERSION }
   })
   conn.handle('start', () => plugin.start?.(host, life.signal))
@@ -399,4 +450,60 @@ export function run(
   conn.onClose = () => {
     stop().finally(() => process.exit(0))
   }
+}
+
+function sanitizeBlobName(name: string): string {
+  const base = basename(
+    String(name || '')
+      .replace(/\\/g, '/')
+      .trim(),
+  )
+    .replace(/[\x00-\x1f/\\:*?"<>|]/g, '_')
+    .replace(/^[.\s]+|[.\s]+$/g, '')
+  if (!base || base === '.' || base === '..') return 'attachment'
+  const chars = [...base]
+  if (chars.length <= 80) return base
+  const ext = extname(base)
+  const extLen = [...ext].length
+  return chars.slice(0, Math.max(1, 80 - extLen)).join('') + ext
+}
+
+/** Extracts local file paths from params.files (text lines, JSON, or attachment objects). */
+export function files(params?: Record<string, any>): string[] {
+  return namedFiles(params).map((f) => f.path)
+}
+
+/** Extracts FileRefs preserving original filenames when present. */
+export function namedFiles(params?: Record<string, any>): FileRef[] {
+  if (!params) return []
+  return extractFileRefs(params.files)
+}
+
+function extractFileRefs(v: unknown): FileRef[] {
+  if (typeof v === 'string') {
+    const trimmed = v.trim()
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      try {
+        return extractFileRefs(JSON.parse(trimmed))
+      } catch {
+        /* fall through to line split */
+      }
+    }
+    return v
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((path) => ({ path }))
+  }
+  if (Array.isArray(v)) {
+    return v.flatMap((item) => extractFileRefs(item))
+  }
+  if (v && typeof v === 'object') {
+    const obj = v as Record<string, unknown>
+    const path = typeof obj.path === 'string' ? obj.path.trim() : ''
+    if (!path) return []
+    const name = typeof obj.name === 'string' ? obj.name.trim() : undefined
+    return [{ path, ...(name ? { name } : {}) }]
+  }
+  return []
 }

@@ -251,3 +251,16 @@ Cat 把所有**启用的**规则里指向这个实例的触发参数汇总起来
 - 插件以用户身份运行，没有沙箱，能做用户能做的任何事。只安装你信任的插件。
 - 不要把密钥写进日志。配置里 `format: "password"` 的字段只是界面上遮挡显示。
 - 处理 `ingress.request` 时自行校验调用方（签名或密钥）；Cat 不替插件做鉴权。
+
+## Media Attachments & Blobs (`blobs_dir`)
+
+Cat allocates a per-instance (or shared hub) blobs directory and passes its path in `initialize` params as `blobs_dir` (`Host.BlobsDir` in the Go SDK, `Host.blobsDir` in the Node SDK).
+
+- **Inbound plugins** should download inbound images/audio/files into `blobs_dir` (via `Host.SaveBlob`, enforcing size limits) and include them in `payload.attachments` as an array of attachment objects:
+  - `kind`: `"image" | "audio" | "video" | "file"`
+  - `name`: original filename (sanitized)
+  - `mime` (and `type`): MIME type
+  - `size`: size in bytes
+  - `path`: absolute path on the host inside `blobs_dir`
+  - `rel`: slash-separated relative path under `blobs_dir` (served by Cat at `/api/blobs/<rel>`)
+- **Outbound / AI actions** should accept a `files` param (JSON array or comma/newline-separated string of attachment objects or paths, parsed by `cat.Files(params["files"])` in Go), attach/upload local files when sending messages, or include images/text files in LLM prompts.

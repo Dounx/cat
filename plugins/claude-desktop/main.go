@@ -4,6 +4,8 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dounx/cat/plugins/internal/claudecode"
@@ -68,6 +70,17 @@ func New() cat.Plugin {
 				o := opts
 				if extra := harness.Str(p, "system_prompt"); extra != "" {
 					o.SystemPrompt = (o.SystemPrompt + "\n\n" + extra)
+				}
+				if files := cat.Files(p); len(files) > 0 {
+					seen := map[string]bool{}
+					for _, fp := range files {
+						dir := filepath.Dir(fp)
+						if dir != "" && !seen[dir] {
+							seen[dir] = true
+							o.ExtraDirs = append(o.ExtraDirs, dir)
+						}
+					}
+					prompt += "\n\n附件文件：\n- " + strings.Join(files, "\n- ")
 				}
 				res, err := claudecode.Run(ctx, o, prompt, resume)
 				if res.SessionID != "" && key != "" {

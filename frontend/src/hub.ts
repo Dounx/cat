@@ -177,7 +177,12 @@ export function clock(iso: string): string {
 
 export function summarize(ev: HubEvent): string {
   const p = ev.payload || {}
-  if (typeof p.text === 'string' && p.text) return p.text
+  const atts = Array.isArray(p.attachments) ? p.attachments : []
+  const attTag = atts.length ? `[附件 ${atts.map((a: any) => a?.name || a?.kind || '文件').join(', ')}]` : ''
+  if (typeof p.text === 'string' && p.text) {
+    return attTag ? `${p.text} ${attTag}` : p.text
+  }
+  if (attTag) return attTag
   const s = JSON.stringify(p)
   return s === '{}' ? '' : s
 }

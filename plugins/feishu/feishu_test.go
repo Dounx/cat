@@ -6,10 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	cat "github.com/dounx/cat/sdk/go"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
@@ -43,6 +46,12 @@ func newFake(t *testing.T) *fakeFeishu {
 			reply(map[string]any{"code": 0, "bot": map[string]any{"open_id": "ou_bot", "app_name": "Cat"}})
 		case path == "/open-apis/im/v1/chats/oc_group":
 			reply(map[string]any{"code": 0, "data": map[string]any{"name": "产品群"}})
+		case strings.HasPrefix(path, "/open-apis/im/v1/messages/") && strings.Contains(path, "/resources/"):
+			_, _ = w.Write([]byte("\x89PNG\r\n\x1a\n"))
+		case path == "/open-apis/im/v1/images":
+			reply(map[string]any{"code": 0, "data": map[string]any{"image_key": "img_k1"}})
+		case path == "/open-apis/im/v1/files":
+			reply(map[string]any{"code": 0, "data": map[string]any{"file_key": "file_k1"}})
 		case strings.HasPrefix(path, "/open-apis/im/v1/messages"):
 			f.mu.Lock()
 			body["path"] = path
@@ -88,7 +97,7 @@ func TestFeishu(t *testing.T) {
 	}
 
 	// a message in a group that mentions the bot and someone else
-	ev, ok := b.convert(ctx, received(t, `{"schema":"2.0","header":{"event_id":"e1","create_time":"1700000000000"},"event":{
+	ev, ok := b.convert(ctx, nil, received(t, `{"schema":"2.0","header":{"event_id":"e1","create_time":"1700000000000"},"event":{
 		"sender":{"sender_id":{"open_id":"ou_alice"},"sender_type":"user"},
 		"message":{"message_id":"om_1","parent_id":"om_0","chat_id":"oc_group","chat_type":"group","message_type":"text",
 			"content":"{\"text\":\"@_user_1 帮 @_user_2 看看这个\"}",
@@ -107,18 +116,18 @@ func TestFeishu(t *testing.T) {
 		t.Errorf("actor %+v time %v", ev.Actor, ev.Time)
 	}
 	// a private chat counts as a mention; a group message without one does not
-	ev, _ = b.convert(ctx, received(t, `{"event":{"sender":{"sender_id":{"open_id":"ou_alice"}},
+	ev, _ = b.convert(ctx, nil, received(t, `{"event":{"sender":{"sender_id":{"open_id":"ou_alice"}},
 		"message":{"message_id":"om_2","chat_id":"oc_p2p","chat_type":"p2p","message_type":"text","content":"{\"text\":\"你好\"}"}}}`))
 	if ev.Payload["mentioned"] != true || ev.Conversation.Kind != "private" || ev.Payload["text"] != "你好" {
 		t.Errorf("private: %+v %+v", ev.Payload, ev.Conversation)
 	}
-	ev, _ = b.convert(ctx, received(t, `{"event":{"sender":{"sender_id":{"open_id":"ou_alice"}},
+	ev, _ = b.convert(ctx, nil, received(t, `{"event":{"sender":{"sender_id":{"open_id":"ou_alice"}},
 		"message":{"message_id":"om_3","chat_id":"oc_group","chat_type":"group","message_type":"text","content":"{\"text\":\"路过\"}"}}}`))
 	if ev.Payload["mentioned"] != false {
 		t.Errorf("a passing remark counted as a mention: %+v", ev.Payload)
 	}
 	// the bot's own messages are left alone
-	if _, ok := b.convert(ctx, received(t, `{"event":{"sender":{"sender_id":{"open_id":"ou_bot"}},
+	if _, ok := b.convert(ctx, nil, received(t, `{"event":{"sender":{"sender_id":{"open_id":"ou_bot"}},
 		"message":{"message_id":"om_4","chat_id":"oc_group","chat_type":"group","message_type":"text","content":"{\"text\":\"我说的\"}"}}}`)); ok {
 		t.Error("the bot heard itself")
 	}
@@ -134,15 +143,39 @@ func TestFeishu(t *testing.T) {
 	if _, err := b.send(ctx, "oc_group", "  ", "", false); err == nil {
 		t.Error("an empty message was sent")
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.sent) != 2 {
-		t.Fatalf("sent %d messages: %+v", len(f.sent), f.sent)
+	{
+		f.mu.Lock()
+		if len(f.sent) != 2 {
+			f.mu.Unlock()
+			t.Fatalf("sent %d messages: %+v", len(f.sent), f.sent)
+		}
+		if s := f.sent[0]; s["path"] != "/open-apis/im/v1/messages/om_1/reply" || s["msg_type"] != "text" || !strings.Contains(s["content"].(string), "收到") {
+			t.Errorf("reply was sent as %+v", s)
+		}
+		if s := f.sent[1]; s["path"] != "/open-apis/im/v1/messages" || s["receive_id"] != "oc_group" || s["msg_type"] != "post" || !strings.Contains(s["content"].(string), "加粗") {
+			t.Errorf("markdown was sent as %+v", s)
+		}
+		f.mu.Unlock()
 	}
-	if s := f.sent[0]; s["path"] != "/open-apis/im/v1/messages/om_1/reply" || s["msg_type"] != "text" || !strings.Contains(s["content"].(string), "收到") {
-		t.Errorf("reply was sent as %+v", s)
+
+	// incoming image resource downloads into blobsDir and sendWithFiles uploads image & file
+	blobs := t.TempDir()
+	h := &cat.Host{BlobsDir: blobs}
+	imgEv, ok := b.convert(ctx, h, received(t, `{"event":{"sender":{"sender_id":{"open_id":"ou_alice"}},
+		"message":{"message_id":"om_img","chat_id":"oc_p2p","chat_type":"p2p","message_type":"image","content":"{\"image_key\":\"img_in_1\"}"}}}`))
+	if !ok {
+		t.Fatal("image message dropped")
 	}
-	if s := f.sent[1]; s["path"] != "/open-apis/im/v1/messages" || s["receive_id"] != "oc_group" || s["msg_type"] != "post" || !strings.Contains(s["content"].(string), "加粗") {
-		t.Errorf("markdown was sent as %+v", s)
+	atts, _ := imgEv.Payload["attachments"].([]map[string]any)
+	if len(atts) != 1 || atts[0]["kind"] != "image" || !strings.HasPrefix(atts[0]["path"].(string), blobs) {
+		t.Fatalf("downloaded image att = %+v", imgEv.Payload["attachments"])
+	}
+	doc := filepath.Join(t.TempDir(), "doc.txt")
+	_ = os.WriteFile(doc, []byte("hello"), 0o600)
+	if _, err := b.sendWithFiles(ctx, "oc_group", "", []string{atts[0]["path"].(string), doc}, "", false); err != nil {
+		t.Fatalf("sendWithFiles: %v", err)
+	}
+	if len(f.sent) != 4 || f.sent[2]["msg_type"] != "image" || f.sent[3]["msg_type"] != "file" {
+		t.Fatalf("uploaded messages = %+v", f.sent[2:])
 	}
 }

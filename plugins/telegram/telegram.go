@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -154,14 +157,14 @@ func New() cat.Plugin {
 				if quote, ok := p["quote"].(bool); !ok || quote {
 					replyTo = toInt(ev.Payload["message_id"])
 				}
-				return b.send(ctx, ev.Conversation.ID, text(p), replyTo, toInt(ev.Payload["thread_id"]), p["markdown"] == true)
+				return b.sendWithFiles(ctx, ev.Conversation.ID, text(p), cat.Files(p), replyTo, toInt(ev.Payload["thread_id"]), p["markdown"] == true)
 			},
 			"send": func(ctx context.Context, h *cat.Host, p map[string]any, _ cat.ActionContext) (any, error) {
 				chatID := fmt.Sprint(p["chat_id"])
 				if p["chat_id"] == nil || chatID == "" {
 					return nil, errors.New("缺少会话 ID")
 				}
-				return b.send(ctx, chatID, text(p), 0, 0, p["markdown"] == true)
+				return b.sendWithFiles(ctx, chatID, text(p), cat.Files(p), 0, 0, p["markdown"] == true)
 			},
 			"typing": func(ctx context.Context, h *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
 				if actx.Event == nil || actx.Event.Conversation == nil {
@@ -213,6 +216,150 @@ func split(s string, n int) []string {
 		r = r[cut:]
 	}
 	return append(out, string(r))
+}
+
+func (b *bot) sendWithFiles(ctx context.Context, chatID, body string, files []string, replyTo, threadID int64, markdown bool) (any, error) {
+	if strings.TrimSpace(body) == "" && len(files) == 0 {
+		return nil, errors.New("消息内容为空")
+	}
+	if len(files) == 0 {
+		return b.send(ctx, chatID, body, replyTo, threadID, markdown)
+	}
+	var ids []string
+	caption := body
+	if len([]rune(caption)) > 1024 {
+		res, err := b.send(ctx, chatID, body, replyTo, threadID, markdown)
+		if err != nil {
+			return res, err
+		}
+		if m, ok := res.(map[string]any); ok {
+			if list, ok := m["message_ids"].([]string); ok {
+				ids = append(ids, list...)
+			}
+		}
+		caption = ""
+		replyTo = 0
+	}
+	for i, fp := range files {
+		capPart := ""
+		if i == 0 {
+			capPart = caption
+		}
+		replyPart := int64(0)
+		if i == 0 {
+			replyPart = replyTo
+		}
+		id, err := b.sendOneFile(ctx, chatID, fp, capPart, replyPart, threadID, markdown)
+		if err != nil {
+			return map[string]any{"message_ids": ids}, err
+		}
+		ids = append(ids, id)
+	}
+	return map[string]any{"message_id": ids[len(ids)-1], "message_ids": ids, "chat_id": chatID}, nil
+}
+
+func (b *bot) sendOneFile(ctx context.Context, chatID, path, caption string, replyTo, threadID int64, markdown bool) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("读不出文件 %s：%w", path, err)
+	}
+	ct := http.DetectContentType(raw)
+	method, field := "sendDocument", "document"
+	switch ct {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		method, field = "sendPhoto", "photo"
+	}
+	send := func(useMarkdown bool) (message, error) {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+		_ = mw.WriteField("chat_id", chatID)
+		if threadID != 0 {
+			_ = mw.WriteField("message_thread_id", strconv.FormatInt(threadID, 10))
+		}
+		if replyTo != 0 {
+			rp, _ := json.Marshal(map[string]any{"message_id": replyTo, "allow_sending_without_reply": true})
+			_ = mw.WriteField("reply_parameters", string(rp))
+		}
+		if strings.TrimSpace(caption) != "" {
+			_ = mw.WriteField("caption", caption)
+			if useMarkdown {
+				_ = mw.WriteField("parse_mode", "Markdown")
+			}
+		}
+		pw, err := mw.CreateFormFile(field, filepath.Base(path))
+		if err != nil {
+			return message{}, err
+		}
+		_, _ = pw.Write(raw)
+		_ = mw.Close()
+
+		req, err := http.NewRequestWithContext(ctx, "POST", b.base+"/bot"+b.token+"/"+method, &buf)
+		if err != nil {
+			return message{}, err
+		}
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		resp, err := b.client.Do(req)
+		if err != nil {
+			return message{}, errors.New(strings.ReplaceAll(err.Error(), b.token, "<token>"))
+		}
+		defer resp.Body.Close()
+		var env struct {
+			OK          bool    `json:"ok"`
+			Result      message `json:"result"`
+			ErrorCode   int     `json:"error_code"`
+			Description string  `json:"description"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+			return message{}, fmt.Errorf("Telegram 返回了无法解析的响应（HTTP %d）", resp.StatusCode)
+		}
+		if !env.OK {
+			return message{}, &apiError{Code: env.ErrorCode, Description: env.Description}
+		}
+		return env.Result, nil
+	}
+	sent, err := send(markdown)
+	var apiErr *apiError
+	if markdown && errors.As(err, &apiErr) && apiErr.Code == 400 {
+		sent, err = send(false)
+	}
+	if err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(sent.MessageID, 10), nil
+}
+
+func (b *bot) downloadFile(ctx context.Context, h *cat.Host, fileID, name, mimeHint string) (map[string]any, error) {
+	var gf struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := b.call(ctx, "getFile", map[string]any{"file_id": fileID}, &gf); err != nil {
+		return nil, err
+	}
+	if gf.FilePath == "" {
+		return nil, errors.New("empty file_path")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", b.base+"/file/bot"+b.token+"/"+strings.TrimLeft(gf.FilePath, "/"), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return nil, errors.New(strings.ReplaceAll(err.Error(), b.token, "<token>"))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	if name == "" {
+		name = filepath.Base(gf.FilePath)
+	}
+	att, err := h.SaveBlob(name, mimeHint, resp.Body, 10<<20)
+	if err != nil {
+		return nil, err
+	}
+	m := att.Map()
+	m["file_id"] = fileID
+	return m, nil
 }
 
 func (b *bot) send(ctx context.Context, chatID, body string, replyTo, threadID int64, markdown bool) (any, error) {
@@ -281,7 +428,7 @@ func (b *bot) poll(ctx context.Context, h *cat.Host) {
 			healthy = true
 		}
 		for _, u := range updates {
-			if ev, ok := b.convert(u); ok {
+			if ev, ok := b.convert(ctx, h, u); ok {
 				if _, err := h.Emit(ev); err != nil {
 					h.Log("error", "emit: %v", err)
 				}
@@ -294,7 +441,7 @@ func (b *bot) poll(ctx context.Context, h *cat.Host) {
 	}
 }
 
-func (b *bot) convert(u update) (cat.Event, bool) {
+func (b *bot) convert(ctx context.Context, h *cat.Host, u update) (cat.Event, bool) {
 	typ, m := "message.created", u.Message
 	switch {
 	case u.EditedMessage != nil:
@@ -339,9 +486,23 @@ func (b *bot) convert(u update) (cat.Event, bool) {
 	}
 	var attachments []map[string]any
 	add := func(kind string, f map[string]any) {
-		if f != nil {
-			attachments = append(attachments, map[string]any{"kind": kind, "file_id": f["file_id"], "name": f["file_name"]})
+		if f == nil {
+			return
 		}
+		fileID, _ := f["file_id"].(string)
+		name, _ := f["file_name"].(string)
+		mimeHint, _ := f["mime_type"].(string)
+		if h != nil && fileID != "" {
+			dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			att, err := b.downloadFile(dctx, h, fileID, name, mimeHint)
+			cancel()
+			if err == nil {
+				attachments = append(attachments, att)
+				return
+			}
+			h.Log("debug", "下载 Telegram 附件 %s 失败：%v", fileID, err)
+		}
+		attachments = append(attachments, map[string]any{"kind": kind, "file_id": f["file_id"], "name": f["file_name"]})
 	}
 	if len(m.Photo) > 0 {
 		add("image", m.Photo[len(m.Photo)-1])

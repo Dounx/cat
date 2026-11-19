@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dounx/cat/core/blob"
 	"github.com/dounx/cat/core/builtin"
 	"github.com/dounx/cat/core/event"
 	"github.com/dounx/cat/core/id"
@@ -144,6 +145,8 @@ func (e *Engine) Emit(ev *event.Event) (string, error) {
 	if prune {
 		if err := e.Store.PruneEvents(keepEvents); err != nil {
 			e.log.Warn("prune events", "err", err)
+		} else if keep, err := e.Store.BlobPaths(); err == nil {
+			blob.Sweep(e.BlobsDir(), keep, time.Hour)
 		}
 	}
 	return ev.ID, nil

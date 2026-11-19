@@ -206,6 +206,64 @@ async function replay() {
             ><dt class="text-mute">内容</dt>
             <dd class="whitespace-pre-wrap">{{ selected.payload.text }}</dd></template
           >
+          <template v-if="Array.isArray(selected.payload?.attachments) && selected.payload.attachments.length">
+            <dt class="text-mute">附件</dt>
+            <dd class="flex flex-col gap-2">
+              <div
+                v-for="(att, idx) in selected.payload.attachments"
+                :key="att?.rel || att?.path || idx"
+                class="flex flex-col gap-1"
+              >
+                <a
+                  v-if="att?.rel && (att.kind === 'image' || String(att.mime || att.type || '').startsWith('image/'))"
+                  :href="`/api/blobs/${String(att.rel).split('/').map(encodeURIComponent).join('/')}`"
+                  target="_blank"
+                  rel="noopener"
+                  class="inline-block w-fit overflow-hidden rounded border border-line bg-black/20"
+                >
+                  <img
+                    :src="`/api/blobs/${String(att.rel).split('/').map(encodeURIComponent).join('/')}`"
+                    :alt="att.name || 'image'"
+                    class="max-h-48 max-w-full object-contain"
+                  />
+                </a>
+                <div class="flex flex-wrap items-center gap-2 text-xs">
+                  <a
+                    v-if="att?.rel"
+                    :href="`/api/blobs/${String(att.rel).split('/').map(encodeURIComponent).join('/')}`"
+                    :download="att.name || undefined"
+                    target="_blank"
+                    rel="noopener"
+                    class="inline-flex items-center gap-1.5 rounded border border-line px-2 py-0.5 text-ink hover:border-mute"
+                  >
+                    <span>{{ att.name || '附件' }}</span>
+                    <span v-if="att.size" class="text-mute"
+                      >({{
+                        att.size < 1024
+                          ? `${att.size} B`
+                          : att.size < 1048576
+                            ? `${(att.size / 1024).toFixed(1)} KB`
+                            : `${(att.size / 1048576).toFixed(1)} MB`
+                      }})</span
+                    >
+                  </a>
+                  <span v-else class="inline-flex items-center gap-1.5 rounded border border-line px-2 py-0.5 text-ink">
+                    <span>{{ att?.name || att?.path || '附件' }}</span>
+                    <span v-if="att?.size" class="text-mute"
+                      >({{
+                        att.size < 1024
+                          ? `${att.size} B`
+                          : att.size < 1048576
+                            ? `${(att.size / 1024).toFixed(1)} KB`
+                            : `${(att.size / 1048576).toFixed(1)} MB`
+                      }})</span
+                    >
+                  </span>
+                  <span v-if="att?.mime || att?.type" class="text-mute">{{ att.mime || att.type }}</span>
+                </div>
+              </div>
+            </dd>
+          </template>
         </dl>
 
         <h3 class="label">规则对它做了什么</h3>

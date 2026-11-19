@@ -10,13 +10,17 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/dounx/cat/core/blob"
 	"github.com/dounx/cat/core/engine"
 	"github.com/dounx/cat/core/plugin"
 	"github.com/dounx/cat/core/rules"
@@ -250,6 +254,7 @@ func (s *Server) Handler() http.Handler {
 		run, err := e.Store.GetRun(r.PathValue("id"))
 		respond(w, run, err)
 	})
+	mux.HandleFunc("GET /api/blobs/{rel...}", s.serveBlob)
 
 	for _, fn := range s.extras {
 		fn(mux)
@@ -423,6 +428,43 @@ func (s *Server) ingress(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.Status)
 	_, _ = w.Write(resp.Body)
+}
+
+func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request) {
+	path, err := blob.Resolve(s.Engine.BlobsDir(), r.PathValue("rel"))
+	if err != nil {
+		writeErr(w, 404, "not found")
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		writeErr(w, 404, "not found")
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		writeErr(w, 404, "not found")
+		return
+	}
+	var head [512]byte
+	n, _ := f.Read(head[:])
+	_, _ = f.Seek(0, io.SeekStart)
+	ct := mime.TypeByExtension(filepath.Ext(path))
+	if ct == "" {
+		ct = http.DetectContentType(head[:n])
+	}
+	baseCT, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(ct)), ";")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; media-src 'self'; sandbox")
+	w.Header().Set("Content-Type", ct)
+	switch baseCT {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		w.Header().Set("Content-Disposition", "inline")
+	default:
+		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filepath.Base(path)}))
+	}
+	http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
 }
 
 // spa serves static files and falls back to index.html for client routes.

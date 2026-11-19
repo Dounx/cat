@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -126,7 +128,7 @@ func (b *bot) chatName(ctx context.Context, chatID string) string {
 
 // convert turns a received message into an event. ok is false for the bot's
 // own messages.
-func (b *bot) convert(ctx context.Context, in *larkim.P2MessageReceiveV1) (cat.Event, bool) {
+func (b *bot) convert(ctx context.Context, h *cat.Host, in *larkim.P2MessageReceiveV1) (cat.Event, bool) {
 	m := normalize.ParseMessage(in)
 	if m == nil || (b.openID != "" && m.UserID == b.openID) {
 		return cat.Event{}, false
@@ -159,6 +161,28 @@ func (b *bot) convert(ctx context.Context, in *larkim.P2MessageReceiveV1) (cat.E
 	}
 	var attachments []map[string]any
 	for _, r := range m.Resources {
+		if h != nil && m.MessageID != "" && r.FileKey != "" {
+			resType := "file"
+			if r.Type == "image" {
+				resType = "image"
+			}
+			dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			resp, err := b.client.Im.V1.MessageResource.Get(dctx, larkim.NewGetMessageResourceReqBuilder().
+				MessageId(m.MessageID).FileKey(r.FileKey).Type(resType).Build())
+			cancel()
+			if err == nil && resp.Success() && resp.File != nil {
+				name := r.FileName
+				if name == "" {
+					name = resp.FileName
+				}
+				if att, serr := h.SaveBlob(name, "", resp.File, 10<<20); serr == nil {
+					item := att.Map()
+					item["file_key"] = r.FileKey
+					attachments = append(attachments, item)
+					continue
+				}
+			}
+		}
 		attachments = append(attachments, map[string]any{"kind": r.Type, "file_key": r.FileKey, "name": r.FileName})
 	}
 	if attachments != nil {
@@ -187,7 +211,7 @@ func (b *bot) convert(ctx context.Context, in *larkim.P2MessageReceiveV1) (cat.E
 // listen keeps the long connection up and emits what comes over it.
 func (b *bot) listen(ctx context.Context, h *cat.Host) {
 	handler := dispatcher.NewEventDispatcher("", "").OnP2MessageReceiveV1(func(ctx context.Context, in *larkim.P2MessageReceiveV1) error {
-		if ev, ok := b.convert(ctx, in); ok {
+		if ev, ok := b.convert(ctx, h, in); ok {
 			if _, err := h.Emit(ev); err != nil {
 				h.Log("error", "emit: %v", err)
 			}
@@ -221,6 +245,54 @@ func text(p map[string]any) string {
 		raw, _ := json.Marshal(v)
 		return string(raw)
 	}
+}
+
+func (b *bot) sendWithFiles(ctx context.Context, to, body string, files []string, replyTo string, markdown bool) (any, error) {
+	if strings.TrimSpace(body) == "" && len(files) == 0 {
+		return nil, errors.New("消息内容为空")
+	}
+	var ids []string
+	lastID := ""
+	if strings.TrimSpace(body) != "" {
+		res, err := b.send(ctx, to, body, replyTo, markdown)
+		if err != nil {
+			return res, err
+		}
+		if m, ok := res.(map[string]any); ok {
+			lastID, _ = m["message_id"].(string)
+			if list, ok := m["message_ids"].([]string); ok {
+				ids = append(ids, list...)
+			}
+		}
+		replyTo = ""
+	}
+	for i, fp := range files {
+		info, err := os.Stat(fp)
+		if err != nil || info.IsDir() {
+			return map[string]any{"message_ids": ids}, fmt.Errorf("找不到附件文件：%s", fp)
+		}
+		in := &types.SendInput{ReceiveID: to}
+		if i == 0 {
+			in.ReplyMessageID = replyTo
+		}
+		switch strings.ToLower(filepath.Ext(fp)) {
+		case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
+			in.ImagePath = fp
+		default:
+			in.FilePath = fp
+		}
+		res, err := b.out.Send(ctx, in)
+		if err != nil {
+			return map[string]any{"message_ids": ids}, fmt.Errorf("飞书发送附件失败：%w", err)
+		}
+		lastID = res.MessageID
+		if len(res.ChunkIDs) > 0 {
+			ids = append(ids, res.ChunkIDs...)
+		} else if res.MessageID != "" {
+			ids = append(ids, res.MessageID)
+		}
+	}
+	return map[string]any{"message_id": lastID, "message_ids": ids, "chat_id": to}, nil
 }
 
 // send posts a message to a chat or a user, as a reply when replyTo is set.
@@ -278,14 +350,14 @@ func New() cat.Plugin {
 				if quote, set := p["quote"].(bool); !set || quote {
 					replyTo, _ = ev.Payload["message_id"].(string)
 				}
-				return b.send(ctx, ev.Conversation.ID, text(p), replyTo, markdown(p))
+				return b.sendWithFiles(ctx, ev.Conversation.ID, text(p), cat.Files(p), replyTo, markdown(p))
 			},
 			"send": func(ctx context.Context, h *cat.Host, p map[string]any, _ cat.ActionContext) (any, error) {
 				to := str(p, "chat_id")
 				if to == "" {
 					return nil, errors.New("缺少会话 ID")
 				}
-				return b.send(ctx, to, text(p), "", markdown(p))
+				return b.sendWithFiles(ctx, to, text(p), cat.Files(p), "", markdown(p))
 			},
 			"typing": func(context.Context, *cat.Host, map[string]any, cat.ActionContext) (any, error) {
 				return map[string]any{}, nil

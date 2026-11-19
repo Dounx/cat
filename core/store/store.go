@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -186,6 +187,35 @@ func (s *Store) PruneEvents(keep int) error {
 	}
 	_, err = s.db.Exec(`DELETE FROM runs WHERE id NOT IN (SELECT id FROM runs ORDER BY id DESC LIMIT ?)`, keep)
 	return err
+}
+
+// BlobPaths returns all local attachment file paths still referenced by stored events.
+func (s *Store) BlobPaths() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT data FROM events WHERE instr(data, 'blobs') > 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keep := map[string]bool{}
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var ev event.Event
+		if json.Unmarshal([]byte(data), &ev) != nil || ev.Payload == nil {
+			continue
+		}
+		atts, _ := ev.Payload["attachments"].([]any)
+		for _, item := range atts {
+			m, _ := item.(map[string]any)
+			if p, _ := m["path"].(string); p != "" {
+				keep[p] = true
+				keep[filepath.Clean(p)] = true
+			}
+		}
+	}
+	return keep, rows.Err()
 }
 
 // ---- rules ----

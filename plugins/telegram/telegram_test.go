@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -61,6 +64,16 @@ func newFake(t *testing.T) *fakeTelegram {
 		case "sendChatAction":
 			f.sent = append(f.sent, params)
 			reply(true)
+		case "getFile":
+			reply(map[string]any{"file_id": params["file_id"], "file_path": "photos/pic.png"})
+		case "sendPhoto", "sendDocument":
+			_ = r.ParseMultipartForm(8 << 20)
+			f.sent = append(f.sent, map[string]any{
+				"method":  strings.TrimPrefix(r.URL.Path, "/botgood-token/"),
+				"chat_id": r.FormValue("chat_id"),
+				"caption": r.FormValue("caption"),
+			})
+			reply(map[string]any{"message_id": 500 + len(f.sent), "chat": map[string]any{"id": -100}})
 		}
 	}))
 	t.Cleanup(f.Close)
@@ -203,5 +216,91 @@ func TestSetupRetriesUntilTokenValid(t *testing.T) {
 	}
 	if titles[len(titles)-1] != "info:已连接 @cat_bot" {
 		t.Fatalf("steps: %v", titles)
+	}
+}
+
+func TestAttachmentsDownloadAndSend(t *testing.T) {
+	pngBytes := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	var f *fakeTelegram
+	f = &fakeTelegram{}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/file/botgood-token/photos/pic.png" {
+			_, _ = w.Write(pngBytes)
+			return
+		}
+		var params map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&params)
+		reply := func(v any) { json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": v}) }
+		switch strings.TrimPrefix(r.URL.Path, "/botgood-token/") {
+		case "getMe":
+			reply(map[string]any{"id": 999, "is_bot": true, "username": "cat_bot"})
+		case "getUpdates":
+			f.mu.Lock()
+			out := f.updates
+			f.updates = nil
+			f.mu.Unlock()
+			if out == nil {
+				time.Sleep(30 * time.Millisecond)
+				out = []map[string]any{}
+			}
+			reply(out)
+		case "getFile":
+			reply(map[string]any{"file_id": params["file_id"], "file_path": "photos/pic.png"})
+		case "sendPhoto", "sendDocument":
+			_ = r.ParseMultipartForm(8 << 20)
+			_, hdr, _ := r.FormFile("photo")
+			if hdr == nil {
+				_, hdr, _ = r.FormFile("document")
+			}
+			file, _ := hdr.Open()
+			got, _ := io.ReadAll(file)
+			file.Close()
+			f.mu.Lock()
+			f.sent = append(f.sent, map[string]any{
+				"method":  strings.TrimPrefix(r.URL.Path, "/botgood-token/"),
+				"chat_id": r.FormValue("chat_id"),
+				"caption": r.FormValue("caption"),
+				"name":    hdr.Filename,
+				"len":     len(got),
+			})
+			n := len(f.sent)
+			f.mu.Unlock()
+			reply(map[string]any{"message_id": 600 + n, "chat": map[string]any{"id": 123}})
+		}
+	}))
+	t.Cleanup(f.Close)
+	f.updates = []map[string]any{
+		{"update_id": 1, "message": map[string]any{
+			"message_id": 9, "caption": "看图",
+			"from": map[string]any{"id": 123, "first_name": "Ann"},
+			"chat": map[string]any{"id": 123, "type": "private"},
+			"photo": []map[string]any{
+				{"file_id": "f-big", "width": 800, "height": 600},
+			},
+		}},
+	}
+	blobs := t.TempDir()
+	h := cattest.New(t, New(), cattest.Options{BlobsDir: blobs, Config: map[string]any{"token": "good-token", "api_base": f.URL}})
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ev := h.NextEvent()
+	atts := ev.Payload["attachments"].([]any)
+	att := atts[0].(map[string]any)
+	if att["kind"] != "image" || !strings.HasPrefix(att["path"].(string), blobs) {
+		t.Fatalf("downloaded attachment = %+v", att)
+	}
+	if b, err := os.ReadFile(att["path"].(string)); err != nil || len(b) != len(pngBytes) {
+		t.Fatalf("saved blob = %v, err = %v", b, err)
+	}
+
+	doc := filepath.Join(t.TempDir(), "notes.txt")
+	_ = os.WriteFile(doc, []byte("hello"), 0o600)
+	if _, err := h.Invoke("reply", map[string]any{"text": "回传", "files": []any{att, doc}}, &ev); err != nil {
+		t.Fatal(err)
+	}
+	sent := f.sentCopy()
+	if len(sent) != 2 || sent[0]["method"] != "sendPhoto" || sent[0]["caption"] != "回传" || sent[1]["method"] != "sendDocument" {
+		t.Fatalf("sent = %+v", sent)
 	}
 }

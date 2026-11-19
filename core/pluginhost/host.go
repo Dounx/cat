@@ -293,7 +293,7 @@ func (i *instance) boot() error {
 	err = p.conn.Call(ctx, "initialize", map[string]any{
 		"protocol": ProtocolVersion, "mode": "run",
 		"instance": map[string]string{"id": i.host.InstanceID()},
-		"config":   i.cfg, "data_dir": i.host.DataDir(),
+		"config":   i.cfg, "data_dir": i.host.DataDir(), "blobs_dir": i.ph.eng.BlobsDir(),
 	}, nil)
 	cancel()
 	if err != nil {

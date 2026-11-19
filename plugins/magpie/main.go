@@ -203,7 +203,7 @@ func New() cat.Plugin {
 					sys = strings.TrimSpace(sys + "\n\n" + extra)
 				}
 				c := client(p)
-				text, sid, usage, err := openaichat.Converse(ctx, c, history, key, sys, prompt, p["new_session"] == true)
+				text, sid, usage, err := openaichat.ConverseWithFiles(ctx, c, history, key, sys, prompt, cat.Files(p), p["new_session"] == true)
 				if err != nil {
 					return nil, explain(ctx, err)
 				}

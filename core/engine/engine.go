@@ -125,7 +125,8 @@ func New(st *store.Store, dataDir string, log *slog.Logger) *Engine {
 	}
 }
 
-func (e *Engine) DataDir() string { return e.dataDir }
+func (e *Engine) DataDir() string  { return e.dataDir }
+func (e *Engine) BlobsDir() string { return filepath.Join(e.dataDir, "blobs") }
 
 // ---- plugins ----
 

@@ -6,21 +6,24 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type Message struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
 
 type Client struct {
@@ -64,7 +67,10 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, Usage, error
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	var out struct {
 		Choices []struct {
-			Message Message `json:"message"`
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
 		} `json:"choices"`
 		Usage Usage `json:"usage"`
 		Error *struct {
@@ -138,6 +144,15 @@ func (h History) Clear(key string) { _ = os.Remove(h.path(key)) }
 // Converse runs one turn: it loads the conversation for key (if any), asks
 // the model, and stores the exchange. An empty key means a one-off exchange.
 func Converse(ctx context.Context, c *Client, h History, key, system, prompt string, fresh bool) (text, sessionID string, usage Usage, err error) {
+	return ConverseWithFiles(ctx, c, h, key, system, prompt, nil, fresh)
+}
+
+// ConverseWithFiles runs one turn with optional image or text file attachments.
+func ConverseWithFiles(ctx context.Context, c *Client, h History, key, system, prompt string, files []string, fresh bool) (text, sessionID string, usage Usage, err error) {
+	userContent, savedPrompt, err := buildUserContent(prompt, files)
+	if err != nil {
+		return "", "", Usage{}, err
+	}
 	var past []Message
 	if key != "" {
 		if fresh {
@@ -150,19 +165,85 @@ func Converse(ctx context.Context, c *Client, h History, key, system, prompt str
 		msgs = append(msgs, Message{Role: "system", Content: system})
 	}
 	msgs = append(msgs, past...)
-	msgs = append(msgs, Message{Role: "user", Content: prompt})
+	msgs = append(msgs, Message{Role: "user", Content: userContent})
 	text, usage, err = c.Chat(ctx, msgs)
 	if err != nil {
 		return "", "", usage, err
 	}
 	if key != "" {
 		sessionID = ID(key)
-		past = append(past, Message{Role: "user", Content: prompt}, Message{Role: "assistant", Content: text})
+		past = append(past, Message{Role: "user", Content: savedPrompt}, Message{Role: "assistant", Content: text})
 		if err := h.Save(key, past); err != nil {
 			return text, sessionID, usage, err
 		}
 	}
 	return text, sessionID, usage, nil
+}
+
+func buildUserContent(prompt string, files []string) (userContent any, savedPrompt string, err error) {
+	if len(files) == 0 {
+		return prompt, prompt, nil
+	}
+	textPrompt := prompt
+	var imgParts []map[string]any
+	var names []string
+	for _, fp := range files {
+		info, serr := os.Stat(fp)
+		if serr != nil || info.IsDir() {
+			return nil, "", fmt.Errorf("找不到附件文件：%s", fp)
+		}
+		if info.Size() > 10<<20 {
+			return nil, "", fmt.Errorf("附件 %s 超过 10 MB 限制", filepath.Base(fp))
+		}
+		raw, rerr := os.ReadFile(fp)
+		if rerr != nil {
+			return nil, "", fmt.Errorf("读不出附件 %s：%w", fp, rerr)
+		}
+		name := filepath.Base(fp)
+		names = append(names, name)
+		ct := mime.TypeByExtension(filepath.Ext(name))
+		if ct == "" || ct == "application/octet-stream" {
+			ct = http.DetectContentType(raw)
+		}
+		baseCT, _, _ := strings.Cut(strings.ToLower(strings.TrimSpace(ct)), ";")
+		switch baseCT {
+		case "image/png", "image/jpeg", "image/gif", "image/webp":
+			url := "data:" + baseCT + ";base64," + base64.StdEncoding.EncodeToString(raw)
+			imgParts = append(imgParts, map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]string{"url": url},
+			})
+		default:
+			if isTextAttachment(baseCT, filepath.Ext(name)) && utf8.Valid(raw) {
+				body := string(raw)
+				if len(body) > 64<<10 {
+					body = body[:64<<10] + "\n…（文件内容太长，已截断）"
+				}
+				textPrompt += "\n\n[文件：" + name + "]\n" + body
+			} else {
+				textPrompt += "\n[附件：" + name + "（" + baseCT + "）]"
+			}
+		}
+	}
+	savedPrompt = prompt + "\n[附件：" + strings.Join(names, "、") + "]"
+	if len(imgParts) == 0 {
+		return textPrompt, savedPrompt, nil
+	}
+	parts := make([]map[string]any, 0, 1+len(imgParts))
+	parts = append(parts, map[string]any{"type": "text", "text": textPrompt})
+	parts = append(parts, imgParts...)
+	return parts, savedPrompt, nil
+}
+
+func isTextAttachment(baseCT, ext string) bool {
+	if strings.HasPrefix(baseCT, "text/") || baseCT == "application/json" || baseCT == "application/xml" || baseCT == "application/javascript" {
+		return true
+	}
+	switch strings.ToLower(ext) {
+	case ".txt", ".md", ".json", ".csv", ".log", ".yml", ".yaml", ".xml", ".go", ".ts", ".js", ".py", ".sh", ".sql":
+		return true
+	}
+	return false
 }
 
 // Pick asks the model which of the choices fits the prompt and returns that

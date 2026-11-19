@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -34,9 +35,10 @@ type Harness struct {
 
 // Options configure the fake host.
 type Options struct {
-	Config  map[string]any
-	DataDir string
-	State   map[string]string
+	Config   map[string]any
+	DataDir  string
+	BlobsDir string
+	State    map[string]string
 }
 
 // New connects a plugin to a fake host and initializes it (without starting).
@@ -127,12 +129,15 @@ func New(t testing.TB, p cat.Plugin, opts Options) *Harness {
 	if opts.DataDir == "" {
 		opts.DataDir = t.TempDir()
 	}
+	if opts.BlobsDir == "" {
+		opts.BlobsDir = filepath.Join(opts.DataDir, "blobs")
+	}
 	if opts.Config == nil {
 		opts.Config = map[string]any{}
 	}
 	err := h.call("initialize", map[string]any{
 		"protocol": cat.ProtocolVersion, "instance": map[string]string{"id": "test-instance"},
-		"config": opts.Config, "data_dir": opts.DataDir,
+		"config": opts.Config, "data_dir": opts.DataDir, "blobs_dir": opts.BlobsDir,
 	}, nil)
 	if err != nil {
 		t.Fatalf("initialize: %v", err)

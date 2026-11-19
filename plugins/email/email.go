@@ -27,9 +27,10 @@ const (
 	// back to the same mailbox does not start a rule again.
 	sentHeader = "X-Cat-Sent"
 	// maxFetch is how much of a message is read; maxBody how much of its
-	// text is kept.
-	maxFetch = 2 << 20
+	// text is kept; maxBlob is the per-attachment cap.
+	maxFetch = 12 << 20
 	maxBody  = 20000
+	maxBlob  = 10 << 20
 )
 
 func str(m map[string]any, key string) string {
@@ -131,30 +132,44 @@ func addresses(h mail.Header, key string) []string {
 }
 
 // read parses a message as it came from the server.
-func read(raw []byte) (*letter, error) {
+func read(raw []byte) (*letter, error) { return readWith(raw, nil) }
+
+func readWith(raw []byte, h *cat.Host) (*letter, error) {
 	mr, err := mail.CreateReader(bytes.NewReader(raw))
 	if err != nil && !message.IsUnknownCharset(err) {
 		return nil, err
 	}
-	h := mr.Header
-	l := &letter{to: addresses(h, "To"), cc: addresses(h, "Cc")}
-	l.subject, _ = h.Subject()
-	l.id, _ = h.MessageID()
-	l.inReplyTo, _ = h.MsgIDList("In-Reply-To")
-	l.references, _ = h.MsgIDList("References")
-	l.date, _ = h.Date()
-	if from, _ := h.AddressList("From"); len(from) > 0 {
+	hHeader := mr.Header
+	l := &letter{to: addresses(hHeader, "To"), cc: addresses(hHeader, "Cc")}
+	l.subject, _ = hHeader.Subject()
+	l.id, _ = hHeader.MessageID()
+	l.inReplyTo, _ = hHeader.MsgIDList("In-Reply-To")
+	l.references, _ = hHeader.MsgIDList("References")
+	l.date, _ = hHeader.Date()
+	if from, _ := hHeader.AddressList("From"); len(from) > 0 {
 		l.from = from[0]
 	}
-	if to, _ := h.AddressList("Reply-To"); len(to) > 0 {
+	if to, _ := hHeader.AddressList("Reply-To"); len(to) > 0 {
 		l.replyTo = to[0]
 	}
-	l.ours = h.Get(sentHeader) != ""
+	l.ours = hHeader.Get(sentHeader) != ""
 	// what a machine sent on its own: answering it invites an answer back
-	auto := strings.ToLower(h.Get("Auto-Submitted"))
-	precedence := strings.ToLower(h.Get("Precedence"))
+	auto := strings.ToLower(hHeader.Get("Auto-Submitted"))
+	precedence := strings.ToLower(hHeader.Get("Precedence"))
 	l.automatic = (auto != "" && auto != "no") || precedence == "bulk" || precedence == "junk" || precedence == "list" ||
-		h.Get("List-Id") != "" || h.Get("List-Unsubscribe") != ""
+		hHeader.Get("List-Id") != "" || hHeader.Get("List-Unsubscribe") != ""
+
+	addAtt := func(name, kind string, r io.Reader) {
+		if h != nil {
+			if att, err := h.SaveBlob(name, kind, r, maxBlob); err == nil {
+				l.attachments = append(l.attachments, att.Map())
+				return
+			} else {
+				h.Log("warn", "保存邮件附件 %s 失败：%v", name, err)
+			}
+		}
+		l.attachments = append(l.attachments, map[string]any{"name": name, "type": kind})
+	}
 
 	var plain, rich string
 	for {
@@ -167,7 +182,11 @@ func read(raw []byte) (*letter, error) {
 		}
 		switch ph := p.Header.(type) {
 		case *mail.InlineHeader:
-			kind, _, _ := ph.ContentType()
+			kind, params, _ := ph.ContentType()
+			if strings.HasPrefix(kind, "image/") {
+				addAtt(params["name"], kind, p.Body)
+				continue
+			}
 			text, _ := io.ReadAll(io.LimitReader(p.Body, maxFetch))
 			if kind == "text/html" && rich == "" {
 				rich = string(text)
@@ -177,7 +196,7 @@ func read(raw []byte) (*letter, error) {
 		case *mail.AttachmentHeader:
 			name, _ := ph.Filename()
 			kind, _, _ := ph.ContentType()
-			l.attachments = append(l.attachments, map[string]any{"name": name, "type": kind})
+			addAtt(name, kind, p.Body)
 		}
 	}
 	l.body = strings.TrimSpace(strings.ReplaceAll(plain, "\r\n", "\n"))
@@ -273,7 +292,7 @@ func (l *letter) event() cat.Event {
 }
 
 // fetch reads the messages with a UID above last, oldest first.
-func fetch(c *imapclient.Client, last imap.UID) ([]*letter, error) {
+func fetch(c *imapclient.Client, last imap.UID, h *cat.Host) ([]*letter, error) {
 	section := &imap.FetchItemBodySection{Peek: true, Partial: &imap.SectionPartial{Offset: 0, Size: maxFetch}}
 	msgs, err := c.Fetch(imap.UIDSet{imap.UIDRange{Start: last + 1, Stop: 0}},
 		&imap.FetchOptions{UID: true, BodySection: []*imap.FetchItemBodySection{section}}).Collect()
@@ -289,7 +308,7 @@ func fetch(c *imapclient.Client, last imap.UID) ([]*letter, error) {
 		if len(raw) == 0 && len(m.BodySection) > 0 {
 			raw = m.BodySection[0].Bytes
 		}
-		l, err := read(raw)
+		l, err := readWith(raw, h)
 		if err != nil {
 			l = &letter{noBody: true}
 		}
@@ -362,7 +381,7 @@ func (a *account) check(h *cat.Host) error {
 	if newest <= last {
 		return nil
 	}
-	letters, err := fetch(c, last)
+	letters, err := fetch(c, last, h)
 	if err != nil {
 		return fmt.Errorf("读不出新邮件：%w", err)
 	}
@@ -463,14 +482,14 @@ func New() cat.Plugin {
 				}
 				id, _ := ev.Payload["message_id"].(string)
 				return a.send(ctx, outgoing{to: to, cc: cc, subject: subject, body: text(p, "text"),
-					inReplyTo: id, references: append(strs(ev.Payload["references"]), id)})
+					files: cat.NamedFiles(p), inReplyTo: id, references: append(strs(ev.Payload["references"]), id)})
 			},
 			"send": func(ctx context.Context, h *cat.Host, p map[string]any, _ cat.ActionContext) (any, error) {
 				to := list(text(p, "to"))
 				if len(to) == 0 {
 					return nil, errors.New("缺少收件人的邮箱地址")
 				}
-				return a.send(ctx, outgoing{to: to, subject: strings.TrimSpace(text(p, "subject")), body: text(p, "text")})
+				return a.send(ctx, outgoing{to: to, subject: strings.TrimSpace(text(p, "subject")), body: text(p, "text"), files: cat.NamedFiles(p)})
 			},
 			"typing": func(context.Context, *cat.Host, map[string]any, cat.ActionContext) (any, error) {
 				return map[string]any{}, nil
