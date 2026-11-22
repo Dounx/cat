@@ -173,3 +173,21 @@ export interface LogEntry {
   message: string
   time: string
 }
+
+export interface ApprovalRequest {
+  id: string
+  rule_id: string
+  rule_name?: string
+  step_id: string
+  event_id: string
+  run_id?: string
+  title: string
+  detail?: string
+  status: 'pending' | 'approved' | 'rejected' | 'expired'
+  comment?: string
+  on_timeout?: 'reject' | 'approve'
+  resume_on_reject?: boolean
+  created_at: string
+  expires_at?: string
+  decided_at?: string
+}

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/dounx/cat/core/blob"
+	"github.com/dounx/cat/core/builtin"
 	"github.com/dounx/cat/core/engine"
 	"github.com/dounx/cat/core/plugin"
 	"github.com/dounx/cat/core/rules"
@@ -309,6 +310,43 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		writeJSON(w, 200, map[string]any{"ok": true})
+	})
+	mux.HandleFunc("GET /api/approvals", func(w http.ResponseWriter, r *http.Request) {
+		list := e.ListApprovals()
+		if status := strings.TrimSpace(r.URL.Query().Get("status")); status != "" {
+			filtered := make([]builtin.ApprovalRequest, 0, len(list))
+			for _, item := range list {
+				if string(item.Status) == status {
+					filtered = append(filtered, item)
+				}
+			}
+			list = filtered
+		}
+		writeJSON(w, 200, list)
+	})
+	mux.HandleFunc("POST /api/approvals/{id}/decide", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Decision string `json:"decision"`
+			Comment  string `json:"comment"`
+		}
+		if !readJSON(w, r, &body) {
+			return
+		}
+		req, err := e.DecideApproval(r.PathValue("id"), body.Decision, body.Comment)
+		if err != nil {
+			switch {
+			case errors.Is(err, builtin.ErrInvalidDecision):
+				writeErr(w, 400, err.Error())
+			case errors.Is(err, builtin.ErrApprovalNotFound):
+				writeErr(w, 404, err.Error())
+			case errors.Is(err, builtin.ErrApprovalAlreadyDecided), errors.Is(err, plugin.ErrGone):
+				writeErr(w, 409, err.Error())
+			default:
+				writeErr(w, 409, err.Error())
+			}
+			return
+		}
+		writeJSON(w, 200, req)
 	})
 	mux.HandleFunc("GET /api/blobs/{rel...}", s.serveBlob)
 

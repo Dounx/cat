@@ -295,7 +295,7 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 		if step.Action == "reply" || step.Action == "send" {
 			stopTyping(target)
 		}
-		res := e.runStep(runCtx, step, ev, r.ID, run.ID, env)
+		res := e.runStep(runCtx, step, ev, r.ID, r.Name, run.ID, env)
 		run.Steps = append(run.Steps, res)
 		if res.Output != nil {
 			outputs[step.ID] = res.Output
@@ -311,7 +311,7 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 				tctx, tcancel := context.WithCancel(runCtx)
 				typingStops[target] = tcancel
 				params := res.Params
-				ictx := plugin.InvokeContext{Event: ev, RuleID: r.ID, RunID: run.ID, StepID: step.ID}
+				ictx := plugin.InvokeContext{Event: ev, RuleID: r.ID, RuleName: r.Name, RunID: run.ID, StepID: step.ID}
 				go func(tgt string, p map[string]any) {
 					tk := time.NewTicker(TypingInterval)
 					defer tk.Stop()
@@ -369,7 +369,7 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 				recorded = true
 				e.saveRun(run)
 			}
-			res, verdict := e.judge(runCtx, n, ev, r.ID, run.ID, env)
+			res, verdict := e.judge(runCtx, n, ev, r.ID, r.Name, run.ID, env)
 			if runCtx.Err() != nil {
 				run.Steps = append(run.Steps, res)
 				e.saveRun(run)
@@ -588,7 +588,7 @@ func (e *Engine) TryRule(r rules.Rule, eventID string) (*store.Run, error) {
 // choices to pick from (yes or no when the node lists none). The instance
 // answers with the one it picked under "choice". The verdict is that choice,
 // or for a yes-or-no condition whether it was yes.
-func (e *Engine) judge(runCtx context.Context, n *rules.Node, ev *event.Event, ruleID, runID string, env map[string]any) (store.StepResult, any) {
+func (e *Engine) judge(runCtx context.Context, n *rules.Node, ev *event.Event, ruleID, ruleName, runID string, env map[string]any) (store.StepResult, any) {
 	step := n.Step
 	if step.Action == "" {
 		step.Action = rules.JudgeAction
@@ -606,7 +606,7 @@ func (e *Engine) judge(runCtx context.Context, n *rules.Node, ev *event.Event, r
 		list[i] = c
 	}
 	step.Params["choices"] = list
-	res := e.runStep(runCtx, step, ev, ruleID, runID, env)
+	res := e.runStep(runCtx, step, ev, ruleID, ruleName, runID, env)
 	if res.Error != "" {
 		return res, nil
 	}
@@ -633,7 +633,7 @@ func (e *Engine) saveRun(run *store.Run) {
 }
 
 // runStep carries out one step, its parameters rendered with env.
-func (e *Engine) runStep(runCtx context.Context, step rules.Step, ev *event.Event, ruleID, runID string, env map[string]any) store.StepResult {
+func (e *Engine) runStep(runCtx context.Context, step rules.Step, ev *event.Event, ruleID, ruleName, runID string, env map[string]any) store.StepResult {
 	target := step.Instance
 	if target == rules.SourceInstance {
 		target = ev.Source
@@ -669,7 +669,7 @@ func (e *Engine) runStep(runCtx context.Context, step rules.Step, ev *event.Even
 	}
 	for attempt := 1; ; attempt++ {
 		ctx, cancel := context.WithTimeout(runCtx, timeout)
-		out, err := e.Invoke(ctx, target, step.Action, params, plugin.InvokeContext{Event: ev, RuleID: ruleID, RunID: runID, StepID: step.ID})
+		out, err := e.Invoke(ctx, target, step.Action, params, plugin.InvokeContext{Event: ev, RuleID: ruleID, RuleName: ruleName, RunID: runID, StepID: step.ID})
 		cancel()
 		res.Output, res.Error = out, ""
 		if attempt > 1 {

@@ -122,6 +122,7 @@ type IngressResponse struct {
 type InvokeContext struct {
 	Event      *event.Event `json:"event,omitempty"`
 	RuleID     string       `json:"rule_id,omitempty"`
+	RuleName   string       `json:"rule_name,omitempty"`
 	RunID      string       `json:"run_id,omitempty"`
 	InstanceID string       `json:"instance_id,omitempty"`
 	// StepID is the step, or the node of a graph, the action is carried out

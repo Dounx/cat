@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
-import { auth, get } from './api'
-import type { HubEvent, Instance, LogEntry, Plugin, Rule, Run, Update } from './types'
+import { auth, get, post } from './api'
+import type { ApprovalRequest, HubEvent, Instance, LogEntry, Plugin, Rule, Run, Update } from './types'
 
 const MAX_EVENTS = 500
 const MAX_RUNS = 300
@@ -12,6 +12,7 @@ export const useHub = defineStore('hub', {
     rules: [] as Rule[],
     events: [] as HubEvent[],
     runs: [] as Run[],
+    approvals: [] as ApprovalRequest[],
     // where the hub is reached from outside, when set: see ingressBase
     publicURL: '',
     marketURL: '',
@@ -48,6 +49,7 @@ export const useHub = defineStore('hub', {
     // The rules with a trigger that listens to every connection: they name
     // none, and still take what any of them sends.
     rulesHearingAll: (s) => s.rules.filter(hearsAll),
+    pendingApprovals: (s) => s.approvals.filter((a) => a.status === 'pending'),
   },
   actions: {
     async init() {
@@ -59,21 +61,40 @@ export const useHub = defineStore('hub', {
     },
     async reload() {
       try {
-        const [plugins, instances, rules, events, runs, settings] = await Promise.all([
+        const [plugins, instances, rules, events, runs, settings, approvals] = await Promise.all([
           get<Plugin[]>('/plugins'),
           get<Instance[]>('/instances'),
           get<Rule[]>('/rules'),
           get<HubEvent[]>('/events?limit=200'),
           get<Run[]>('/runs?limit=200'),
           get<{ public_url: string; market_url?: string }>('/settings'),
+          get<ApprovalRequest[]>('/approvals').catch(() => [] as ApprovalRequest[]),
         ])
-        Object.assign(this, { plugins, instances, rules, events, runs, loaded: true, needAuth: false })
+        Object.assign(this, { plugins, instances, rules, events, runs, approvals, loaded: true, needAuth: false })
         this.publicURL = settings.public_url
         this.marketURL = settings.market_url || ''
         this.update = await get<Update>('/update')
       } catch {
         /* 401 is surfaced through needAuth */
       }
+    },
+    upsertApproval(req: ApprovalRequest) {
+      const i = this.approvals.findIndex((a) => a.id === req.id)
+      if (i >= 0) this.approvals[i] = req
+      else this.approvals.unshift(req)
+      this.approvals.sort((a, b) => {
+        const pa = a.status === 'pending' ? 1 : 0
+        const pb = b.status === 'pending' ? 1 : 0
+        if (pa !== pb) return pb - pa
+        const ta = new Date(a.decided_at || a.created_at).getTime()
+        const tb = new Date(b.decided_at || b.created_at).getTime()
+        return tb - ta
+      })
+    },
+    async decideApproval(id: string, decision: 'approve' | 'reject', comment = '') {
+      const updated = await post<ApprovalRequest>(`/approvals/${encodeURIComponent(id)}/decide`, { decision, comment })
+      this.upsertApproval(updated)
+      return updated
     },
     async reloadRules() {
       this.rules = await get<Rule[]>('/rules')
@@ -124,6 +145,9 @@ export const useHub = defineStore('hub', {
       })
       es.addEventListener('log', (m) => {
         this.lastLog = JSON.parse((m as MessageEvent).data)
+      })
+      es.addEventListener('approval', (m) => {
+        this.upsertApproval(JSON.parse((m as MessageEvent).data))
       })
       // Other kinds (setup, download, ...) are exposed as the latest payload per kind.
       for (const kind of ['setup', 'download', 'plugins']) {

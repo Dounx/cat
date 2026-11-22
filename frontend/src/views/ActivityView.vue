@@ -4,10 +4,10 @@
 // taken for it.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronRight, Inbox, Plus, RotateCcw, Search, Square, Workflow } from 'lucide-vue-next'
+import { Check, ChevronRight, Inbox, Plus, RotateCcw, Search, ShieldCheck, Square, Workflow, X } from 'lucide-vue-next'
 import { useHub, clock, summarize } from '../hub'
 import { get, post } from '../api'
-import type { HubEvent, Rule, Run, StepResult } from '../types'
+import type { ApprovalRequest, HubEvent, Rule, Run, StepResult } from '../types'
 import { eventTitle } from '../labels'
 import PageHeader from '../components/PageHeader.vue'
 import Drawer from '../components/Drawer.vue'
@@ -144,12 +144,86 @@ async function cancelRun(r: Run) {
     cancelling.value = next
   }
 }
+
+const approvalComments = ref<Record<string, string>>({})
+const deciding = ref<Record<string, boolean>>({})
+const approvalById = computed(() => new Map(hub.approvals.map((a) => [a.id, a])))
+const approvalStatusText: Record<ApprovalRequest['status'], string> = {
+  pending: '待人工确认',
+  approved: '已同意',
+  rejected: '已拒绝',
+  expired: '已超时',
+}
+async function decide(req: ApprovalRequest, decision: 'approve' | 'reject') {
+  if (deciding.value[req.id]) return
+  deciding.value = { ...deciding.value, [req.id]: true }
+  try {
+    const comment = (approvalComments.value[req.id] || '').trim()
+    await hub.decideApproval(req.id, decision, comment)
+    delete approvalComments.value[req.id]
+    hub.notify(decision === 'approve' ? `已同意「${req.title}」，规则正在继续执行` : `已拒绝「${req.title}」`)
+  } catch (e: any) {
+    hub.notify(e.message || '处理失败', true)
+  } finally {
+    const next = { ...deciding.value }
+    delete next[req.id]
+    deciding.value = next
+  }
+}
+async function openEventById(id: string) {
+  if (!id) return
+  selected.value =
+    pageEvents.value.find((e) => e.id === id) ||
+    hub.events.find((e) => e.id === id) ||
+    (await get<HubEvent>(`/events/${id}`).catch(() => null)) ||
+    null
+}
+function resumedLabel(r: Run): string {
+  const first = r.steps?.[0]
+  if (first?.instance === 'delay') return '延时后接着运行'
+  if (first?.instance === 'approval') return '人工确认后接着运行'
+  if (first?.instance === 'collect') return '攒够后接着运行'
+  return '恢复后接着运行'
+}
+function approvalOfStep(s: StepResult): ApprovalRequest | undefined {
+  const id = typeof s.output?.approval_id === 'string' ? s.output.approval_id : ''
+  return id ? approvalById.value.get(id) : undefined
+}
+function heldDot(s: StepResult): string {
+  if (s.error) return 'bad'
+  if (s.held) {
+    if (s.instance === 'approval') {
+      const ap = approvalOfStep(s)
+      if (!ap || ap.status === 'pending') return 'warn'
+      return ap.status === 'approved' ? 'ok' : ''
+    }
+    if (s.instance === 'delay' || s.instance === 'collect') return 'warn'
+  }
+  return 'ok'
+}
+
 // One line for what became of an event.
 function outcome(e: HubEvent): { dot: string; text: string } | null {
   const runs = runsOf.value.get(e.id)
   if (!runs?.length) return null
-  const worst = runs.find(bad) || runs.find((r) => r.status === 'running') || runs[0]
   const names = [...new Set(runs.map((r) => r.rule_name))]
+  const pending = hub.pendingApprovals.find((a) => a.event_id === e.id)
+  if (pending) return { dot: 'warn', text: `${pending.rule_name || names.join('、')} · 待人工确认` }
+  const worst = runs.find(bad) || runs.find((r) => r.status === 'running') || runs[0]
+  if (worst === runs[0] && worst.status === 'ok') {
+    const heldStep = worst.steps?.find((s) => s.held)
+    if (heldStep) {
+      if (heldStep.instance === 'delay') return { dot: 'warn', text: `${names.join('、')} · 延时等待中` }
+      if (heldStep.instance === 'approval') {
+        const ap = approvalOfStep(heldStep)
+        if (ap?.status === 'rejected') return { dot: '', text: `${names.join('、')} · 已拒绝` }
+        if (ap?.status === 'expired') return { dot: '', text: `${names.join('、')} · 已超时` }
+        return { dot: 'warn', text: `${names.join('、')} · 待人工确认` }
+      }
+      if (heldStep.instance === 'collect') return { dot: 'warn', text: `${names.join('、')} · 等待凑齐` }
+      if (heldStep.instance === 'cooldown') return { dot: '', text: `${names.join('、')} · 冷却跳过` }
+    }
+  }
   return { dot: statusDot[worst.status], text: `${names.join('、')} · ${statusText[worst.status]}` }
 }
 function duration(r: Run): string {
@@ -233,6 +307,65 @@ async function replay() {
     </PageHeader>
 
     <div class="gutter flex-1 overflow-y-auto pb-6">
+      <section v-if="hub.pendingApprovals.length" class="mb-4" data-testid="pending-approvals">
+        <div class="mb-2 flex items-center gap-2">
+          <ShieldCheck :size="15" class="text-warn" />
+          <h2 class="text-xs font-semibold tracking-wide text-ink">待人工确认</h2>
+          <span
+            class="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-warn px-1.5 text-[10px] font-semibold text-white tabular-nums"
+            >{{ hub.pendingApprovals.length }}</span
+          >
+        </div>
+        <TransitionGroup tag="div" name="item" class="space-y-2.5">
+          <div
+            v-for="req in hub.pendingApprovals"
+            :key="req.id"
+            class="card border-warn/45 px-4 py-3.5"
+            data-testid="approval-card"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-mute">
+              <span class="flex items-center gap-2">
+                <span class="dot warn" />
+                <span class="font-medium text-ink">{{ req.rule_name || req.rule_id }}</span>
+                <span class="font-mono tabular-nums">{{ clock(req.created_at) }}</span>
+                <span v-if="req.expires_at" class="chip"
+                  >超时：{{ clock(req.expires_at) }}（{{
+                    req.on_timeout === 'approve' ? '自动同意' : '自动拒绝'
+                  }}）</span
+                >
+              </span>
+              <button
+                v-if="req.event_id"
+                class="btn btn-ghost !px-2 !py-0.5 !text-xs"
+                @click="openEventById(req.event_id)"
+              >
+                查看事件
+              </button>
+            </div>
+            <h3 class="mt-1.5 text-[14.5px] font-semibold text-ink">{{ req.title }}</h3>
+            <pre
+              v-if="req.detail"
+              class="mt-2 max-h-32 overflow-y-auto rounded-lg bg-sunken px-3 py-2 font-sans text-xs whitespace-pre-wrap text-ink/90"
+              >{{ req.detail }}</pre>
+            <div class="mt-3 flex flex-wrap items-center gap-2">
+              <input
+                v-model="approvalComments[req.id]"
+                class="input min-w-48 flex-1 text-xs"
+                placeholder="可选：填写审批备注…"
+                :disabled="deciding[req.id]"
+                @keydown.enter="decide(req, 'approve')"
+              />
+              <button class="btn btn-danger" :disabled="deciding[req.id]" @click="decide(req, 'reject')">
+                <X :size="14" />拒绝
+              </button>
+              <button class="btn btn-primary" :disabled="deciding[req.id]" @click="decide(req, 'approve')">
+                <Check :size="14" />{{ deciding[req.id] ? '处理中…' : '同意继续' }}
+              </button>
+            </div>
+          </div>
+        </TransitionGroup>
+      </section>
+
       <div v-if="!filtered.length" class="card empty">
         <Inbox :size="28" :stroke-width="1.5" />
         <template v-if="filtering"><p>没有符合筛选条件的记录。</p></template>
@@ -372,7 +505,7 @@ async function replay() {
           <div class="flex items-center justify-between gap-3 px-4 py-2.5 text-sm">
             <span class="min-w-0 truncate font-medium"
               >{{ r.rule_name }}<span v-if="r.replay" class="chip ml-2">重放 / 试运行</span
-              ><span v-if="r.resumed" class="chip ml-2">攒够后接着运行</span></span
+              ><span v-if="r.resumed" class="chip ml-2">{{ resumedLabel(r) }}</span></span
             >
             <span class="flex shrink-0 items-center gap-1.5 text-xs text-mute"
               ><span class="dot" :class="statusDot[r.status]" />{{ statusText[r.status] }}
@@ -397,7 +530,7 @@ async function replay() {
                 <span class="truncate">{{ stepTitle(s) }}</span>
               </span>
               <span class="flex shrink-0 items-center gap-1.5 font-mono text-xs text-mute">
-                <span class="dot" :class="s.error ? 'bad' : 'ok'" /><template v-if="s.attempts"
+                <span class="dot" :class="heldDot(s)" /><template v-if="s.attempts"
                   >试了 {{ s.attempts }} 次 · </template
                 >{{ s.duration_ms }} ms
               </span>
@@ -411,6 +544,49 @@ async function replay() {
                   ? s.output.note
                   : `已收下，现在攒了 ${s.output?.count ?? '?'} 条。规则先停在这里，后面的等这一批发出时再运行。`
               }}
+            </p>
+            <div
+              v-if="s.held && s.instance === 'approval' && approvalOfStep(s)"
+              class="mt-2 rounded-lg border border-line bg-sunken/60 px-3 py-2 text-xs"
+            >
+              <template v-if="approvalOfStep(s)!.status === 'pending'">
+                <div class="flex flex-wrap items-center gap-2">
+                  <input
+                    v-model="approvalComments[approvalOfStep(s)!.id]"
+                    class="input min-w-36 flex-1 bg-surface text-xs"
+                    placeholder="可选：填写审批备注…"
+                    :disabled="deciding[approvalOfStep(s)!.id]"
+                  />
+                  <button
+                    class="btn btn-danger !px-2.5 !py-1 !text-xs"
+                    :disabled="deciding[approvalOfStep(s)!.id]"
+                    @click="decide(approvalOfStep(s)!, 'reject')"
+                  >
+                    <X :size="13" />拒绝
+                  </button>
+                  <button
+                    class="btn btn-primary !px-2.5 !py-1 !text-xs"
+                    :disabled="deciding[approvalOfStep(s)!.id]"
+                    @click="decide(approvalOfStep(s)!, 'approve')"
+                  >
+                    <Check :size="13" />同意继续
+                  </button>
+                </div>
+              </template>
+              <div v-else class="flex flex-wrap items-center gap-2 text-mute">
+                <span class="chip">{{ approvalStatusText[approvalOfStep(s)!.status] }}</span>
+                <span v-if="approvalOfStep(s)!.comment">{{ approvalOfStep(s)!.comment }}</span>
+                <span v-if="approvalOfStep(s)!.decided_at" class="font-mono tabular-nums">{{
+                  clock(approvalOfStep(s)!.decided_at!)
+                }}</span>
+              </div>
+            </div>
+            <p
+              v-if="r.resumed === s.id && s.instance === 'approval' && s.output"
+              class="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-mute"
+            >
+              <span class="chip">{{ s.output.approved ? '人工确认：已同意' : '人工确认：已拒绝' }}</span>
+              <span v-if="typeof s.output.comment === 'string' && s.output.comment">备注：{{ s.output.comment }}</span>
             </p>
             <details class="mt-1.5 text-xs text-mute">
               <summary class="cursor-pointer">用了什么、得到什么</summary>

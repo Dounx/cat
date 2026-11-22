@@ -50,11 +50,27 @@ const failed = (p: Pass) => !!(p.visit.error || p.step?.error)
 // An action the run was at when the hub went down.
 const unfinished = (n: ENode, p: Pass) => props.run.status === 'interrupted' && n.kind === 'action' && !p.step
 
-// What to say of a step that held the run (dedup/cooldown skip or collect batch).
+// What to say of a step that held the run (delay, approval, state dedup, cooldown or collect).
 const held = (s: StepResult) =>
   typeof s.output?.note === 'string' && s.output.note
     ? s.output.note
     : `已收下，现在攒了 ${s.output?.count ?? '?'} 条，后面的等这一批发出时再运行`
+
+function heldTitle(s: StepResult): string {
+  if (s.instance === 'delay') return '延时等待中'
+  if (s.instance === 'approval') return '等待人工确认'
+  if (s.instance === 'cooldown') return '冷却跳过'
+  if (s.instance === 'state') return '重复跳过'
+  return typeof s.output?.note === 'string' && s.output.note ? '已跳过' : '已收下，先停在这里'
+}
+
+const resumedTitle = computed(() => {
+  const first = props.run.steps?.[0]
+  if (first?.instance === 'delay') return '延时后接着运行'
+  if (first?.instance === 'approval') return '人工确认后接着运行'
+  if (first?.instance === 'collect') return '攒够后接着运行'
+  return '恢复后接着运行'
+})
 
 // What to say of an action the run came to and has nothing from: it is still
 // at it, or the hub went down while it was.
@@ -157,7 +173,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
         </button>
         <h2 class="min-w-0 truncate text-[15px] font-semibold">{{ run.rule_name }}</h2>
         <span v-if="run.replay" class="chip shrink-0">重放 / 试运行</span>
-        <span v-if="run.resumed" class="chip shrink-0">攒够后接着运行</span>
+        <span v-if="run.resumed" class="chip shrink-0">{{ resumedTitle }}</span>
         <span class="flex shrink-0 items-center gap-1.5 text-xs text-mute">
           <span class="dot" :class="statusDot[run.status]" />{{ statusText[run.status] }}
           <template v-if="duration">· {{ duration }}</template>
@@ -253,19 +269,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
               <template v-if="picked.length > 1">第 {{ i + 1 }} 次 · </template>
               <template v-if="node.kind === 'condition'">{{ editor.verdict(node, p.visit) }}</template>
               <template v-else>{{
-                p.step
-                  ? p.step.error
-                    ? '失败'
-                    : p.step.held
-                      ? typeof p.step.output?.note === 'string' && p.step.output.note
-                        ? p.step.instance === 'cooldown'
-                          ? '冷却跳过'
-                          : p.step.instance === 'state'
-                            ? '重复跳过'
-                            : '已跳过'
-                        : '已收下，先停在这里'
-                      : '完成'
-                  : going
+                p.step ? (p.step.error ? '失败' : p.step.held ? heldTitle(p.step) : '完成') : going
               }}</template>
             </span>
             <span class="flex shrink-0 items-center gap-1.5 font-mono text-xs text-mute">

@@ -14,7 +14,9 @@ import {
   Layers,
   Play,
   Reply,
+  ShieldCheck,
   Terminal,
+  Timer,
   Webhook,
   Wrench,
   Zap,
@@ -144,8 +146,29 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
   // A line of what the action is given: its first free-text parameter, which
   // says more than a choice such as the HTTP method.
   function actionSummary(n: ENode): string {
-    const props = specOf(n)?.params?.properties || {}
-    const text = Object.entries(n.params || {}).find(([k, v]) => typeof v === 'string' && v.trim() && !props[k]?.enum)
+    if (n.instance === 'delay') {
+      const secs = n.params?.seconds ?? 60
+      const note = typeof n.params?.note === 'string' ? n.params.note.trim() : ''
+      return note ? `等待 ${secs} 秒 · ${named(note, n)}` : `等待 ${secs} 秒`
+    }
+    if (n.instance === 'cooldown') {
+      const secs = n.params?.seconds ?? 60
+      const key = typeof n.params?.key === 'string' ? n.params.key.trim() : ''
+      return key ? `冷却 ${secs} 秒 · ${named(key, n)}` : `冷却 ${secs} 秒`
+    }
+    if (n.instance === 'approval') {
+      const title = typeof n.params?.title === 'string' ? n.params.title.trim() : ''
+      if (title) return named(title, n).replace(/\s+/g, ' ')
+    }
+    const schema = specOf(n)?.params
+    const props = schema?.properties || {}
+    const order = schema?.['x-order'] || []
+    const entries = Object.entries(n.params || {}).sort(([a], [b]) => {
+      const ra = order.indexOf(a)
+      const rb = order.indexOf(b)
+      return (ra < 0 ? order.length : ra) - (rb < 0 ? order.length : rb)
+    })
+    const text = entries.find(([k, v]) => typeof v === 'string' && v.trim() && !props[k]?.enum)
     return text ? named(String(text[1]), n).replace(/\s+/g, ' ') : ''
   }
   // Start an action's parameters from the defaults its schema declares.
@@ -165,7 +188,9 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
     database: Database,
     globe: Globe,
     layers: Layers,
+    'shield-check': ShieldCheck,
     terminal: Terminal,
+    timer: Timer,
     webhook: Webhook,
   }
   // The picture for whatever an action is sent to.

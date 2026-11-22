@@ -10,11 +10,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/dounx/cat/core/builtin"
 	"github.com/dounx/cat/core/engine"
 	"github.com/dounx/cat/core/event"
 	"github.com/dounx/cat/core/plugin"
+	"github.com/dounx/cat/core/rules"
 	"github.com/dounx/cat/core/store"
 )
 
@@ -266,5 +270,159 @@ func TestInstanceLogsAPI(t *testing.T) {
 	}
 	if len(entries) == 0 || entries[0].Level != "error" {
 		t.Fatalf("expected error log entry, got %+v", entries)
+	}
+}
+
+func TestDelayAndApprovalAPI(t *testing.T) {
+	origDelay := builtin.DelayTick
+	builtin.DelayTick = 20 * time.Millisecond
+	defer func() { builtin.DelayTick = origDelay }()
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	eng := engine.New(st, t.TempDir(), nil)
+	for _, b := range builtin.All() {
+		eng.RegisterPlugin(b.Manifest, b.Factory)
+	}
+	if err := eng.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(eng.Stop)
+
+	var gotMu sync.Mutex
+	var gotBodies []string
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotMu.Lock()
+		gotBodies = append(gotBodies, string(b))
+		gotMu.Unlock()
+		w.WriteHeader(200)
+	}))
+	defer sink.Close()
+
+	srv := httptest.NewServer((&Server{Engine: eng}).Handler())
+	defer srv.Close()
+
+	// Wait for singletons to be running.
+	waitRunning := func(instID string) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if v, ok := eng.Instance(instID); ok && v.Status == engine.StatusRunning {
+				return
+			}
+			time.Sleep(15 * time.Millisecond)
+		}
+		t.Fatalf("instance %s did not reach running", instID)
+	}
+	hook, err := eng.SaveInstance(store.Instance{Plugin: "webhook", Name: "Hook", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(hook.ID)
+	waitRunning(builtin.DelayID)
+	waitRunning(builtin.ApprovalID)
+	waitRunning("http")
+
+	_, err = eng.SaveRule(rules.Rule{
+		Name:    "部署审批流",
+		Enabled: true,
+		Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1"}, Sources: []string{hook.ID}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "d1", Instance: builtin.DelayID, Action: "wait", Params: map[string]any{"seconds": 0.05, "note": "短延时"}}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "a1", Instance: builtin.ApprovalID, Action: "request", Params: map[string]any{"title": "确认执行部署", "detail": "{{ payload.text }}"}}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "h1", Instance: "http", Action: "request", Params: map[string]any{"url": sink.URL, "body": "approved={{ steps.a1.approved }} comment={{ steps.a1.comment }}"}}},
+			},
+			Edges: []rules.Edge{
+				{From: "t1", To: "d1"},
+				{From: "d1", To: "a1"},
+				{From: "a1", To: "h1"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Trigger webhook.
+	res, err := http.Post(srv.URL+"/ingress/"+hook.ID, "application/json", strings.NewReader(`{"text":"deploy v2.0"}`))
+	if err != nil || res.StatusCode != http.StatusAccepted {
+		t.Fatalf("ingress failed: res=%v err=%v", res, err)
+	}
+	res.Body.Close()
+
+	// Wait for delay to resume into a pending approval.
+	var pending builtin.ApprovalRequest
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		r, err := http.Get(srv.URL + "/api/approvals?status=pending")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var list []builtin.ApprovalRequest
+		_ = json.NewDecoder(r.Body).Decode(&list)
+		r.Body.Close()
+		if len(list) == 1 {
+			pending = list[0]
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if pending.ID == "" || pending.Title != "确认执行部署" || pending.Detail != "deploy v2.0" || pending.RuleName != "部署审批流" {
+		t.Fatalf("expected pending approval, got %+v", pending)
+	}
+
+	// Invalid decision -> 400.
+	badRes, _ := http.Post(srv.URL+"/api/approvals/"+pending.ID+"/decide", "application/json", strings.NewReader(`{"decision":"maybe"}`))
+	badRes.Body.Close()
+	if badRes.StatusCode != 400 {
+		t.Fatalf("invalid decision status = %d, want 400", badRes.StatusCode)
+	}
+
+	// Missing id -> 404.
+	missRes, _ := http.Post(srv.URL+"/api/approvals/no-such-id/decide", "application/json", strings.NewReader(`{"decision":"approve"}`))
+	missRes.Body.Close()
+	if missRes.StatusCode != 404 {
+		t.Fatalf("missing approval status = %d, want 404", missRes.StatusCode)
+	}
+
+	// Approve -> 200 and downstream HTTP receives approval details.
+	okRes, err := http.Post(srv.URL+"/api/approvals/"+pending.ID+"/decide", "application/json", strings.NewReader(`{"decision":"approve","comment":"LGTM"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decided builtin.ApprovalRequest
+	_ = json.NewDecoder(okRes.Body).Decode(&decided)
+	okRes.Body.Close()
+	if okRes.StatusCode != 200 || decided.Status != builtin.ApprovalApproved || decided.Comment != "LGTM" {
+		t.Fatalf("approve failed: status=%d decided=%+v", okRes.StatusCode, decided)
+	}
+
+	// Deciding again -> 409.
+	againRes, _ := http.Post(srv.URL+"/api/approvals/"+pending.ID+"/decide", "application/json", strings.NewReader(`{"decision":"reject"}`))
+	againRes.Body.Close()
+	if againRes.StatusCode != 409 {
+		t.Fatalf("second decide status = %d, want 409", againRes.StatusCode)
+	}
+
+	// Wait for resumed downstream HTTP action.
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		gotMu.Lock()
+		n := len(gotBodies)
+		gotMu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	gotMu.Lock()
+	defer gotMu.Unlock()
+	if len(gotBodies) != 1 || gotBodies[0] != "approved=true comment=LGTM" {
+		t.Fatalf("unexpected downstream body: %+v", gotBodies)
 	}
 }

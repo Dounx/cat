@@ -29,9 +29,9 @@ watch(
   () => route.path,
   () => nextTick(placeThumb),
 )
-// the dot beside 接入 makes its link wider
+// the dot beside 接入 or badge beside 记录 makes its link wider
 watch(
-  () => hub.troubled.length > 0,
+  () => [hub.troubled.length > 0, hub.pendingApprovals.length],
   () => nextTick(placeThumb),
 )
 onBeforeUnmount(() => window.removeEventListener('resize', placeThumb))
@@ -129,6 +129,13 @@ onMounted(async () => {
             class="dot bad !h-1.5 !w-1.5"
             :title="`${hub.troubled.length} 个接入出错了`"
           />
+          <!-- seen from every page: human-in-the-loop approvals waiting -->
+          <span
+            v-if="n.to === '/activity' && hub.pendingApprovals.length"
+            class="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-warn px-1 text-[10px] leading-none font-semibold text-white tabular-nums"
+            :title="`${hub.pendingApprovals.length} 条待人工确认`"
+            >{{ hub.pendingApprovals.length }}</span
+          >
         </RouterLink>
       </nav>
       <div class="flex items-center gap-3 justify-self-end text-xs text-mute">

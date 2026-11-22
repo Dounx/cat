@@ -3,9 +3,10 @@
 把各处来的事件接到一起，按规则判断，再触发动作。
 
 ```
-QQ / 飞书 / 钉钉 / Discord / Telegram / GitHub / 企业微信 / 邮件 / RSS / 网页变动 / 接口变动 / 定时 / Webhook ──▶ 规则（条件、分支）──▶ 动作
+QQ / 飞书 / 钉钉 / Discord / Telegram / GitHub / 企业微信 / 邮件 / RSS / 网页变动 / 接口变动 / 定时 / Webhook ──▶ 规则（条件、分支、延时、人工确认）──▶ 动作
                                                                                        ├─ 交给 AI（Claude Desktop / ChatGPT Desktop / DeepSeek Harness）
                                                                                        ├─ 原路回复、跨平台转发
+                                                                                       ├─ 延时等待、人工确认、攒一批、冷却限流
                                                                                        └─ 发 HTTP 请求、跑脚本
 ```
 

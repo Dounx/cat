@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dounx/cat/core/builtin"
 	"github.com/dounx/cat/core/event"
 	"github.com/dounx/cat/core/id"
 	"github.com/dounx/cat/core/plugin"
@@ -353,6 +354,11 @@ func (e *Engine) launch(rec store.Instance) {
 	e.mu.RUnlock()
 	e.giveTriggers(r, inst, asked)
 	e.trigMu.Unlock()
+	if am, ok := inst.(builtin.ApprovalManager); ok {
+		am.SetApprovalNotifier(func(req builtin.ApprovalRequest) {
+			e.publish(Message{Kind: "approval", Data: req})
+		})
+	}
 	go func() {
 		if err := inst.Start(ctx, &host{e: e, rec: rec}); err != nil {
 			e.setStatus(r, StatusError, err.Error())
@@ -505,6 +511,52 @@ func (e *Engine) Invoke(ctx context.Context, instanceID, action string, params m
 	}
 	ictx.InstanceID = instanceID
 	return inst.Invoke(ctx, action, params, ictx)
+}
+
+func (e *Engine) approvalManager() (builtin.ApprovalManager, error) {
+	inst, err := e.instance(builtin.ApprovalID)
+	if err != nil {
+		return nil, err
+	}
+	am, ok := inst.(builtin.ApprovalManager)
+	if !ok {
+		return nil, fmt.Errorf("人工确认插件未就绪")
+	}
+	return am, nil
+}
+
+// ListApprovals returns pending and recent human-in-the-loop approval requests.
+func (e *Engine) ListApprovals() []builtin.ApprovalRequest {
+	am, err := e.approvalManager()
+	if err != nil {
+		return []builtin.ApprovalRequest{}
+	}
+	list := am.ListApprovals()
+	if len(list) == 0 {
+		return []builtin.ApprovalRequest{}
+	}
+	e.mu.RLock()
+	ruleNames := make(map[string]string, len(e.rules))
+	for _, r := range e.rules {
+		ruleNames[r.ID] = r.Name
+	}
+	e.mu.RUnlock()
+	for i := range list {
+		if list[i].RuleName == "" {
+			list[i].RuleName = ruleNames[list[i].RuleID]
+		}
+	}
+	return list
+}
+
+// DecideApproval approves or rejects a pending approval request and resumes its
+// rule step when applicable.
+func (e *Engine) DecideApproval(approvalID, decision, comment string) (builtin.ApprovalRequest, error) {
+	am, err := e.approvalManager()
+	if err != nil {
+		return builtin.ApprovalRequest{}, err
+	}
+	return am.DecideApproval(approvalID, decision, comment)
 }
 
 // ---- host ----
