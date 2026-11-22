@@ -7,7 +7,7 @@ Run after the web UI is built (`make frontend`, catd embeds it) and after
 scripts/build-market.py, whose plugin archives in dist/market are unpacked
 into each package. Output goes to dist/release:
 
-    cat-<version>-<os>-<arch>.tar.gz  (.zip on Windows)
+    catd-<version>-<os>-<arch>.tar.gz  (.zip on Windows)
         catd
         plugins/<id>/plugin.json, cat-plugin-<id>
     SHA256SUMS
@@ -39,7 +39,7 @@ def main():
     archives = []
     for platform in platforms:
         goos, goarch = platform.split("/")
-        name = f"cat-{version}-{goos}-{goarch}"
+        name = f"catd-{version}-{goos}-{goarch}"
         stage = os.path.join(OUT, name)
         print(f"package {name}", flush=True)
         env = dict(os.environ, GOOS=goos, GOARCH=goarch, CGO_ENABLED="0")

@@ -6,12 +6,12 @@ version of itself.
 
 The directory (searched with its subdirectories) holds the release's
 archives: the desktop app's (Cat-<tag>-<os>-<arch>) and catd's
-(cat-<tag>-<os>-<arch>). The base URL is where they will be downloaded from,
+(catd-<tag>-<os>-<arch>). The base URL is where they will be downloaded from,
 by file name. update.json is written into the directory.
 """
 import hashlib, json, os, re, sys
 
-NAME = re.compile(r"^(Cat|cat)-.+-(macos|darwin|linux|windows)-(amd64|arm64)\.(zip|tar\.gz)$")
+NAME = re.compile(r"^(Cat|catd)-.+-(macos|darwin|linux|windows)-(amd64|arm64)\.(zip|tar\.gz)$")
 
 
 def main():

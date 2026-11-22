@@ -341,7 +341,7 @@ git tag v0.2.0 && git push origin v0.2.0
 
 发布流程（`.github/workflows/release.yml`）先跑一遍 CI，再把这些放进 GitHub Release：
 
-- `cat-<版本>-<系统>-<架构>.tar.gz`（Windows 是 `.zip`）：`catd` 和全部官方插件，解压即可运行；`SHA256SUMS` 是它们的校验和。
+- `catd-<版本>-<系统>-<架构>.tar.gz`（Windows 是 `.zip`）：`catd` 和全部官方插件，解压即可运行；`SHA256SUMS` 是它们的校验和。
 - 桌面应用，都没有代码签名：
   - `Cat-<版本>-macos-arm64.zip`：首次打开需要在「系统设置 → 隐私与安全性」里放行。
   - `Cat-<版本>-linux-<架构>.tar.gz`（免安装目录）和 `.deb`（装到 `/opt/cat`，依赖 GTK 4 与 WebKitGTK 6.0），有 amd64 和 arm64。

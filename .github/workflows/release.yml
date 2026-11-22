@@ -138,6 +138,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           find assets -type f | sort
+          # GitHub release asset names collide case-insensitively and fail with 404.
+          dupes=$(find assets -type f -exec basename {} \; | tr '[:upper:]' '[:lower:]' | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "duplicate release asset names (case-insensitive):" >&2
+            echo "$dupes" >&2
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" --generate-notes --verify-tag \
             $(find assets -type f)
