@@ -23,7 +23,7 @@ const plugins = [
   plugin('claude', 'processor', ['chat']),
   plugin('rss', 'monitor', ['check']),
   plugin('schedule', 'monitor', []),
-  plugin('webhook', 'channel', []),
+  plugin('webhook', 'channel', ['respond']),
 ]
 const instance = (p: Plugin): Instance =>
   ({ id: p.id + '-1', plugin: p.id, name: p.name, enabled: true, config: {} }) as Instance

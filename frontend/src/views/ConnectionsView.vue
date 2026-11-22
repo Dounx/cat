@@ -341,6 +341,7 @@ const levelClass = (lvl: string) => {
               <span v-if="(hub.pluginOf(i.plugin)?.name || i.plugin) !== i.name" class="chip shrink-0">{{
                 hub.pluginOf(i.plugin)?.name || i.plugin
               }}</span>
+              <span v-if="i.plugin === 'webhook' && i.config?.sync_response" class="chip shrink-0">同步响应</span>
             </div>
             <div class="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-mute">
               <span class="dot" :class="statusDot[i.status]" />
