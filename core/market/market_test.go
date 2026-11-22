@@ -156,7 +156,7 @@ func TestMarketNotConfigured(t *testing.T) {
 }
 
 func TestMarketURLFuncAndDefaultURL(t *testing.T) {
-	if !strings.HasPrefix(market.DefaultURL, "https://") || !strings.HasSuffix(market.DefaultURL, "/index.json") {
+	if market.DefaultURL != "" {
 		t.Fatalf("unexpected DefaultURL: %q", market.DefaultURL)
 	}
 	st, _ := store.Open(":memory:")

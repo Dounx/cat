@@ -4,7 +4,6 @@ name: Release
 #   - catd plus the official plugins, one archive per platform
 #   - the desktop app: Cat.app for macOS, a tarball and a .deb for Linux, a zip
 #     for Windows
-#   - the plugin market: one zip per plugin and platform, and index.json
 #   - update.json, which running copies read to update themselves
 #
 # Running it by hand (workflow_dispatch) builds everything and keeps it as
@@ -39,11 +38,6 @@ jobs:
       - name: Build the web UI
         run: make frontend
 
-      # The index points at this release's own assets, so a published index
-      # keeps working after later releases.
-      - name: Build the plugin market
-        run: python3 scripts/build-market.py "${{ github.server_url }}/${{ github.repository }}/releases/download/${{ github.ref_name }}"
-
       - name: Package catd
         run: python3 scripts/build-release.py "${{ github.ref_name }}"
 
@@ -51,10 +45,7 @@ jobs:
         with:
           name: packages
           if-no-files-found: error
-          path: |
-            dist/release/*
-            dist/market/*.zip
-            dist/market/index.json
+          path: dist/release/*
 
   # The desktop shell is built natively: it needs each platform's webview.
   desktop-app:

@@ -47,8 +47,9 @@ type Listing struct {
 	Bundled          bool   `json:"bundled"`           // provided by the app itself, not the market
 }
 
-// DefaultURL is the official plugin market index from the latest release.
-const DefaultURL = "https://github.com/Dounx/cat/releases/latest/download/index.json"
+// DefaultURL is empty: all official plugins are bundled with Cat releases,
+// while users can point --market or settings at a third-party/self-hosted index.
+const DefaultURL = ""
 
 type Market struct {
 	// URL of the index; empty means no market is configured.

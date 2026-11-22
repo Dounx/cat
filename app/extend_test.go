@@ -59,3 +59,40 @@ func TestMCPInitializeReportsAppVersion(t *testing.T) {
 		t.Fatalf("serverInfo.version = %q, want %q", resp.Result.ServerInfo.Version, "0.1.0")
 	}
 }
+
+func TestMarketUnconfiguredReturnsCleanResponse(t *testing.T) {
+	prevLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	a, err := New(Options{
+		Addr:      "127.0.0.1:0",
+		DataDir:   t.TempDir(),
+		UpdateURL: "off",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = a.listener.Close()
+		_ = a.Store.Close()
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/market", nil)
+	rec := httptest.NewRecorder()
+	a.Server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Configured bool   `json:"configured"`
+		URL        string `json:"url"`
+		Error      string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Configured || resp.URL != "" || resp.Error != "" {
+		t.Fatalf("unexpected unconfigured market response: %+v", resp)
+	}
+}

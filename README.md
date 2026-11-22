@@ -47,7 +47,7 @@ make app
 | `--data` | `CAT_DATA` | 数据目录，默认 `~/.cat` |
 | `--token` | `CAT_TOKEN` | 访问令牌。监听非本机地址时必须设置 |
 | `--plugins` | `CAT_PLUGINS` | 额外的插件目录 |
-| `--market` | `CAT_MARKET` | 插件市场索引地址；填 `off` 关闭（默认读取最新 Release 的 `index.json`） |
+| `--market` | `CAT_MARKET` | 可选的第三方/自建插件市场索引地址（`index.json`）；默认关闭，官方插件已内置在安装包中 |
 | `--keep-events` | `CAT_KEEP_EVENTS` | 保留最近事件条数上限，默认 `20000`（裁剪时会同步清理孤立的运行记录） |
 | `--max-concurrent` | `CAT_MAX_CONCURRENT` | 全局规则并发执行上限，默认 `16` |
 | `--serialize-conversations` | `CAT_SERIALIZE_CONVERSATIONS` | 是否对同一「规则 + 来源 + 会话」的事件按到达顺序串行执行，默认 `true` |
@@ -347,13 +347,11 @@ git tag v0.2.0 && git push origin v0.2.0
   - `Cat-<版本>-linux-<架构>.tar.gz`（免安装目录）和 `.deb`（装到 `/opt/cat`，依赖 GTK 4 与 WebKitGTK 6.0），有 amd64 和 arm64。
   - `Cat-<版本>-windows-amd64.zip`：免安装目录，首次运行时 SmartScreen 可能提示，选「仍要运行」。
 - `update.json`：这一版的版本号，和每种安装包在每个平台上的下载地址与 SHA-256。运行中的 Cat 靠它更新自己（见下面的「自动更新」）。
-- 插件市场：每个插件每个平台一个 zip，加上 `index.json`。把 `--market` 指向 `https://github.com/<用户>/<仓库>/releases/latest/download/index.json` 就能一直用最新一版的市场。
 
 在 Actions 页面手动运行 Release 只构建、不发布，产物留在这次运行的附件里，可以用来试跑。本地也能打同样的包：
 
 ```bash
 make frontend
-python3 scripts/build-market.py <基础地址>   # 输出到 dist/market
 python3 scripts/build-release.py v0.2.0      # 输出到 dist/release
 python3 scripts/build-update.py v0.2.0 <基础地址> dist/release   # 在 dist/release 里写出 update.json
 ```

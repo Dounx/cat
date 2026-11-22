@@ -53,10 +53,20 @@ func (a *App) extend() error {
 		mux.HandleFunc("GET /api/market", func(w http.ResponseWriter, r *http.Request) {
 			eff := mk.EffectiveURL()
 			locked := strings.TrimSpace(a.opts.MarketURL) != ""
+			if eff == "" {
+				api.WriteJSON(w, 200, map[string]any{
+					"configured":  false,
+					"url":         "",
+					"default_url": market.DefaultURL,
+					"locked":      locked,
+					"plugins":     []any{},
+				})
+				return
+			}
 			list, err := mk.List(r.Context())
 			if err != nil {
 				api.WriteJSON(w, 200, map[string]any{
-					"configured":  eff != "",
+					"configured":  true,
 					"url":         eff,
 					"default_url": market.DefaultURL,
 					"locked":      locked,

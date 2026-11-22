@@ -29,7 +29,7 @@ func main() {
 	flag.StringVar(&opts.DataDir, "data", os.Getenv("CAT_DATA"), "data directory (default ~/.cat)")
 	flag.StringVar(&opts.Token, "token", os.Getenv("CAT_TOKEN"), "API token; required when listening on a non-loopback address")
 	plugins := flag.String("plugins", os.Getenv("CAT_PLUGINS"), "extra plugin directories, separated by "+string(os.PathListSeparator))
-	flag.StringVar(&opts.MarketURL, "market", os.Getenv("CAT_MARKET"), "plugin market index URL; \"off\" disables it (default: the latest release)")
+	flag.StringVar(&opts.MarketURL, "market", os.Getenv("CAT_MARKET"), "optional third-party plugin market index URL; \"off\" disables it")
 	flag.StringVar(&opts.UpdateURL, "update", os.Getenv("CAT_UPDATE"), "update manifest URL; \"off\" never updates (default: the latest release)")
 	flag.StringVar(&opts.UIDev, "ui-dev", os.Getenv("CAT_UI_DEV"), "frontend dev server URL to proxy the UI to (development)")
 	flag.IntVar(&opts.KeepEvents, "keep-events", envInt("CAT_KEEP_EVENTS", engine.DefaultKeepEvents), "maximum number of recent events to retain")

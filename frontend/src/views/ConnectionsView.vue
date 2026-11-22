@@ -491,7 +491,7 @@ const levelClass = (lvl: string) => {
               </button>
             </div>
           </template>
-          <p v-if="market.error" class="mt-4 text-xs text-mute">
+          <p v-if="market.configured && market.error" class="mt-4 text-xs text-mute">
             这里只有已经装好的插件。插件市场用不了：{{ market.error }}
           </p>
           <button
@@ -533,7 +533,7 @@ const levelClass = (lvl: string) => {
         <template v-if="picking === 'plugins' || !market.locked" #footer>
           <button v-if="picking === 'plugins'" class="btn mr-auto" @click="picking = 'add'">返回添加</button>
           <button v-else class="btn btn-ghost mr-auto text-xs text-mute" @click="marketURL = hub.marketURL">
-            市场地址{{ hub.marketURL ? '（已自定义）' : '' }}
+            市场地址{{ hub.marketURL && hub.marketURL !== 'off' ? '（已配置）' : '' }}
           </button>
         </template>
       </Drawer>
@@ -593,10 +593,13 @@ const levelClass = (lvl: string) => {
         <input
           v-model="marketURL"
           class="input font-mono"
-          :placeholder="market.default_url || 'https://github.com/Dounx/cat/releases/latest/download/index.json'"
+          :placeholder="market.default_url || 'https://example.com/cat-market/index.json'"
           @keydown.enter="saveMarketURL"
         />
-        <p class="mt-2 text-xs text-mute">留空使用官方默认地址；填 <code class="chip">off</code> 可以关闭插件市场。</p>
+        <p class="mt-2 text-xs text-mute">
+          官方插件已随安装包内置；留空或填
+          <code class="chip">off</code> 不使用插件市场，填入第三方或自建市场的地址即可在线安装扩展插件。
+        </p>
         <template #footer>
           <button class="btn" @click="marketURL = null">取消</button>
           <button class="btn btn-primary" @click="saveMarketURL">保存</button>
