@@ -160,7 +160,7 @@ func (a *App) MCPURL() string {
 // mcpRoutes serves the hub's tools to AIs, and installs that server into the
 // harnesses on this machine.
 func (a *App) mcpRoutes(mux *http.ServeMux) {
-	mux.Handle("/api/mcp", &mcp.Server{Engine: a.Engine, Version: "1.0.0"})
+	mux.Handle("/api/mcp", &mcp.Server{Engine: a.Engine, Version: Version})
 	list := func() []mcp.Status {
 		out := []mcp.Status{}
 		for _, h := range mcp.Harnesses() {

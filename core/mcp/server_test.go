@@ -67,8 +67,12 @@ func TestServer(t *testing.T) {
 	}
 
 	init := rpc(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`)
-	if v := init["result"].(map[string]any)["protocolVersion"]; v != "2024-11-05" {
+	initRes := init["result"].(map[string]any)
+	if v := initRes["protocolVersion"]; v != "2024-11-05" {
 		t.Errorf("protocol version %v", v)
+	}
+	if v := initRes["serverInfo"].(map[string]any)["version"]; v != "test" {
+		t.Errorf("serverInfo.version = %v, want %q", v, "test")
 	}
 	if out := rpc(`{"jsonrpc":"2.0","method":"notifications/initialized"}`); out != nil {
 		t.Errorf("a notification was answered: %v", out)

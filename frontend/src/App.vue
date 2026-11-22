@@ -108,6 +108,12 @@ onMounted(async () => {
         >
           {{ checking ? '正在检查…' : hub.update.version }}
         </button>
+        <span
+          v-else-if="hub.update.version && hub.update.version !== 'dev'"
+          class="pt-0.5 text-xs text-mute tabular-nums"
+        >
+          {{ hub.update.version }}
+        </span>
       </div>
       <nav ref="navEl" class="seg">
         <span
