@@ -316,6 +316,9 @@ body {
   .dot.ok {
     @apply bg-ok;
   }
+  .dot.dry {
+    @apply bg-accent;
+  }
   .dot.bad {
     @apply bg-bad;
   }

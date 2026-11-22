@@ -124,6 +124,8 @@ export interface StepResult {
   // the step kept the run from going on, without having failed: what
   // follows runs later, as a run of its own (a batch being gathered)
   held?: boolean
+  // simulated without invoking the target instance
+  dry_run?: boolean
 }
 // One node a run came to: by which wire, and for a condition which way it
 // left (`branch`: none when it held, "else", or the choice picked) and what
@@ -146,6 +148,8 @@ export interface Run {
   finished_at?: string
   steps: StepResult[]
   replay?: boolean
+  // simulated trial run with no side effects
+  dry_run?: boolean
   // the step this run went on from, when an earlier run was held there
   resumed?: string
   // the path the event took through the rule's graph, node by node

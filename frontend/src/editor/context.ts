@@ -229,6 +229,7 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
       }
     if (n.kind === 'condition') {
       const failed = !!came?.error || !!ran?.error
+      const isDry = !!ran?.dry_run && !failed
       return {
         ...at,
         icon: n.ask ? BrainCircuit : Filter,
@@ -237,9 +238,11 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
         sub: verdict(n, came),
         outs: outcomes(n),
         bad: (n.ask && (!specOf(n) || !String(n.params?.prompt || '').trim())) || failed,
-        state: came || ran ? (failed ? 'bad' : 'ok') : undefined,
+        state: came || ran ? (failed ? 'bad' : isDry ? 'dry' : 'ok') : undefined,
+        badge: isDry ? '仅演练' : undefined,
       }
     }
+    const isDry = !!ran?.dry_run && !ran?.error
     return {
       ...at,
       icon: targetIcon(n.instance),
@@ -247,7 +250,8 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
       title: actionTitle(n),
       sub: actionSummary(n),
       bad: !specOf(n) || !!ran?.error,
-      state: ran ? (ran.error ? 'bad' : 'ok') : undefined,
+      state: ran ? (ran.error ? 'bad' : isDry ? 'dry' : 'ok') : undefined,
+      badge: isDry ? '仅演练' : undefined,
     }
   }
 

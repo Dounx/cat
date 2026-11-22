@@ -14,6 +14,7 @@ import {
   Play,
   Maximize,
   Redo2,
+  RotateCcw,
   Settings2,
   Share2,
   Trash2,
@@ -27,7 +28,28 @@ import { del, post, put } from '../api'
 import type { Rule, Run } from '../types'
 import { eventTitle } from '../labels'
 import { picksFor } from '../picks'
-import { ELSE, NODE_H, NODE_W, choicesOf, clipboard, fromRule, outcomes, toRule, type Doc, type ENode } from '../graph'
+import {
+  ELSE,
+  NODE_H,
+  NODE_W,
+  choicesOf,
+  clipboard,
+  fromRule,
+  outcomes,
+  toRule,
+  typesOf,
+  type Doc,
+  type ENode,
+} from '../graph'
+import {
+  buildSampleEvent,
+  cloneHistoryEvent,
+  defaultEventType,
+  formatMockEvent,
+  parseMockEventJson,
+  readMockPayloadText,
+  writeMockPayloadText,
+} from '../mockEvent'
 import { createEditor, provideEditor } from '../editor/context'
 import { useGraphEditing } from '../editor/editing'
 import { useHistory } from '../editor/history'
@@ -58,7 +80,19 @@ const panels = { trigger: TriggerPanel, condition: ConditionPanel, action: Actio
 
 const editor = createEditor(doc, sel)
 provideEditor(editor)
-const { node, scopedEvents, testEventId, trial, picker, connecting, triggerSchema } = editor
+const {
+  node,
+  sourceInstances,
+  triggers,
+  allListening,
+  eventsOf,
+  scopedEvents,
+  testEventId,
+  trial,
+  picker,
+  connecting,
+  triggerSchema,
+} = editor
 const { onMove, addNode, connect, splice, removeNode, removeEdge, unlink, removeSelected, paste, copy, tidy } =
   useGraphEditing(editor, canvas)
 const { state, settle, undo, redo } = useHistory(doc, () => {
@@ -78,21 +112,142 @@ function add(kind: ENode['kind'], make: (pick: string) => void = (pick) => addNo
 }
 
 // ---- trying the rule out ----
-// Run the rule as it stands, saved or not, for one event that came in, and
-// show on each action what became of it.
+// Run the rule as it stands, saved or not, against either a historical event or
+// a synthetic mock event, optionally in dry-run mode (no real side effects).
 const trying = ref(false)
 const tryBusy = ref(false)
-async function tryOut() {
+const tryMode = ref<'history' | 'mock'>('history')
+const dryRun = ref(true)
+const mockSource = ref('')
+const mockType = ref('')
+const mockJson = ref('')
+const mockDirty = ref(false)
+
+const mockEventTypes = computed(() => {
+  const pluginId = hub.instanceOf(mockSource.value)?.plugin || ''
+  const declared = pluginId ? eventsOf(pluginId) : []
+  const trigTypes = triggers.value.flatMap((t) => typesOf(t)).filter((t) => t && !t.includes('*'))
+  const seen = new Map<string, string>()
+  for (const e of declared) seen.set(e.type, e.title)
+  for (const t of trigTypes) if (!seen.has(t)) seen.set(t, t)
+  if (mockType.value && !seen.has(mockType.value)) seen.set(mockType.value, mockType.value)
+  return [...seen.entries()].map(([type, title]) => ({ type, title }))
+})
+
+const mockParsed = computed(() =>
+  parseMockEventJson(mockJson.value, {
+    source: mockSource.value,
+    plugin: hub.instanceOf(mockSource.value)?.plugin || '',
+    type: mockType.value,
+  }),
+)
+
+const mockPayloadText = computed({
+  get: () => readMockPayloadText(mockJson.value),
+  set: (text: string) => {
+    const next = writeMockPayloadText(mockJson.value, text)
+    if (next !== null) {
+      mockJson.value = next
+      mockDirty.value = true
+    }
+  },
+})
+
+function resetMockSample(source = mockSource.value, type = mockType.value) {
+  const pluginId = hub.instanceOf(source)?.plugin || ''
+  const ev = buildSampleEvent(source, pluginId, type)
+  mockSource.value = ev.source
+  mockType.value = ev.type
+  mockJson.value = formatMockEvent(ev)
+  mockDirty.value = false
+}
+
+function initMockFromTrigger() {
+  const t = triggers.value[0]
+  const src = t?.sources[0] || allListening.value[0]?.id || sourceInstances.value[0]?.id || ''
+  const pluginId = hub.instanceOf(src)?.plugin || ''
+  const explicitType = t ? typesOf(t).find((x) => x && !x.includes('*')) : undefined
+  const declaredType = pluginId ? eventsOf(pluginId)[0]?.type : undefined
+  const type = explicitType || declaredType || defaultEventType(pluginId)
+  resetMockSample(src, type)
+}
+
+function openTry() {
+  if (!mockJson.value) initMockFromTrigger()
+  tryMode.value = scopedEvents.value.length ? 'history' : 'mock'
+  trying.value = true
+}
+
+function onMockSourceChange() {
+  const pluginId = hub.instanceOf(mockSource.value)?.plugin || ''
+  const declared = pluginId ? eventsOf(pluginId) : []
+  if (declared.length && !declared.some((e) => e.type === mockType.value)) {
+    mockType.value = declared[0].type
+  } else if (!mockType.value) {
+    mockType.value = defaultEventType(pluginId)
+  }
+  if (!mockDirty.value) {
+    resetMockSample(mockSource.value, mockType.value)
+    return
+  }
+  const parsed = mockParsed.value.event
+  if (parsed) {
+    parsed.source = mockSource.value
+    if (pluginId) parsed.plugin = pluginId
+    else delete parsed.plugin
+    parsed.type = mockType.value
+    mockJson.value = formatMockEvent(parsed)
+  }
+}
+
+function onMockTypeChange() {
+  if (!mockDirty.value) {
+    resetMockSample(mockSource.value, mockType.value)
+    return
+  }
+  const parsed = mockParsed.value.event
+  if (parsed) {
+    parsed.type = mockType.value
+    mockJson.value = formatMockEvent(parsed)
+  }
+}
+
+function cloneSelectedHistoryToMock() {
   const id = testEventId.value || scopedEvents.value[0]?.id
-  if (!id) return hub.notify('还没有收到过可以用来试的事件', true)
+  const ev = hub.events.find((e) => e.id === id) || scopedEvents.value[0]
+  if (!ev) return
+  const cloned = cloneHistoryEvent(ev)
+  mockSource.value = cloned.source
+  mockType.value = cloned.type
+  mockJson.value = formatMockEvent(cloned)
+  mockDirty.value = true
+  tryMode.value = 'mock'
+}
+
+const canTry = computed(() => {
+  if (tryBusy.value) return false
+  if (tryMode.value === 'history') return scopedEvents.value.length > 0
+  return !mockParsed.value.error
+})
+
+async function tryOut() {
+  const payload: Record<string, unknown> = {
+    rule: toRule(doc, props.rule, (t) => !!triggerSchema(t)),
+    dry_run: dryRun.value,
+  }
+  if (tryMode.value === 'history') {
+    const id = testEventId.value || scopedEvents.value[0]?.id
+    if (!id) return hub.notify('还没有收到过可以用来试的事件', true)
+    payload.event_id = id
+  } else {
+    if (mockParsed.value.error || !mockParsed.value.event) {
+      return hub.notify(mockParsed.value.error || '模拟事件格式不正确', true)
+    }
+    payload.event = mockParsed.value.event
+  }
   settle()
   tryBusy.value = true
-  const out = await hub.run(() =>
-    post<{ run: Run | null; error?: string }>('/rules/try', {
-      rule: toRule(doc, props.rule, (t) => !!triggerSchema(t)),
-      event_id: id,
-    }),
-  )
+  const out = await hub.run(() => post<{ run: Run | null; error?: string }>('/rules/try', payload))
   tryBusy.value = false
   if (!out) return
   trying.value = false
@@ -105,6 +260,11 @@ const trialText = computed(() => {
   if (t.error) return '规则有问题：' + t.error
   if (!t.run) return '这个事件不会触发这条规则：触发节点不接收它，或者条件没通过'
   const failed = t.run.steps.filter((s) => s.error).length
+  if (t.run.dry_run) {
+    return failed
+      ? `演练发现问题：${t.run.steps.length} 步里有 ${failed} 步报错，点红色的节点看原因`
+      : `演练完成（未真实执行动作）：经过 ${t.run.steps.length} 步，亮起的是走过的路径，点节点看渲染后的参数`
+  }
   return failed
     ? `试运行完成：${t.run.steps.length} 步里有 ${failed} 步失败，点红色的节点看原因`
     : `试运行成功：执行了 ${t.run.steps.length} 步，亮起的连线是走过的路径，点节点看结果`
@@ -313,7 +473,7 @@ async function remove() {
           <i />
           <button title="自动排列所有节点" @click="tidy"><LayoutGrid :size="14" />整理</button>
           <i />
-          <button title="不用保存，拿一个收到过的事件把这条规则跑一遍" @click="trying = true">
+          <button title="不用保存，拿历史事件或模拟事件把这条规则跑一遍" @click="openTry">
             <FlaskConical :size="14" />试运行
           </button>
         </div>
@@ -354,7 +514,12 @@ async function remove() {
       @menu="onMenu"
     />
     <p v-if="trial && !node" class="hint trial" :class="{ bad: trial.error || trial.run?.status === 'error' }">
-      <span class="dot" :class="trial.error || trial.run?.status === 'error' ? 'bad' : trial.run ? 'ok' : ''" />
+      <span
+        class="dot"
+        :class="
+          trial.error || trial.run?.status === 'error' ? 'bad' : trial.run?.dry_run ? 'dry' : trial.run ? 'ok' : ''
+        "
+      />
       {{ trialText }}
       <button class="ml-1 cursor-pointer text-mute hover:text-ink" aria-label="清除试运行结果" @click="trial = null">
         <X :size="13" />
@@ -391,31 +556,139 @@ async function remove() {
           class="scrim fixed inset-0 z-50 flex items-center justify-center p-4"
           @click.self="trying = false"
         >
-          <section class="pop w-full max-w-md overflow-hidden">
+          <section class="pop flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden">
             <header class="flex items-center justify-between border-b border-line px-5 py-3">
               <h2 class="text-[15px] font-semibold">试运行</h2>
               <button class="btn btn-ghost px-1.5" aria-label="关闭" @click="trying = false"><X :size="16" /></button>
             </header>
-            <div class="space-y-3 p-5">
-              <p class="text-sm text-mute">拿一个收到过的事件，把这条规则现在的样子跑一遍，不用先保存。</p>
-              <div>
-                <label class="label">用哪个事件</label>
-                <select v-if="scopedEvents.length" v-model="testEventId" class="input">
-                  <option value="">最近的一个</option>
-                  <option v-for="e in scopedEvents" :key="e.id" :value="e.id">
-                    {{ clock(e.time) }} · {{ eventTitle(hub.plugins, e) }} · {{ summarize(e).slice(0, 50) }}
-                  </option>
-                </select>
-                <p v-else class="text-sm text-mute">触发节点选的接入还没有收到过事件。先让它来一个，比如发一条消息。</p>
+            <div class="space-y-3.5 overflow-y-auto p-5">
+              <div class="seg w-full">
+                <button
+                  type="button"
+                  class="flex-1 justify-center"
+                  :class="{ on: tryMode === 'history' }"
+                  @click="tryMode = 'history'"
+                >
+                  选择历史事件
+                </button>
+                <button
+                  type="button"
+                  class="flex-1 justify-center"
+                  :class="{ on: tryMode === 'mock' }"
+                  @click="tryMode = 'mock'"
+                >
+                  模拟事件
+                </button>
               </div>
-              <p class="rounded-lg bg-warn/10 px-3 py-2 text-xs text-warn">
-                动作会真的执行：消息会发出去，AI 会被调用，请求会发出。
+
+              <template v-if="tryMode === 'history'">
+                <p class="text-sm text-mute">拿一条收到过的历史事件，把这条规则现在的样子跑一遍，不用先保存。</p>
+                <div v-if="scopedEvents.length" class="space-y-2">
+                  <label class="label">用哪个事件</label>
+                  <select v-model="testEventId" class="input">
+                    <option value="">最近的一个</option>
+                    <option v-for="e in scopedEvents" :key="e.id" :value="e.id">
+                      {{ clock(e.time) }} · {{ eventTitle(hub.plugins, e) }} · {{ summarize(e).slice(0, 50) }}
+                    </option>
+                  </select>
+                  <div class="flex justify-end">
+                    <button type="button" class="btn btn-ghost text-xs" @click="cloneSelectedHistoryToMock">
+                      基于当前历史事件修改
+                    </button>
+                  </div>
+                </div>
+                <div v-else class="rounded-lg border border-dashed border-line bg-sunken/60 p-4 text-center">
+                  <p class="text-sm text-mute">触发节点选的接入还没有收到过事件。</p>
+                  <button type="button" class="btn mt-2.5 text-xs" @click="tryMode = 'mock'">改用模拟事件</button>
+                </div>
+              </template>
+
+              <template v-else>
+                <div class="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label class="label">来源接入</label>
+                    <select v-model="mockSource" class="input" @change="onMockSourceChange">
+                      <option value="">不指定（任意）</option>
+                      <option v-for="inst in sourceInstances" :key="inst.id" :value="inst.id">
+                        {{ inst.name || inst.id }}
+                      </option>
+                      <option
+                        v-if="mockSource && !sourceInstances.some((i) => i.id === mockSource)"
+                        :value="mockSource"
+                      >
+                        {{ mockSource }}
+                      </option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="label">事件类型</label>
+                    <input
+                      v-model="mockType"
+                      class="input font-mono text-xs"
+                      list="cat-mock-event-types"
+                      placeholder="webhook.received"
+                      @change="onMockTypeChange"
+                    />
+                    <datalist id="cat-mock-event-types">
+                      <option v-for="et in mockEventTypes" :key="et.type" :value="et.type">{{ et.title }}</option>
+                    </datalist>
+                  </div>
+                </div>
+
+                <div>
+                  <label class="label">快捷内容（payload.text）</label>
+                  <input
+                    v-model="mockPayloadText"
+                    class="input"
+                    placeholder="输入测试消息内容，会自动同步到下方 JSON"
+                  />
+                </div>
+
+                <div>
+                  <div class="mb-1 flex items-center justify-between">
+                    <label class="label !mb-0">模拟事件 JSON</label>
+                    <button
+                      type="button"
+                      class="btn btn-ghost !px-1.5 !py-0.5 text-xs"
+                      title="按当前来源和事件类型重新生成示例"
+                      @click="resetMockSample()"
+                    >
+                      <RotateCcw :size="12" />重置示例
+                    </button>
+                  </div>
+                  <textarea
+                    v-model="mockJson"
+                    class="input font-mono text-xs leading-relaxed"
+                    rows="8"
+                    spellcheck="false"
+                    @input="mockDirty = true"
+                  />
+                  <p v-if="mockParsed.error" class="mt-1 text-xs text-bad">{{ mockParsed.error }}</p>
+                  <p v-else class="mt-1 text-xs text-mute">模拟事件仅用于本次试运行，不会写入事件历史。</p>
+                </div>
+              </template>
+
+              <div class="rounded-xl border border-line bg-sunken/50 p-3">
+                <label class="flex cursor-pointer items-center justify-between gap-3">
+                  <span>
+                    <span class="block text-sm font-medium text-ink">仅演练（不真实执行动作）</span>
+                    <span class="block text-xs text-mute">校验触发、条件分支与参数模板渲染，避免误发消息或请求</span>
+                  </span>
+                  <input v-model="dryRun" type="checkbox" aria-label="仅演练（不真实执行动作）" />
+                </label>
+              </div>
+
+              <p v-if="dryRun" class="rounded-lg bg-accent-soft px-3 py-2 text-xs text-accent">
+                演练模式：动作与模型判断不会真实调用，也不会写入运行记录；完成后点亮起节点可查看渲染后的参数。
+              </p>
+              <p v-else class="rounded-lg bg-warn/10 px-3 py-2 text-xs text-warn">
+                真实执行：动作会真的执行——消息会发出去，AI 会被调用，HTTP 请求和脚本会运行。
               </p>
             </div>
             <footer class="flex justify-end gap-2 border-t border-line px-5 py-3">
               <button class="btn" @click="trying = false">取消</button>
-              <button class="btn btn-primary" :disabled="tryBusy || !scopedEvents.length" @click="tryOut">
-                {{ tryBusy ? '运行中…' : '运行' }}
+              <button class="btn btn-primary" :disabled="!canTry" @click="tryOut">
+                {{ tryBusy ? '运行中…' : '试运行' }}
               </button>
             </footer>
           </section>

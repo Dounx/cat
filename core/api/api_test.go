@@ -426,3 +426,104 @@ func TestDelayAndApprovalAPI(t *testing.T) {
 		t.Fatalf("unexpected downstream body: %+v", gotBodies)
 	}
 }
+
+func TestTryRuleAPI(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	eng := engine.New(st, t.TempDir(), nil)
+	if err := eng.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(eng.Stop)
+
+	srv := httptest.NewServer((&Server{Engine: eng}).Handler())
+	defer srv.Close()
+
+	postTry := func(body string) map[string]any {
+		t.Helper()
+		res, err := http.Post(srv.URL+"/api/rules/try", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != 200 {
+			t.Fatalf("status %d", res.StatusCode)
+		}
+		var out map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	// Dry-run with mock event and unreachable URL succeeds without side effects or DB writes.
+	out := postTry(`{
+		"rule": {
+			"name": "mock-alert",
+			"graph": {
+				"nodes": [
+					{"id": "t1", "kind": "trigger", "sources": ["hook-1"]},
+					{"id": "c1", "kind": "condition", "condition": "payload.level == \"high\""},
+					{"id": "s1", "kind": "action", "instance": "http", "action": "request", "params": {"url": "https://example.invalid/alert", "body": "告警: {{ payload.text }}"}}
+				],
+				"edges": [
+					{"from": "t1", "to": "c1"},
+					{"from": "c1", "to": "s1"}
+				]
+			}
+		},
+		"event": {
+			"source": "hook-1",
+			"type": "webhook.received",
+			"payload": {"level": "high", "text": "CPU 98%"}
+		},
+		"dry_run": true
+	}`)
+	if out["error"] != nil {
+		t.Fatalf("unexpected error: %v", out["error"])
+	}
+	runObj, _ := out["run"].(map[string]any)
+	if runObj == nil || runObj["dry_run"] != true || runObj["status"] != "ok" {
+		t.Fatalf("dry-run response: %+v", out)
+	}
+	steps := runObj["steps"].([]any)
+	s0 := steps[0].(map[string]any)
+	if s0["dry_run"] != true || s0["params"].(map[string]any)["body"] != "告警: CPU 98%" {
+		t.Fatalf("step 0: %+v", s0)
+	}
+	if evs, _ := st.ListEvents(store.EventFilter{}); len(evs) != 0 {
+		t.Fatalf("mock event should not be persisted, got %d", len(evs))
+	}
+	if runs, _ := st.ListRuns("", "", 10); len(runs) != 0 {
+		t.Fatalf("dry-run should not be persisted, got %d", len(runs))
+	}
+
+	// Backward compatibility: stored event_id with dry_run.
+	_ = st.SaveEvent(&event.Event{ID: "ev-stored", Source: "hook-1", Plugin: "webhook", Type: "webhook.received", Payload: map[string]any{"level": "high", "text": "from db"}})
+	outStored := postTry(`{
+		"rule": {
+			"name": "stored-try",
+			"graph": {
+				"nodes": [
+					{"id": "t1", "kind": "trigger", "sources": ["hook-1"]},
+					{"id": "s1", "kind": "action", "instance": "http", "action": "request", "params": {"body": "{{ payload.text }}"}}
+				],
+				"edges": [{"from": "t1", "to": "s1"}]
+			}
+		},
+		"event_id": "ev-stored",
+		"dry_run": true
+	}`)
+	if outStored["run"].(map[string]any)["steps"].([]any)[0].(map[string]any)["params"].(map[string]any)["body"] != "from db" {
+		t.Fatalf("stored event dry-run: %+v", outStored)
+	}
+
+	// Missing both event_id and event returns error.
+	outErr := postTry(`{"rule":{"name":"x","graph":{"nodes":[],"edges":[]}}}`)
+	if outErr["error"] == nil {
+		t.Fatalf("expected error when neither event_id nor event supplied: %+v", outErr)
+	}
+}

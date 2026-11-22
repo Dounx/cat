@@ -42,6 +42,8 @@ type StepResult struct {
 	// Held marks a step that kept the run from going on past it without
 	// having failed: what follows runs later, as a run of its own.
 	Held bool `json:"held,omitempty"`
+	// DryRun marks a step simulated without invoking the target instance.
+	DryRun bool `json:"dry_run,omitempty"`
 }
 
 // Run records one execution of a rule against an event.
@@ -55,6 +57,8 @@ type Run struct {
 	FinishedAt *time.Time   `json:"finished_at,omitempty"`
 	Steps      []StepResult `json:"steps"`
 	Replay     bool         `json:"replay,omitempty"`
+	// DryRun marks a simulated trial run with no side effects and no persistence.
+	DryRun bool `json:"dry_run,omitempty"`
 	// Resumed is the step a run started from, when it goes on from where an
 	// earlier one was held.
 	Resumed string `json:"resumed,omitempty"`

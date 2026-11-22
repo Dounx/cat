@@ -23,6 +23,7 @@ import (
 	"github.com/dounx/cat/core/blob"
 	"github.com/dounx/cat/core/builtin"
 	"github.com/dounx/cat/core/engine"
+	"github.com/dounx/cat/core/event"
 	"github.com/dounx/cat/core/plugin"
 	"github.com/dounx/cat/core/rules"
 	"github.com/dounx/cat/core/store"
@@ -276,13 +277,21 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /api/rules/try", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Rule    rules.Rule `json:"rule"`
-			EventID string     `json:"event_id"`
+			Rule        rules.Rule                `json:"rule"`
+			EventID     string                    `json:"event_id"`
+			Event       *event.Event              `json:"event"`
+			DryRun      bool                      `json:"dry_run"`
+			MockOutputs map[string]map[string]any `json:"mock_outputs"`
 		}
 		if !readJSON(w, r, &body) {
 			return
 		}
-		run, err := e.TryRule(body.Rule, body.EventID)
+		run, err := e.TryRuleWithOptions(body.Rule, engine.TryOptions{
+			EventID:     body.EventID,
+			Event:       body.Event,
+			DryRun:      body.DryRun,
+			MockOutputs: body.MockOutputs,
+		})
 		if err != nil {
 			writeJSON(w, 200, map[string]any{"error": err.Error()})
 			return

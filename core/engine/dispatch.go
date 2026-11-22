@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -236,19 +238,40 @@ func (e *Engine) CancelRun(runID string) bool {
 // from past a step that held an earlier run: that step stands in the new run
 // as done.
 func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, from *store.StepResult) *store.Run {
+	return e.executeWith(r, ev, execOpts{replay: replay, from: from})
+}
+
+type execOpts struct {
+	replay      bool
+	from        *store.StepResult
+	dryRun      bool
+	noPersist   bool
+	mockOutputs map[string]map[string]any
+}
+
+func (e *Engine) executeWith(r *rules.Compiled, ev *event.Event, opts execOpts) *store.Run {
 	run := &store.Run{
 		ID: id.New(), RuleID: r.ID, RuleName: r.Name, EventID: ev.ID,
-		Status: "running", StartedAt: time.Now(), Steps: []store.StepResult{}, Replay: replay,
+		Status: "running", StartedAt: time.Now(), Steps: []store.StepResult{}, Replay: opts.replay, DryRun: opts.dryRun,
+	}
+	persist := func() {
+		if !opts.noPersist {
+			e.saveRun(run)
+		}
 	}
 	runCtx, cancelRun := context.WithCancel(context.Background())
-	e.runsMu.Lock()
-	e.runs[run.ID] = cancelRun
-	e.runsMu.Unlock()
+	if !opts.dryRun {
+		e.runsMu.Lock()
+		e.runs[run.ID] = cancelRun
+		e.runsMu.Unlock()
+	}
 	defer func() {
 		cancelRun()
-		e.runsMu.Lock()
-		delete(e.runs, run.ID)
-		e.runsMu.Unlock()
+		if !opts.dryRun {
+			e.runsMu.Lock()
+			delete(e.runs, run.ID)
+			e.runsMu.Unlock()
+		}
 	}()
 	typingStops := map[string]context.CancelFunc{}
 	stopTyping := func(target string) {
@@ -269,14 +292,14 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 	snapshot := r.Rule
 	run.Rule = &snapshot
 	outputs := map[string]any{}
-	if from != nil {
+	if opts.from != nil {
 		recorded = true
-		run.Resumed = from.ID
-		run.Steps = append(run.Steps, *from)
-		outputs[from.ID] = from.Output
+		run.Resumed = opts.from.ID
+		run.Steps = append(run.Steps, *opts.from)
+		outputs[opts.from.ID] = opts.from.Output
 	}
 	if recorded {
-		e.saveRun(run)
+		persist()
 	}
 	failed := false
 	// act runs one step and reports whether what follows it may run.
@@ -286,16 +309,21 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 		}
 		if !recorded {
 			recorded = true
-			e.saveRun(run)
+			persist()
 		}
 		target := step.Instance
 		if target == rules.SourceInstance {
 			target = ev.Source
 		}
-		if step.Action == "reply" || step.Action == "send" {
+		if !opts.dryRun && (step.Action == "reply" || step.Action == "send") {
 			stopTyping(target)
 		}
-		res := e.runStep(runCtx, step, ev, r.ID, r.Name, run.ID, env)
+		var res store.StepResult
+		if opts.dryRun {
+			res = e.dryRunStep(step, ev, env, opts.mockOutputs)
+		} else {
+			res = e.runStep(runCtx, step, ev, r.ID, r.Name, run.ID, env)
+		}
 		run.Steps = append(run.Steps, res)
 		if res.Output != nil {
 			outputs[step.ID] = res.Output
@@ -303,10 +331,10 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 			outputs[step.ID] = map[string]any{}
 		}
 		if runCtx.Err() != nil {
-			e.saveRun(run)
+			persist()
 			return false
 		}
-		if res.Error == "" && !res.Held && step.Action == "typing" && TypingInterval > 0 {
+		if !opts.dryRun && res.Error == "" && !res.Held && step.Action == "typing" && TypingInterval > 0 {
 			if _, active := typingStops[target]; !active {
 				tctx, tcancel := context.WithCancel(runCtx)
 				typingStops[target] = tcancel
@@ -336,15 +364,15 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 				return false
 			}
 		}
-		e.saveRun(run)
+		persist()
 		// a step that holds ends its branch here, without having failed
 		return !res.Held
 	}
 	if r.Graph != nil {
 		walk := r.Walk
-		if from != nil {
+		if opts.from != nil {
 			walk = func(ev *event.Event, outputs map[string]any, act func(rules.Step, map[string]any) bool, fail func(string, error), judge rules.Judge, note func(rules.Visit)) {
-				r.WalkFrom(from.ID, ev, outputs, act, fail, judge, note)
+				r.WalkFrom(opts.from.ID, ev, outputs, act, fail, judge, note)
 			}
 		}
 		// A failed action ends its own branch; the other branches still run.
@@ -353,12 +381,12 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 				return
 			}
 			failed, recorded = true, true
-			res := store.StepResult{ID: nodeID, Action: "condition", Error: "条件求值失败：" + err.Error()}
+			res := store.StepResult{ID: nodeID, Action: "condition", Error: "条件求值失败：" + err.Error(), DryRun: opts.dryRun}
 			if errors.Is(err, rules.ErrLoops) {
 				res.Action, res.Error = "loop", err.Error()
 			}
 			run.Steps = append(run.Steps, res)
-			e.saveRun(run)
+			persist()
 		}, func(n *rules.Node, env map[string]any) (any, error) {
 			if runCtx.Err() != nil {
 				return nil, runCtx.Err()
@@ -367,12 +395,18 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 			// the instance said is there for later nodes as steps.<id>.
 			if !recorded {
 				recorded = true
-				e.saveRun(run)
+				persist()
 			}
-			res, verdict := e.judge(runCtx, n, ev, r.ID, r.Name, run.ID, env)
+			var res store.StepResult
+			var verdict any
+			if opts.dryRun {
+				res, verdict = e.dryRunJudge(n, ev, env, opts.mockOutputs)
+			} else {
+				res, verdict = e.judge(runCtx, n, ev, r.ID, r.Name, run.ID, env)
+			}
 			if runCtx.Err() != nil {
 				run.Steps = append(run.Steps, res)
-				e.saveRun(run)
+				persist()
 				return nil, runCtx.Err()
 			}
 			if res.Error != "" {
@@ -380,14 +414,14 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 			}
 			run.Steps = append(run.Steps, res)
 			outputs[n.ID] = res.Output
-			e.saveRun(run)
+			persist()
 			return verdict, nil
 		}, func(v rules.Visit) { run.Trace = append(run.Trace, v) })
 	} else {
 		steps := r.Steps
-		if from != nil { // the steps after the one that held
+		if opts.from != nil { // the steps after the one that held
 			for i, s := range steps {
-				if s.ID == from.ID {
+				if s.ID == opts.from.ID {
 					steps = steps[i+1:]
 					break
 				}
@@ -412,8 +446,8 @@ func (e *Engine) executeFrom(r *rules.Compiled, ev *event.Event, replay bool, fr
 	default:
 		run.Status = "ok"
 	}
-	e.saveRun(run)
-	if failed && runCtx.Err() == nil && !replay {
+	persist()
+	if failed && runCtx.Err() == nil && !opts.replay && !opts.dryRun {
 		e.reportFailure(run, ev)
 	}
 	return run
@@ -561,13 +595,63 @@ func (e *Engine) Resume(ruleID, stepID, eventID string, output map[string]any, i
 	return nil
 }
 
+// TryOptions configures a rule trial run.
+type TryOptions struct {
+	// EventID names a stored event to run against. Ignored when Event is set.
+	EventID string
+	// Event is a synthetic/custom event to run against without persisting it.
+	Event *event.Event
+	// DryRun evaluates triggers, conditions, loops and parameter templates without
+	// invoking actions or persisting the run.
+	DryRun bool
+	// MockOutputs optionally supplies simulated outputs keyed by step/node ID during DryRun.
+	MockOutputs map[string]map[string]any
+}
+
 // TryRule runs a rule, saved or not, for a stored event and waits for the
 // outcome. The actions are really carried out. It returns nil when the event starts nothing in the rule: no trigger
 // takes it, or every path ends before an action.
 func (e *Engine) TryRule(r rules.Rule, eventID string) (*store.Run, error) {
-	ev, err := e.Store.GetEvent(eventID)
-	if err != nil {
-		return nil, err
+	return e.TryRuleWithOptions(r, TryOptions{EventID: eventID})
+}
+
+// TryRuleWithOptions runs a rule, saved or not, against either a stored event
+// (EventID) or a synthetic event (Event). When DryRun is true, no action or
+// model judge is invoked and nothing is persisted to SQLite.
+func (e *Engine) TryRuleWithOptions(r rules.Rule, opts TryOptions) (*store.Run, error) {
+	var ev *event.Event
+	var err error
+	if opts.Event != nil {
+		copied := *opts.Event
+		ev = &copied
+		if ev.ID == "" {
+			ev.ID = "mock-" + id.New()
+		}
+		if ev.Time.IsZero() {
+			ev.Time = time.Now()
+		}
+		if ev.Plugin == "" && ev.Source != "" {
+			if inst, ok := e.Instance(ev.Source); ok {
+				ev.Plugin = inst.Plugin
+			}
+		}
+		if ev.Payload == nil {
+			ev.Payload = map[string]any{}
+		}
+		if len(ev.Triggers) == 0 && r.Graph != nil {
+			for _, ask := range r.Asks() {
+				if len(ask.Sources) == 0 || slices.Contains(ask.Sources, ev.Source) {
+					ev.Triggers = append(ev.Triggers, ask.ID)
+				}
+			}
+		}
+	} else if opts.EventID != "" {
+		ev, err = e.Store.GetEvent(opts.EventID)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, errors.New("请提供 event_id 或模拟事件 event")
 	}
 	if r.Name == "" {
 		r.Name = "未命名规则"
@@ -581,7 +665,12 @@ func (e *Engine) TryRule(r rules.Rule, eventID string) (*store.Run, error) {
 			return nil, err
 		}
 	}
-	return e.execute(c, ev, true), nil
+	return e.executeWith(c, ev, execOpts{
+		replay:      true,
+		dryRun:      opts.DryRun,
+		noPersist:   opts.DryRun,
+		mockOutputs: opts.MockOutputs,
+	}), nil
 }
 
 // judge puts a condition node to its instance: the node's parameters and the
@@ -589,6 +678,23 @@ func (e *Engine) TryRule(r rules.Rule, eventID string) (*store.Run, error) {
 // answers with the one it picked under "choice". The verdict is that choice,
 // or for a yes-or-no condition whether it was yes.
 func (e *Engine) judge(runCtx context.Context, n *rules.Node, ev *event.Event, ruleID, ruleName, runID string, env map[string]any) (store.StepResult, any) {
+	step := judgeStep(n)
+	res := e.runStep(runCtx, step, ev, ruleID, ruleName, runID, env)
+	if res.Error != "" {
+		return res, nil
+	}
+	choice, ok := res.Output["choice"].(string)
+	if !ok {
+		res.Error = "没有给出判断结果（输出里缺少 choice）"
+		return res, nil
+	}
+	if len(n.Choices) == 0 {
+		return res, choice == rules.JudgeYes
+	}
+	return res, choice
+}
+
+func judgeStep(n *rules.Node) rules.Step {
 	step := n.Step
 	if step.Action == "" {
 		step.Action = rules.JudgeAction
@@ -606,19 +712,90 @@ func (e *Engine) judge(runCtx context.Context, n *rules.Node, ev *event.Event, r
 		list[i] = c
 	}
 	step.Params["choices"] = list
-	res := e.runStep(runCtx, step, ev, ruleID, ruleName, runID, env)
-	if res.Error != "" {
+	return step
+}
+
+// dryRunJudge renders a model-judged condition's parameters without calling
+// the model, selecting a simulated choice so downstream paths can be inspected.
+func (e *Engine) dryRunJudge(n *rules.Node, ev *event.Event, env map[string]any, mockOutputs map[string]map[string]any) (store.StepResult, any) {
+	step := judgeStep(n)
+	target := step.Instance
+	if target == rules.SourceInstance {
+		target = ev.Source
+	}
+	res := store.StepResult{ID: step.ID, Instance: target, Action: step.Action, DryRun: true}
+	start := time.Now()
+	defer func() { res.DurationMS = time.Since(start).Milliseconds() }()
+
+	rendered, err := rules.Render(map[string]any(step.Params), env)
+	if err != nil {
+		res.Error = "参数模板错误：" + err.Error()
 		return res, nil
 	}
-	choice, ok := res.Output["choice"].(string)
-	if !ok {
-		res.Error = "没有给出判断结果（输出里缺少 choice）"
-		return res, nil
+	params, _ := rendered.(map[string]any)
+	if params == nil {
+		params = map[string]any{}
 	}
+	res.Params = params
+
+	choice := rules.JudgeYes
+	if len(n.Choices) > 0 {
+		choice = n.Choices[0]
+	}
+	out := map[string]any{
+		"dry_run": true,
+		"choice":  choice,
+		"note":    "演练模式：未调用模型，默认走首个分支",
+	}
+	if mock, ok := mockOutputs[n.ID]; ok && mock != nil {
+		out = maps.Clone(mock)
+		out["dry_run"] = true
+		if c, ok := out["choice"].(string); ok && c != "" {
+			choice = c
+		} else {
+			out["choice"] = choice
+		}
+	}
+	res.Output = out
 	if len(n.Choices) == 0 {
 		return res, choice == rules.JudgeYes
 	}
 	return res, choice
+}
+
+// dryRunStep renders a step's parameters against env without invoking the
+// target instance, returning a simulated output for downstream templates.
+func (e *Engine) dryRunStep(step rules.Step, ev *event.Event, env map[string]any, mockOutputs map[string]map[string]any) store.StepResult {
+	target := step.Instance
+	if target == rules.SourceInstance {
+		target = ev.Source
+	}
+	res := store.StepResult{ID: step.ID, Instance: target, Action: step.Action, DryRun: true}
+	start := time.Now()
+	defer func() { res.DurationMS = time.Since(start).Milliseconds() }()
+
+	rendered, err := rules.Render(map[string]any(step.Params), env)
+	if err != nil {
+		res.Error = "参数模板错误：" + err.Error()
+		return res
+	}
+	params, _ := rendered.(map[string]any)
+	if params == nil {
+		params = map[string]any{}
+	}
+	res.Params = params
+
+	if mock, ok := mockOutputs[step.ID]; ok && mock != nil {
+		out := maps.Clone(mock)
+		out["dry_run"] = true
+		res.Output = out
+		return res
+	}
+	res.Output = map[string]any{
+		"dry_run": true,
+		"text":    fmt.Sprintf("<模拟输出: %s>", step.ID),
+	}
+	return res
 }
 
 func (e *Engine) saveRun(run *store.Run) {

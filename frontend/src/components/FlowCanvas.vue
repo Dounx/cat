@@ -21,7 +21,9 @@ export interface CanvasNode {
   outs?: { branch: string; label?: string }[]
   bad?: boolean
   // how the node fared in a run
-  state?: 'ok' | 'bad'
+  state?: 'ok' | 'bad' | 'dry'
+  // short pill shown on the node corner, e.g. "仅演练"
+  badge?: string
   // set back, as a node a run did not come to
   dim?: boolean
 }
@@ -312,7 +314,8 @@ defineExpose({ fit, zoom, center })
         @contextmenu.prevent.stop="readonly || emit('menu', { node: n.id }, point($event), $event)"
       >
         <span v-if="n.kind !== 'trigger'" class="inlet" />
-        <span v-if="n.state" class="ran" :class="n.state" />
+        <span v-if="n.badge" class="badge" :class="n.state">{{ n.badge }}</span>
+        <span v-else-if="n.state" class="ran" :class="n.state" />
         <span class="glyph" :class="n.kind"><component :is="n.icon" :size="15" /></span>
         <span class="min-w-0 flex-1">
           <span class="block truncate text-[10.5px] leading-tight text-mute">{{ n.label }}</span>
@@ -470,8 +473,25 @@ defineExpose({ fit, zoom, center })
   border-radius: 50%;
   background: var(--color-ok);
 }
+.ran.dry {
+  background: var(--color-accent);
+}
 .ran.bad {
   background: var(--color-bad);
+}
+.badge {
+  position: absolute;
+  top: -9px;
+  right: 8px;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-accent);
+  pointer-events: none;
 }
 .node.bad .glyph {
   background: color-mix(in srgb, var(--color-bad) 14%, transparent);

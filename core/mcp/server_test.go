@@ -160,4 +160,39 @@ func TestServer(t *testing.T) {
 	if failed || replayed.(map[string]any)["matched"].(float64) != 1 {
 		t.Fatalf("replay_event: %v %v", replayed, failed)
 	}
+
+	// try_rule with synthetic mock event + dry_run + mock_outputs (no side effects, no run persisted)
+	const dryGraph = `"graph":{"nodes":[{"id":"t1","kind":"trigger","sources":["mock-hook"]},{"id":"c1","kind":"condition","condition":"payload.level == \"high\""},{"id":"s1","kind":"action","instance":"http","action":"request","params":{"url":"https://example.invalid/alert","body":"告警: {{ payload.text }}"}},{"id":"s2","kind":"action","instance":"http","action":"request","params":{"url":"https://example.invalid/next","body":"结果: {{ steps.s1.text }}"}}],"edges":[{"from":"t1","to":"c1"},{"from":"c1","to":"s1"},{"from":"s1","to":"s2"}]}`
+	dryOut, failed := call("try_rule", `{"dry_run":true,"event":{"source":"mock-hook","type":"webhook.received","payload":{"level":"high","text":"disk 99%"}},"mock_outputs":{"s1":{"text":"ok-mock"}},"rule":{"name":"dry draft",`+dryGraph+`}}`)
+	if failed {
+		t.Fatalf("try_rule dry_run failed: %v", dryOut)
+	}
+	dm := dryOut.(map[string]any)
+	if dm["matched"] != true {
+		t.Fatalf("try_rule dry_run not matched: %+v", dm)
+	}
+	dryRunObj := dm["run"].(map[string]any)
+	if dryRunObj["dry_run"] != true || dryRunObj["status"] != "ok" {
+		t.Fatalf("dry_run run = %+v", dryRunObj)
+	}
+	drySteps := dryRunObj["steps"].([]any)
+	if len(drySteps) != 2 || drySteps[0].(map[string]any)["dry_run"] != true {
+		t.Fatalf("dry_run steps = %+v", drySteps)
+	}
+	if drySteps[0].(map[string]any)["params"].(map[string]any)["body"] != "告警: disk 99%" {
+		t.Fatalf("step 0 rendered params = %+v", drySteps[0])
+	}
+	if drySteps[1].(map[string]any)["params"].(map[string]any)["body"] != "结果: ok-mock" {
+		t.Fatalf("step 1 rendered params = %+v", drySteps[1])
+	}
+	afterRuns, _ := st.ListRuns("", "", 50)
+	for _, r := range afterRuns {
+		if r.DryRun || r.RuleName == "dry draft" {
+			t.Fatalf("dry_run persisted a run: %+v", r)
+		}
+	}
+	afterEvents, _ := st.ListEvents(store.EventFilter{Source: "mock-hook"})
+	if len(afterEvents) != 0 {
+		t.Fatalf("dry_run persisted mock event: %+v", afterEvents)
+	}
 }

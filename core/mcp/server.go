@@ -32,7 +32,7 @@ var versions = []string{"2025-06-18", "2025-11-25", "2025-03-26", "2024-11-05"}
 const instructions = `Cat 是一个事件中心：聊天软件、订阅、定时等「接入」发出事件，「规则」按条件判断后触发动作（发消息、交给 AI、发 HTTP 请求……）。
 - 要发消息或做别的事：先用 list_connections 看有哪些接入和它们的动作，再用 invoke_action 调用。发到哪个会话，从 list_events 里最近的事件取 conversation.id。
 - 要了解发生过什么：list_events 看收到的事件，list_runs 看规则对它们做了什么。
-- 要新建或修改规则：先用 list_rules 看现有规则的写法，可用 try_rule 拿一个历史事件先试运行草稿（不保存规则，但动作会真的执行），确认无误后再用 save_rule 保存；也可使用 replay_event 重放历史事件。`
+- 要新建或修改规则：先用 list_rules 看现有规则的写法，可用 try_rule 拿历史事件或模拟事件先试运行草稿（建议先设 dry_run: true 演练，不保存规则也不真实执行动作），确认无误后再用 save_rule 保存；也可使用 replay_event 重放历史事件。`
 
 type Server struct {
 	Engine  *engine.Engine
@@ -398,16 +398,28 @@ var tools = []tool{
 	},
 	{
 		name:  "try_rule",
-		about: "拿一个历史事件试运行一条规则（传入未保存的 rule 对象，或已保存的 rule_id），等待结果返回。不会保存规则，但规则里的动作会真的执行。",
-		schema: object([]string{"event_id"}, map[string]any{
-			"event_id": prop("string", "用来试运行的历史事件 id"),
-			"rule_id":  prop("string", "已保存规则的 id（与 rule 二选一）"),
-			"rule":     map[string]any{"type": "object", "description": "未保存或改过的规则对象：name、graph{nodes, edges}（与 rule_id 二选一）"},
+		about: "拿一个历史事件或模拟事件试运行一条规则（传入未保存的 rule 对象，或已保存的 rule_id），等待结果返回。不会保存规则；设置 dry_run: true 可进入演练模式（只检查触发、条件与参数模板，不真实执行动作，也不写入运行记录）。",
+		schema: object(nil, map[string]any{
+			"event_id":     prop("string", "用来试运行的历史事件 id（与 event 二选一）"),
+			"event":        map[string]any{"type": "object", "description": "自定义模拟事件对象（与 event_id 二选一），可包含 source、type、payload、actor、conversation 等字段，不会写入事件库"},
+			"dry_run":      prop("boolean", "true 表示演练模式：不真实调用动作/模型，仅返回走过的路径和渲染后的参数"),
+			"mock_outputs": map[string]any{"type": "object", "description": "演练模式下按节点 id 提供的模拟输出，例如 {\"s1\":{\"text\":\"ok\"}}（可选）"},
+			"rule_id":      prop("string", "已保存规则的 id（与 rule 二选一）"),
+			"rule":         map[string]any{"type": "object", "description": "未保存或改过的规则对象：name、graph{nodes, edges}（与 rule_id 二选一）"},
 		}),
 		run: func(_ context.Context, s *Server, args map[string]any) (any, error) {
 			eventID := str(args, "event_id")
-			if eventID == "" {
-				return nil, errors.New("缺少 event_id")
+			var mockEv *event.Event
+			if args["event"] != nil {
+				raw, _ := json.Marshal(args["event"])
+				var ev event.Event
+				if err := json.Unmarshal(raw, &ev); err != nil {
+					return nil, fmt.Errorf("模拟事件格式不对：%w", err)
+				}
+				mockEv = &ev
+			}
+			if eventID == "" && mockEv == nil {
+				return nil, errors.New("请提供 event_id 或 event")
 			}
 			var r rules.Rule
 			if args["rule"] != nil {
@@ -428,7 +440,20 @@ var tools = []tool{
 			} else {
 				return nil, errors.New("请提供 rule 或 rule_id")
 			}
-			run, err := s.Engine.TryRule(r, eventID)
+			dryRun, _ := args["dry_run"].(bool)
+			var mockOutputs map[string]map[string]any
+			if args["mock_outputs"] != nil {
+				raw, _ := json.Marshal(args["mock_outputs"])
+				if err := json.Unmarshal(raw, &mockOutputs); err != nil {
+					return nil, fmt.Errorf("mock_outputs 格式不对：%w", err)
+				}
+			}
+			run, err := s.Engine.TryRuleWithOptions(r, engine.TryOptions{
+				EventID:     eventID,
+				Event:       mockEv,
+				DryRun:      dryRun,
+				MockOutputs: mockOutputs,
+			})
 			if err != nil {
 				return nil, err
 			}

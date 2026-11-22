@@ -1259,3 +1259,202 @@ func TestStateOnceDedupAndIncrInEngine(t *testing.T) {
 		t.Fatalf("unexpected downstream requests: %q", received)
 	}
 }
+
+type fakeJudge struct {
+	plugin.Base
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *fakeJudge) Invoke(_ context.Context, _ string, _ map[string]any, _ plugin.InvokeContext) (map[string]any, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	return map[string]any{"choice": "yes"}, nil
+}
+
+func TestTryRuleDryRunAndMockEvent(t *testing.T) {
+	var hits int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	e := newEngine(t)
+	hook, err := e.SaveInstance(store.Instance{Plugin: "webhook", Name: "hook", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, e, hook.ID)
+	waitRunning(t, e, "http")
+
+	fj := &fakeJudge{}
+	e.RegisterPlugin(plugin.Manifest{ID: "fakejudge", Name: "FakeJudge", Capabilities: []string{plugin.CapAction}}, func(map[string]any) (plugin.Instance, error) {
+		return fj, nil
+	})
+	judgeInst, err := e.SaveInstance(store.Instance{Plugin: "fakejudge", Name: "llm", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, e, judgeInst.ID)
+
+	rule := rules.Rule{
+		Name: "alert-rule",
+		Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1"}, Sources: []string{hook.ID}},
+				{Kind: rules.KindCondition, Step: rules.Step{ID: "c1"}, Condition: `payload.level == "high"`},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s1", Instance: "http", Action: "request", Params: map[string]any{
+					"url":  srv.URL,
+					"body": "告警: {{ payload.text }}",
+				}}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s2", Instance: "http", Action: "request", Params: map[string]any{
+					"url":  srv.URL + "/follow",
+					"body": "上游: {{ steps.s1.text }}",
+				}}},
+			},
+			Edges: []rules.Edge{
+				{From: "t1", To: "c1"},
+				{From: "c1", To: "s1"},
+				{From: "s1", To: "s2"},
+			},
+		},
+	}
+
+	// 1. Dry-run with synthetic event (zero events in DB): no HTTP calls, no DB writes.
+	run, err := e.TryRuleWithOptions(rule, engine.TryOptions{
+		Event: &event.Event{
+			Source:  hook.ID,
+			Type:    "webhook.received",
+			Payload: map[string]any{"level": "high", "text": "CPU 达到 98%"},
+		},
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("dry-run failed: %v", err)
+	}
+	if run == nil || !run.DryRun || run.Status != "ok" || !strings.HasPrefix(run.EventID, "mock-") {
+		t.Fatalf("unexpected dry-run result: %+v", run)
+	}
+	if len(run.Steps) != 2 {
+		t.Fatalf("want 2 dry-run steps, got %+v", run.Steps)
+	}
+	if !run.Steps[0].DryRun || run.Steps[0].Params["body"] != "告警: CPU 达到 98%" {
+		t.Fatalf("step 0 params/dry_run: %+v", run.Steps[0])
+	}
+	if !run.Steps[1].DryRun || run.Steps[1].Params["body"] != "上游: <模拟输出: s1>" {
+		t.Fatalf("step 1 downstream template: %+v", run.Steps[1])
+	}
+	mu.Lock()
+	gotHits := hits
+	mu.Unlock()
+	if gotHits != 0 {
+		t.Fatalf("dry-run invoked HTTP endpoint %d times", gotHits)
+	}
+	if evs, _ := e.Store.ListEvents(store.EventFilter{}); len(evs) != 0 {
+		t.Fatalf("dry-run polluted events table: %d", len(evs))
+	}
+	if runs, _ := e.Store.ListRuns("", "", 10); len(runs) != 0 {
+		t.Fatalf("dry-run polluted runs table: %d", len(runs))
+	}
+
+	// 2. Dry-run with custom MockOutputs feeds downstream templates.
+	runMock, err := e.TryRuleWithOptions(rule, engine.TryOptions{
+		Event: &event.Event{
+			Source:  hook.ID,
+			Type:    "webhook.received",
+			Payload: map[string]any{"level": "high", "text": "disk full"},
+		},
+		DryRun:      true,
+		MockOutputs: map[string]map[string]any{"s1": {"text": "自定义回执"}},
+	})
+	if err != nil || runMock == nil || runMock.Steps[1].Params["body"] != "上游: 自定义回执" {
+		t.Fatalf("mock_outputs dry-run: run=%+v err=%v", runMock, err)
+	}
+
+	// 3. Unmatched condition in dry-run returns nil.
+	unmatched, err := e.TryRuleWithOptions(rule, engine.TryOptions{
+		Event: &event.Event{
+			Source:  hook.ID,
+			Type:    "webhook.received",
+			Payload: map[string]any{"level": "low", "text": "ok"},
+		},
+		DryRun: true,
+	})
+	if err != nil || unmatched != nil {
+		t.Fatalf("expected nil run on unmatched condition, got run=%+v err=%v", unmatched, err)
+	}
+
+	// 4. Template syntax error is caught in dry-run without persisting or emitting run.failed.
+	badTpl := rules.Rule{
+		Name: "bad-tpl",
+		Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1"}, Sources: []string{hook.ID}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s1", Instance: "http", Action: "request", Params: map[string]any{
+					"body": "{{ payload.text",
+				}}},
+			},
+			Edges: []rules.Edge{{From: "t1", To: "s1"}},
+		},
+	}
+	errRun, err := e.TryRuleWithOptions(badTpl, engine.TryOptions{
+		Event:  &event.Event{Source: hook.ID, Type: "webhook.received"},
+		DryRun: true,
+	})
+	if err != nil || errRun == nil || errRun.Status != "error" || !errRun.DryRun || errRun.Steps[0].Error == "" {
+		t.Fatalf("expected template error in dry-run: run=%+v err=%v", errRun, err)
+	}
+	if failedEvs, _ := e.Store.ListEvents(store.EventFilter{Type: builtin.RunFailed}); len(failedEvs) != 0 {
+		t.Fatalf("dry-run emitted run.failed: %+v", failedEvs)
+	}
+
+	// 5. Model-judged condition node in dry-run does NOT call the model and picks default/mocked choice.
+	judgeRule := rules.Rule{
+		Name: "judge-rule",
+		Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1"}, Sources: []string{hook.ID}},
+				{Kind: rules.KindCondition, Step: rules.Step{ID: "c1", Instance: judgeInst.ID, Action: "judge", Params: map[string]any{"prompt": "判断: {{ payload.text }}"}}, Choices: []string{"紧急", "普通"}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s1", Instance: "http", Action: "request", Params: map[string]any{"url": srv.URL, "body": "紧急: {{ steps.c1.choice }}"}}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s2", Instance: "http", Action: "request", Params: map[string]any{"url": srv.URL, "body": "普通: {{ steps.c1.choice }}"}}},
+			},
+			Edges: []rules.Edge{
+				{From: "t1", To: "c1"},
+				{From: "c1", To: "s1", Branch: "紧急"},
+				{From: "c1", To: "s2", Branch: "普通"},
+			},
+		},
+	}
+	jRun, err := e.TryRuleWithOptions(judgeRule, engine.TryOptions{
+		Event:  &event.Event{Source: hook.ID, Type: "webhook.received", Payload: map[string]any{"text": "故障"}},
+		DryRun: true,
+	})
+	if err != nil || jRun == nil || len(jRun.Steps) != 2 || !jRun.Steps[0].DryRun || jRun.Steps[0].Params["prompt"] != "判断: 故障" || jRun.Steps[1].ID != "s1" {
+		t.Fatalf("dry-run judge default branch: run=%+v err=%v", jRun, err)
+	}
+	jRun2, err := e.TryRuleWithOptions(judgeRule, engine.TryOptions{
+		Event:       &event.Event{Source: hook.ID, Type: "webhook.received", Payload: map[string]any{"text": "日常"}},
+		DryRun:      true,
+		MockOutputs: map[string]map[string]any{"c1": {"choice": "普通"}},
+	})
+	if err != nil || jRun2 == nil || len(jRun2.Steps) != 2 || jRun2.Steps[1].ID != "s2" {
+		t.Fatalf("dry-run judge mocked choice: run=%+v err=%v", jRun2, err)
+	}
+	fj.mu.Lock()
+	judgeCalls := fj.calls
+	fj.mu.Unlock()
+	if judgeCalls != 0 {
+		t.Fatalf("dry-run invoked judge model %d times", judgeCalls)
+	}
+
+	// 6. Missing both event_id and event returns an error.
+	if _, err := e.TryRuleWithOptions(rule, engine.TryOptions{DryRun: true}); err == nil {
+		t.Fatal("expected error when neither EventID nor Event is provided")
+	}
+}
