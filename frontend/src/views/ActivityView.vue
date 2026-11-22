@@ -9,6 +9,7 @@ import { useHub, clock, summarize } from '../hub'
 import { get, post } from '../api'
 import type { ApprovalRequest, HubEvent, Rule, Run, StepResult } from '../types'
 import { eventTitle } from '../labels'
+import { formatTokens, stepTokens, tokenBreakdown } from '../metrics'
 import PageHeader from '../components/PageHeader.vue'
 import Drawer from '../components/Drawer.vue'
 import JsonView from '../components/JsonView.vue'
@@ -555,7 +556,13 @@ async function replay() {
                 <span class="dot" :class="s.running ? 'warn' : heldDot(s)" />
                 <template v-if="s.running">流式输出中 · {{ s.duration_ms }} ms</template>
                 <template v-else
-                  ><template v-if="s.attempts">试了 {{ s.attempts }} 次 · </template>{{ s.duration_ms }} ms</template
+                  ><template v-if="s.attempts">试了 {{ s.attempts }} 次 · </template
+                  ><template v-if="stepTokens(s)"
+                    ><span :title="tokenBreakdown(stepTokens(s)!, '本步')"
+                      >{{ formatTokens(stepTokens(s)!.total) }} tokens</span
+                    >
+                    · </template
+                  >{{ s.duration_ms }} ms</template
                 >
               </span>
             </div>

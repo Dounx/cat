@@ -527,3 +527,95 @@ func TestTryRuleAPI(t *testing.T) {
 		t.Fatalf("expected error when neither event_id nor event supplied: %+v", outErr)
 	}
 }
+
+func TestRuleStatsAPI(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	eng := engine.New(st, t.TempDir(), nil)
+	if err := eng.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(eng.Stop)
+
+	r1, err := eng.SaveRule(rules.Rule{
+		Name:    "AI Helper",
+		Enabled: true,
+		Steps:   []rules.Step{{ID: "s1", Instance: "llm", Action: "chat"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := eng.SaveRule(rules.Rule{
+		Name:    "Idle Rule",
+		Enabled: true,
+		Steps:   []rules.Step{{ID: "s1", Instance: "http", Action: "request"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	_ = st.SaveRun(&store.Run{
+		ID: "run-old", RuleID: r1.ID, RuleName: r1.Name, EventID: "e0", Status: "ok",
+		StartedAt: now.Add(-48 * time.Hour),
+		Steps:     []store.StepResult{{ID: "s1", Output: map[string]any{"usage": map[string]any{"prompt_tokens": 50, "completion_tokens": 25}}}},
+	})
+	_ = st.SaveRun(&store.Run{
+		ID: "run-ok", RuleID: r1.ID, RuleName: r1.Name, EventID: "e1", Status: "ok",
+		StartedAt: now.Add(-15 * time.Minute),
+		Steps:     []store.StepResult{{ID: "s1", Output: map[string]any{"usage": map[string]any{"prompt_tokens": 420, "completion_tokens": 185, "total_tokens": 605}}}},
+	})
+	_ = st.SaveRun(&store.Run{
+		ID: "run-err", RuleID: r1.ID, RuleName: r1.Name, EventID: "e2", Status: "error",
+		StartedAt: now.Add(-5 * time.Minute),
+	})
+
+	srv := httptest.NewServer((&Server{Engine: eng}).Handler())
+	defer srv.Close()
+
+	// GET /api/rules embeds 24h stats on rules that have run, omits on idle rules.
+	res, err := http.Get(srv.URL + "/api/rules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("GET /api/rules status = %d", res.StatusCode)
+	}
+	var list []engine.RuleView
+	if err := json.NewDecoder(res.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]engine.RuleView{}
+	for _, r := range list {
+		byID[r.ID] = r
+	}
+	got1 := byID[r1.ID].Stats
+	if got1 == nil || got1.Runs24h != 2 || got1.OK24h != 1 || got1.Failed24h != 1 || got1.Tokens24h.Total != 605 || got1.TotalRuns != 3 || got1.LastStatus != "error" {
+		t.Fatalf("embedded r1 stats = %+v", got1)
+	}
+	if byID[r2.ID].Stats != nil {
+		t.Fatalf("idle rule should have nil stats, got %+v", byID[r2.ID].Stats)
+	}
+
+	// GET /api/rules/stats?hours=72 includes the 48h-old run.
+	res2, err := http.Get(srv.URL + "/api/rules/stats?hours=72")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res2.Body.Close()
+	if res2.StatusCode != 200 {
+		t.Fatalf("GET /api/rules/stats status = %d", res2.StatusCode)
+	}
+	var statsMap map[string]store.RuleStats
+	if err := json.NewDecoder(res2.Body).Decode(&statsMap); err != nil {
+		t.Fatal(err)
+	}
+	s72 := statsMap[r1.ID]
+	if s72.Runs24h != 3 || s72.OK24h != 2 || s72.Failed24h != 1 || s72.Tokens24h.Total != 680 {
+		t.Fatalf("72h stats = %+v", s72)
+	}
+}

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ChevronRight, FileDown, Plus } from 'lucide-vue-next'
 import { useHub } from '../hub'
 import { get, put } from '../api'
-import type { HubEvent, Rule } from '../types'
+import type { HubEvent, Rule, RuleStats } from '../types'
+import { formatTokens, relativeTime, summarizeRules, tokenBreakdown } from '../metrics'
 import { ruleFromEvent } from '../templates'
 import PageHeader from '../components/PageHeader.vue'
 import RuleEditor from '../components/RuleEditor.vue'
@@ -17,6 +18,20 @@ const router = useRouter()
 const editing = ref<Rule | null>(null)
 const choosing = ref(false)
 const importing = ref(false)
+
+const summary = computed(() => summarizeRules(hub.rules))
+const hasSummary = computed(() => summary.value.runs24h > 0 || summary.value.running > 0)
+
+onMounted(() => {
+  if (hub.rules.length) void hub.reloadRuleStats()
+})
+
+function statsDot(st: RuleStats): string {
+  if (st.running > 0) return 'warn'
+  if (st.failed_24h > 0) return 'bad'
+  if (st.runs_24h > 0) return 'ok'
+  return ''
+}
 
 function onSaved() {
   editing.value = null
@@ -48,7 +63,7 @@ watch(
 )
 
 async function toggle(r: Rule) {
-  await hub.run(() => put(`/rules/${r.id}`, { ...r, enabled: !r.enabled, error: undefined }))
+  await hub.run(() => put(`/rules/${r.id}`, { ...r, enabled: !r.enabled, error: undefined, stats: undefined }))
   hub.reloadRules()
 }
 // "对话" for chat, as the plugin behind the step calls it.
@@ -88,28 +103,83 @@ function describe(r: Rule): string {
         </p>
         <TemplatePicker inline @start="start" />
       </div>
-      <TransitionGroup v-else tag="div" name="item" class="list">
+      <template v-else>
         <div
-          v-for="r in hub.rules"
-          :key="r.id"
-          class="row link flex cursor-pointer items-center gap-4 px-4 py-3"
-          @click="editing = JSON.parse(JSON.stringify(r))"
+          v-if="hasSummary"
+          class="mb-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-xs text-mute tabular-nums"
         >
-          <div class="min-w-0 flex-1 transition-opacity duration-200" :class="{ 'opacity-50': !r.enabled }">
-            <div class="text-sm font-medium">{{ r.name || '未命名规则' }}</div>
-            <div class="truncate text-xs text-mute">{{ describe(r) }}</div>
-            <div v-if="r.error" class="mt-1 text-xs text-bad">{{ r.error }}</div>
-          </div>
-          <input
-            type="checkbox"
-            :checked="r.enabled"
-            :title="r.enabled ? '已启用' : '已停用'"
-            @click.stop
-            @change="toggle(r)"
-          />
-          <ChevronRight :size="15" class="text-faint" />
+          <span>近 24 小时</span>
+          <span class="text-faint">·</span>
+          <span>共 {{ summary.runs24h }} 次运行</span>
+          <template v-if="summary.failed24h > 0">
+            <span class="text-faint">·</span>
+            <span class="inline-flex items-center gap-1.5 font-medium text-bad">
+              <span class="dot bad !h-1.5 !w-1.5" />{{ summary.failed24h }} 次失败
+            </span>
+          </template>
+          <template v-else-if="summary.runs24h > 0">
+            <span class="text-faint">·</span>
+            <span class="inline-flex items-center gap-1.5"> <span class="dot ok !h-1.5 !w-1.5" />全部正常 </span>
+          </template>
+          <template v-if="summary.running > 0">
+            <span class="text-faint">·</span>
+            <span class="inline-flex items-center gap-1.5 text-warn">
+              <span class="dot warn !h-1.5 !w-1.5" />{{ summary.running }} 运行中
+            </span>
+          </template>
+          <template v-if="summary.tokens24h.total > 0">
+            <span class="text-faint">·</span>
+            <span :title="tokenBreakdown(summary.tokens24h)">{{ formatTokens(summary.tokens24h.total) }} tokens</span>
+          </template>
         </div>
-      </TransitionGroup>
+        <TransitionGroup tag="div" name="item" class="list">
+          <div
+            v-for="r in hub.rules"
+            :key="r.id"
+            class="row link flex cursor-pointer items-center gap-4 px-4 py-3"
+            @click="editing = JSON.parse(JSON.stringify(r))"
+          >
+            <div class="min-w-0 flex-1 transition-opacity duration-200" :class="{ 'opacity-50': !r.enabled }">
+              <div class="text-sm font-medium">{{ r.name || '未命名规则' }}</div>
+              <div class="truncate text-xs text-mute">{{ describe(r) }}</div>
+              <div
+                v-if="r.stats && (r.stats.runs_24h > 0 || r.stats.running > 0 || r.stats.last_run_at)"
+                class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-mute tabular-nums"
+              >
+                <span class="dot !h-1.5 !w-1.5" :class="statsDot(r.stats)" />
+                <span v-if="r.stats.running > 0" class="text-warn">{{ r.stats.running }} 运行中</span>
+                <span>{{ r.stats.runs_24h > 0 ? `近 24h ${r.stats.runs_24h} 次` : '近 24h 无运行' }}</span>
+                <template v-if="r.stats.failed_24h > 0">
+                  <span class="text-faint">·</span>
+                  <span class="font-medium text-bad">{{ r.stats.failed_24h }} 失败</span>
+                </template>
+                <template v-if="r.stats.last_run_at">
+                  <span class="text-faint">·</span>
+                  <span :title="new Date(r.stats.last_run_at).toLocaleString()"
+                    >上次 {{ relativeTime(r.stats.last_run_at) }}</span
+                  >
+                </template>
+                <template v-if="r.stats.tokens_24h.total > 0">
+                  <span class="text-faint">·</span>
+                  <span class="chip tabular-nums" :title="tokenBreakdown(r.stats.tokens_24h)"
+                    >{{ formatTokens(r.stats.tokens_24h.total) }} tokens</span
+                  >
+                </template>
+              </div>
+              <div v-else class="mt-1 text-xs text-faint">暂无运行记录</div>
+              <div v-if="r.error" class="mt-1 text-xs text-bad">{{ r.error }}</div>
+            </div>
+            <input
+              type="checkbox"
+              :checked="r.enabled"
+              :title="r.enabled ? '已启用' : '已停用'"
+              @click.stop
+              @change="toggle(r)"
+            />
+            <ChevronRight :size="15" class="text-faint" />
+          </div>
+        </TransitionGroup>
+      </template>
     </div>
     <Transition name="modal">
       <TemplatePicker v-if="choosing" @start="start" @close="choosing = false" />

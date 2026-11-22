@@ -45,16 +45,33 @@ func (e *Engine) reloadRules() error {
 	return nil
 }
 
+// RuleStats returns per-rule run health and token usage over the given lookback window.
+func (e *Engine) RuleStats(window time.Duration) (map[string]store.RuleStats, error) {
+	if window <= 0 {
+		window = 24 * time.Hour
+	}
+	return e.Store.RuleStats(time.Now().Add(-window))
+}
+
 func (e *Engine) Rules() ([]RuleView, error) {
 	list, err := e.Store.ListRules()
 	if err != nil {
 		return nil, err
+	}
+	stats, err := e.RuleStats(24 * time.Hour)
+	if err != nil {
+		e.log.Warn("load rule stats", "err", err)
+		stats = nil
 	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	out := make([]RuleView, len(list))
 	for i, r := range list {
 		out[i] = RuleView{Rule: r, Error: e.ruleErrs[r.ID]}
+		if st, ok := stats[r.ID]; ok {
+			cp := st
+			out[i].Stats = &cp
+		}
 		if out[i].Error != "" || !r.Enabled {
 			continue
 		}

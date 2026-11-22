@@ -101,6 +101,23 @@ export interface GraphEdge {
   to: string
   branch?: string
 }
+export interface TokenUsage {
+  prompt: number
+  completion: number
+  total: number
+}
+export interface RuleStats {
+  rule_id: string
+  runs_24h: number
+  ok_24h: number
+  failed_24h: number
+  running: number
+  last_run_at?: string
+  last_status?: string
+  tokens_24h: TokenUsage
+  total_runs: number
+  total_tokens: number
+}
 export interface Rule {
   id: string
   name: string
@@ -112,6 +129,7 @@ export interface Rule {
   graph?: { nodes: GraphNode[]; edges: GraphEdge[] }
   meta?: Record<string, any>
   error?: string
+  stats?: RuleStats
 }
 export interface StepResult {
   id: string

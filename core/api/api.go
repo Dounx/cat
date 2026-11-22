@@ -238,6 +238,19 @@ func (s *Server) Handler() http.Handler {
 		list, err := e.Rules()
 		respond(w, list, err)
 	})
+	mux.HandleFunc("GET /api/rules/stats", func(w http.ResponseWriter, r *http.Request) {
+		hours := 24
+		if raw := r.URL.Query().Get("hours"); raw != "" {
+			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+				if n > 24*30 {
+					n = 24 * 30
+				}
+				hours = n
+			}
+		}
+		stats, err := e.RuleStats(time.Duration(hours) * time.Hour)
+		respond(w, stats, err)
+	})
 	mux.HandleFunc("POST /api/rules", func(w http.ResponseWriter, r *http.Request) {
 		var rule rules.Rule
 		if !readJSON(w, r, &rule) {

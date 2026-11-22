@@ -1,9 +1,10 @@
 import { defineStore } from 'pinia'
 import { auth, get, post } from './api'
-import type { ApprovalRequest, HubEvent, Instance, LogEntry, Plugin, Rule, Run, Update } from './types'
+import type { ApprovalRequest, HubEvent, Instance, LogEntry, Plugin, Rule, RuleStats, Run, Update } from './types'
 
 const MAX_EVENTS = 500
 const MAX_RUNS = 300
+let statsRefreshTimer: ReturnType<typeof setTimeout> | undefined
 
 export const useHub = defineStore('hub', {
   state: () => ({
@@ -100,6 +101,17 @@ export const useHub = defineStore('hub', {
     async reloadRules() {
       this.rules = await get<Rule[]>('/rules')
     },
+    async reloadRuleStats() {
+      const stats = await get<Record<string, RuleStats>>('/rules/stats').catch(() => null)
+      if (!stats) return
+      for (const r of this.rules) {
+        r.stats = stats[r.id]
+      }
+    },
+    scheduleRuleStatsRefresh() {
+      clearTimeout(statsRefreshTimer)
+      statsRefreshTimer = setTimeout(() => void this.reloadRuleStats(), 500)
+    },
     async reloadPlugins() {
       this.plugins = await get<Plugin[]>('/plugins')
     },
@@ -133,6 +145,7 @@ export const useHub = defineStore('hub', {
         else this.runs.unshift(run)
         if (this.runs.length > MAX_RUNS) this.runs.length = MAX_RUNS
         this.lastRun = run
+        this.scheduleRuleStatsRefresh()
       })
       es.addEventListener('instance', (m) => {
         const inst: Instance = JSON.parse((m as MessageEvent).data)

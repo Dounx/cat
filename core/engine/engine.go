@@ -49,10 +49,11 @@ type InstanceView struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// RuleView is a rule plus the last problem evaluating it, if any.
+// RuleView is a rule plus the last problem evaluating it and recent run stats.
 type RuleView struct {
 	rules.Rule
-	Error string `json:"error,omitempty"`
+	Error string           `json:"error,omitempty"`
+	Stats *store.RuleStats `json:"stats,omitempty"`
 }
 
 // LogEntry is a line logged by an instance.
