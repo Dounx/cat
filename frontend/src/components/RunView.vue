@@ -50,7 +50,7 @@ const failed = (p: Pass) => !!(p.visit.error || p.step?.error)
 // An action the run was at when the hub went down.
 const unfinished = (n: ENode, p: Pass) => props.run.status === 'interrupted' && n.kind === 'action' && !p.step
 
-// What to say of a step that held the run (cooldown skip or collect batch).
+// What to say of a step that held the run (dedup/cooldown skip or collect batch).
 const held = (s: StepResult) =>
   typeof s.output?.note === 'string' && s.output.note
     ? s.output.note
@@ -258,7 +258,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
                     ? '失败'
                     : p.step.held
                       ? typeof p.step.output?.note === 'string' && p.step.output.note
-                        ? '冷却跳过'
+                        ? p.step.instance === 'cooldown'
+                          ? '冷却跳过'
+                          : p.step.instance === 'state'
+                            ? '重复跳过'
+                            : '已跳过'
                         : '已收下，先停在这里'
                       : '完成'
                   : going
@@ -276,6 +280,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
           <div v-if="failed(p) || p.step || p.visit.value !== undefined" class="border-t border-line px-3 py-2.5">
             <p v-if="failed(p)" class="rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">
               {{ p.step?.error || p.visit.error }}
+            </p>
+            <p
+              v-if="p.step?.held && typeof p.step.output?.note === 'string' && p.step.output.note"
+              class="mb-2 text-xs text-mute"
+            >
+              {{ p.step.output.note }}
             </p>
             <template v-if="node.kind === 'condition' && !node.ask && !p.visit.error">
               <h4 class="label">表达式的结果</h4>

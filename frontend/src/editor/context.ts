@@ -2,7 +2,23 @@
 // picked on the canvas, and how a node reads. The canvas draws each node from
 // it, and the panel that edits a node fills its fields from it.
 import { computed, inject, provide, reactive, ref, type Component, type InjectionKey, type Ref } from 'vue'
-import { BrainCircuit, Filter, Play, Reply, Wrench, Zap } from 'lucide-vue-next'
+import {
+  Bell,
+  BrainCircuit,
+  Cable,
+  Cat,
+  Clock,
+  Database,
+  Filter,
+  Globe,
+  Layers,
+  Play,
+  Reply,
+  Terminal,
+  Webhook,
+  Wrench,
+  Zap,
+} from 'lucide-vue-next'
 import { useHub } from '../hub'
 import { commonFields, operators } from '../condition'
 import { ELSE, outcomes, tracePath, typesOf, upstreamActions, type Doc, type ENode } from '../graph'
@@ -140,11 +156,25 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
     }
     n.params = params
   }
+  // Lucide icons declared by built-in plugins via manifest.icon.
+  const pluginIcons: Record<string, Component> = {
+    bell: Bell,
+    cable: Cable,
+    cat: Cat,
+    clock: Clock,
+    database: Database,
+    globe: Globe,
+    layers: Layers,
+    terminal: Terminal,
+    webhook: Webhook,
+  }
   // The picture for whatever an action is sent to.
   function targetIcon(instance: string): Component {
     if (instance === SOURCE) return Reply
     const p = hub.pluginOf(hub.instanceOf(instance)?.plugin || '')
-    return !p ? Play : p.singleton ? Wrench : kindIcon[p.category]
+    if (!p) return Play
+    if (p.icon && pluginIcons[p.icon]) return pluginIcons[p.icon]
+    return p.singleton ? Wrench : kindIcon[p.category]
   }
 
   // ---- trying the rule out ----

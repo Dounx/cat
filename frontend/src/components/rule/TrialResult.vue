@@ -15,6 +15,9 @@ defineProps<{ step?: StepResult; times?: number }>()
       >
     </h4>
     <p v-if="step.error" class="mb-2 rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">{{ step.error }}</p>
+    <p v-if="step.held && typeof step.output?.note === 'string' && step.output.note" class="mb-2 text-xs text-mute">
+      {{ step.output.note }}
+    </p>
     <p v-if="step.attempts" class="mb-2 text-xs text-mute">试了 {{ step.attempts }} 次。</p>
     <JsonView v-else :value="step.output ?? null" />
   </template>

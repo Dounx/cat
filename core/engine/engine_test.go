@@ -1181,3 +1181,81 @@ func TestInstanceLogsRingBuffer(t *testing.T) {
 		t.Fatalf("expected logs cleared after delete, got %d", len(left))
 	}
 }
+
+func TestStateOnceDedupAndIncrInEngine(t *testing.T) {
+	var mu sync.Mutex
+	var received []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		received = append(received, string(b))
+		mu.Unlock()
+	}))
+	defer srv.Close()
+
+	e := newEngine(t)
+	hook, err := e.SaveInstance(store.Instance{Plugin: "webhook", Name: "hook", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, e, hook.ID)
+	waitRunning(t, e, "state")
+
+	r, err := e.SaveRule(rules.Rule{
+		Name:    "订单去重计数",
+		Enabled: true,
+		Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1"}, Sources: []string{hook.ID}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s1", Instance: "state", Action: "once",
+					Params: map[string]any{"key": "{{ payload.order_id }}"}}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s2", Instance: "state", Action: "incr",
+					Params: map[string]any{"key": "processed_count"}}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s3", Instance: "http", Action: "request",
+					Params: map[string]any{"url": srv.URL, "body": "{{ payload.order_id }}:#{{ steps.s2.value }}"}}},
+			},
+			Edges: []rules.Edge{{From: "t1", To: "s1"}, {From: "s1", To: "s2"}, {From: "s2", To: "s3"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	send := func(orderID string, wantRuns int) {
+		post(t, e, hook.ID, `{"order_id":"`+orderID+`"}`, nil)
+		waitFor(t, "run "+orderID, func() bool {
+			runs, _ := e.Store.ListRuns(r.ID, "", 10)
+			return len(runs) == wantRuns && runs[0].Status == "ok"
+		})
+	}
+
+	// 1. ORD-1001 passes and increments counter to 1.
+	send("ORD-1001", 1)
+	// 2. Duplicate ORD-1001 is held at state.once without error or downstream execution.
+	send("ORD-1001", 2)
+	// 3. ORD-1002 passes and increments counter to 2.
+	send("ORD-1002", 3)
+
+	runs, _ := e.Store.ListRuns(r.ID, "", 10)
+	if len(runs) != 3 {
+		t.Fatalf("expected 3 runs, got %d", len(runs))
+	}
+	// ListRuns returns newest first: [0]=ORD-1002, [1]=duplicate ORD-1001, [2]=first ORD-1001.
+	dup := runs[1]
+	if dup.Status != "ok" || len(dup.Steps) != 1 || !dup.Steps[0].Held {
+		t.Fatalf("duplicate run should be held at step 1 with ok status: %+v", dup)
+	}
+	if note, _ := dup.Steps[0].Output["note"].(string); !strings.Contains(note, "ORD-1001") {
+		t.Fatalf("expected dedup note with ORD-1001, got %q", note)
+	}
+	// Held run must not emit run.failed.
+	failedEvs, _ := e.Store.ListEvents(store.EventFilter{Type: builtin.RunFailed})
+	if len(failedEvs) != 0 {
+		t.Fatalf("dedup held run emitted run.failed: %+v", failedEvs)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 2 || received[0] != "ORD-1001:#1" || received[1] != "ORD-1002:#2" {
+		t.Fatalf("unexpected downstream requests: %q", received)
+	}
+}
