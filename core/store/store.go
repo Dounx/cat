@@ -199,13 +199,19 @@ func (s *Store) ListEvents(f EventFilter) ([]event.Event, error) {
 	return listJSON[event.Event](s, q, args...)
 }
 
-// PruneEvents keeps only the newest keep events (and drops runs of removed ones).
+// PruneEvents keeps only the newest keep events, removes orphaned runs whose
+// events were pruned, and caps the total stored runs to keep.
 func (s *Store) PruneEvents(keep int) error {
-	_, err := s.db.Exec(`DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?)`, keep)
-	if err != nil {
+	if keep < 0 {
+		keep = 0
+	}
+	if _, err := s.db.Exec(`DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?)`, keep); err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`DELETE FROM runs WHERE id NOT IN (SELECT id FROM runs ORDER BY id DESC LIMIT ?)`, keep)
+	if _, err := s.db.Exec(`DELETE FROM runs WHERE event_id != '' AND event_id NOT IN (SELECT id FROM events)`); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM runs WHERE id NOT IN (SELECT id FROM runs ORDER BY id DESC LIMIT ?)`, keep)
 	return err
 }
 

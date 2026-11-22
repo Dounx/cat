@@ -372,6 +372,22 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/blobs/{rel...}", s.serveBlob)
 
+	mux.HandleFunc("GET /api/backup", func(w http.ResponseWriter, r *http.Request) {
+		backup, err := e.ExportBackup()
+		respond(w, backup, err)
+	})
+	mux.HandleFunc("POST /api/backup/import", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Backup engine.WorkspaceBackup `json:"backup"`
+			Mode   string                 `json:"mode"`
+		}
+		if !readJSON(w, r, &body) {
+			return
+		}
+		res, err := e.ImportBackup(body.Backup, body.Mode)
+		respondBad(w, res, err)
+	})
+
 	for _, fn := range s.extras {
 		fn(mux)
 	}
@@ -387,7 +403,7 @@ func (s *Server) Handler() http.Handler {
 	return s.guard(mux)
 }
 
-const settingsScope = "settings"
+const settingsScope = engine.SettingsScope
 
 // Settings are what the hub is told about itself, as opposed to about a
 // connection.
@@ -400,44 +416,8 @@ type Settings struct {
 	MarketURL string `json:"market_url"`
 }
 
-// normalizePublicURL checks an address typed in by hand and returns it as it
-// is kept: scheme and host, with any path it is served under, and no trailing
-// slash. Empty stays empty.
-func normalizePublicURL(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", nil
-	}
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return "", errors.New("对外地址要以 http:// 或 https:// 开头，后面跟域名或 IP")
-	}
-	if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-		return "", errors.New("对外地址里不要带 ?、# 或用户名密码")
-	}
-	return u.Scheme + "://" + u.Host + strings.TrimRight(u.EscapedPath(), "/"), nil
-}
-
-func normalizeMarketURL(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", nil
-	}
-	if strings.EqualFold(raw, "off") {
-		return "off", nil
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return "", errors.New("插件市场地址格式不对")
-	}
-	if u.Scheme == "file" && u.Path != "" {
-		return raw, nil
-	}
-	if (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.User == nil {
-		return raw, nil
-	}
-	return "", errors.New("插件市场地址要以 http://、https:// 或 file:// 开头，或者填 off 关闭")
-}
+func normalizePublicURL(raw string) (string, error) { return engine.NormalizePublicURL(raw) }
+func normalizeMarketURL(raw string) (string, error) { return engine.NormalizeMarketURL(raw) }
 
 // guard enforces the API token and rejects cross-site API calls.
 func (s *Server) guard(next http.Handler) http.Handler {

@@ -217,3 +217,34 @@ export interface ApprovalRequest {
   expires_at?: string
   decided_at?: string
 }
+
+export interface BackupInstance {
+  id: string
+  plugin: string
+  name: string
+  enabled: boolean
+  config: Record<string, unknown>
+  masked_secrets?: string[]
+}
+
+export interface WorkspaceBackup {
+  format: string
+  version: number
+  exported_at: string
+  settings: {
+    public_url?: string
+    market_url?: string
+  }
+  instances: BackupInstance[]
+  rules: Rule[]
+}
+
+export interface BackupImportResult {
+  instances_imported: number
+  instances_skipped: number
+  rules_imported: number
+  rules_skipped: number
+  settings_updated: boolean
+  warnings: string[]
+  needs_secrets: string[]
+}

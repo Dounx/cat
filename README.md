@@ -48,6 +48,29 @@ make app
 | `--token` | `CAT_TOKEN` | 访问令牌。监听非本机地址时必须设置 |
 | `--plugins` | `CAT_PLUGINS` | 额外的插件目录 |
 | `--market` | `CAT_MARKET` | 插件市场索引地址；填 `off` 关闭（默认读取最新 Release 的 `index.json`） |
+| `--keep-events` | `CAT_KEEP_EVENTS` | 保留最近事件条数上限，默认 `20000`（裁剪时会同步清理孤立的运行记录） |
+| `--max-concurrent` | `CAT_MAX_CONCURRENT` | 全局规则并发执行上限，默认 `16` |
+| `--serialize-conversations` | `CAT_SERIALIZE_CONVERSATIONS` | 是否对同一「规则 + 来源 + 会话」的事件按到达顺序串行执行，默认 `true` |
+| — | `CAT_MASTER_KEY` | 可选主密钥。设置后 `secrets.json` 使用 AES-256-GCM 加密存储；已有明文文件启动时自动迁移 |
+
+### Docker 自托管部署
+
+仓库自带多阶段 `Dockerfile` 与 `docker-compose.yml`（内含 Web 界面与全部官方 Go 插件，默认以非 root 用户运行并持久化到 `/data`）：
+
+```bash
+export CAT_TOKEN="your-strong-api-token"
+export CAT_MASTER_KEY="your-optional-secrets-master-key"
+docker compose up -d --build
+```
+
+服务默认监听 `http://localhost:7788`，并内置 `/api/status` 健康检查。
+
+### 工作区备份与迁移
+
+在「接入」页右上角点击「备份与迁移」（或调用 `GET /api/backup` 与 `POST /api/backup/import`），可以一键导出整个工作区的全局设置、接入配置和全部规则为 `.cat-backup.json` 文件：
+
+- 导出时所有密码 / 令牌类字段会自动脱敏为 `••••••••`，不会泄露明文密钥，并在 `masked_secrets` 中标明。
+- 导入支持「合并（保留已有）」和「覆盖」两种模式，保留原接入 ID 和规则 ID 以维系引用关系；未安装的插件会在 `warnings` 中提示而不会中断导入；在新机器恢复时，`needs_secrets` 会列出需要补填密钥的接入。
 
 Cat 放在反向代理或内网穿透后面时，到「接入」页列表下面设置「对外地址」：Webhook 这类接入显示和复制的接收地址会以它开头，而不是以你打开界面的地址开头。它只改显示的地址，不改 Cat 监听在哪。
 
@@ -296,7 +319,7 @@ Cat 只增删它自己的那一项，别的配置不动。别的支持 MCP 的�
 - **装了 MCP 的 AI 能做你在 Cat 里能做的一切**，包括用「运行脚本」执行命令、建一条以后一直生效的规则。规则里由聊天消息触发的 AI 默认只允许 `Read,Glob,Grep`，用不了这些工具；除非你确实想让聊天里的人通过 AI 操作 Cat，不要把 `mcp__cat__*` 加进它「允许的工具」。
 - **插件没有沙箱**，以你的用户身份运行。只安装你信任的插件。从市场安装时会校验 SHA-256。
 - 默认只监听本机。要对外提供服务必须设置 `--token`；Webhook 请配置密钥。
-- 密钥类配置存放在系统钥匙串（桌面版）或 `~/.cat/secrets.json`（无界面版，仅靠文件权限保护，未加密）。
+- 密钥类配置存放在系统钥匙串（桌面版）或 `~/.cat/secrets.json`（无界面版；设置 `CAT_MASTER_KEY` 后使用 AES-256-GCM 加密落盘，未设置时仅靠文件权限保护）。
 
 ## 开发
 

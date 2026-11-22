@@ -619,3 +619,98 @@ func TestRuleStatsAPI(t *testing.T) {
 		t.Fatalf("72h stats = %+v", s72)
 	}
 }
+
+func TestBackupAPI(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	eng := engine.New(st, t.TempDir(), nil)
+	eng.Secrets = &engine.FileSecrets{Path: filepath.Join(t.TempDir(), "secrets.json"), MasterKey: "k"}
+	for _, b := range builtin.All() {
+		eng.RegisterPlugin(b.Manifest, b.Factory)
+	}
+	if err := eng.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(eng.Stop)
+
+	hook, err := eng.SaveInstance(store.Instance{
+		Plugin: "webhook", Name: "MyHook", Enabled: true,
+		Config: map[string]any{"secret": "api-secret-val"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.SaveRule(rules.Rule{
+		Name: "R1", Enabled: true, Sources: []string{hook.ID},
+		Steps: []rules.Step{{ID: "s1", Instance: "shell", Action: "run", Params: map[string]any{"command": "echo 1"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer((&Server{Engine: eng}).Handler())
+	defer srv.Close()
+
+	// Export backup.
+	res, err := http.Get(srv.URL + "/api/backup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyBytes, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("GET /api/backup status = %d: %s", res.StatusCode, bodyBytes)
+	}
+	if strings.Contains(string(bodyBytes), "api-secret-val") {
+		t.Fatalf("GET /api/backup leaked secret: %s", bodyBytes)
+	}
+	var exported engine.WorkspaceBackup
+	if err := json.Unmarshal(bodyBytes, &exported); err != nil {
+		t.Fatal(err)
+	}
+	if exported.Format != engine.BackupFormat || len(exported.Instances) != 1 || len(exported.Rules) != 1 {
+		t.Fatalf("unexpected exported bundle: %+v", exported)
+	}
+
+	// Import into a fresh server.
+	st2, _ := store.Open(":memory:")
+	t.Cleanup(func() { st2.Close() })
+	eng2 := engine.New(st2, t.TempDir(), nil)
+	eng2.Secrets = &engine.FileSecrets{Path: filepath.Join(t.TempDir(), "secrets.json")}
+	for _, b := range builtin.All() {
+		eng2.RegisterPlugin(b.Manifest, b.Factory)
+	}
+	if err := eng2.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(eng2.Stop)
+	srv2 := httptest.NewServer((&Server{Engine: eng2}).Handler())
+	defer srv2.Close()
+
+	// Invalid backup format -> 400.
+	badRes, err := http.Post(srv2.URL+"/api/backup/import", "application/json", strings.NewReader(`{"backup":{"format":"other","version":1}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	badRes.Body.Close()
+	if badRes.StatusCode != 400 {
+		t.Fatalf("invalid backup status = %d, want 400", badRes.StatusCode)
+	}
+
+	// Valid import -> 200 with needs_secrets.
+	payload, _ := json.Marshal(map[string]any{"backup": exported, "mode": "merge"})
+	impRes, err := http.Post(srv2.URL+"/api/backup/import", "application/json", strings.NewReader(string(payload)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out engine.ImportResult
+	if err := json.NewDecoder(impRes.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	impRes.Body.Close()
+	if impRes.StatusCode != 200 || out.InstancesImported != 1 || out.RulesImported != 1 || len(out.NeedsSecrets) != 1 || out.NeedsSecrets[0] != "MyHook" {
+		t.Fatalf("unexpected import response (%d): %+v", impRes.StatusCode, out)
+	}
+}

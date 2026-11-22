@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
+  Archive,
   Check,
   ChevronRight,
   Copy,
@@ -22,6 +23,7 @@ import Drawer from '../components/Drawer.vue'
 import SchemaForm from '../components/SchemaForm.vue'
 import SetupWizard from '../components/SetupWizard.vue'
 import McpPanel from '../components/McpPanel.vue'
+import BackupDrawer from '../components/BackupDrawer.vue'
 import { picksFor } from '../picks'
 
 const hub = useHub()
@@ -286,6 +288,7 @@ async function remove(i: Instance) {
 }
 
 const logInst = ref<Instance | null>(null)
+const backupOpen = ref(false)
 const logLines = ref<LogEntry[]>([])
 const loadingLogs = ref(false)
 async function openInstanceLogs(i: Instance) {
@@ -322,6 +325,7 @@ const levelClass = (lvl: string) => {
 <template>
   <div class="flex h-full flex-col">
     <PageHeader title="接入" hint="把聊天软件、要盯的东西和 AI 接进来，规则才有东西可用">
+      <button class="btn" @click="backupOpen = true"><Archive :size="15" />备份与迁移</button>
       <button class="btn btn-primary" @click="picking = 'add'"><Plus :size="15" />添加</button>
     </PageHeader>
 
@@ -626,6 +630,10 @@ const levelClass = (lvl: string) => {
           </div>
         </div>
       </Drawer>
+    </Transition>
+
+    <Transition name="drawer">
+      <BackupDrawer v-if="backupOpen" @close="backupOpen = false" />
     </Transition>
 
     <Transition name="modal">

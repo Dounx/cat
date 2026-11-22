@@ -47,6 +47,18 @@ type Options struct {
 	// Secrets overrides where credentials are kept (default: a private file
 	// in the data directory).
 	Secrets engine.Secrets
+	// MasterKey, when set and Secrets is nil, encrypts secrets.json on disk
+	// with AES-256-GCM (populated from CAT_MASTER_KEY in catd).
+	MasterKey string
+	// KeepEvents configures how many recent events (and runs) are retained
+	// when pruning (default engine.DefaultKeepEvents).
+	KeepEvents int
+	// MaxConcurrent configures the global concurrency cap for rule runs
+	// (default engine.DefaultMaxConcurrent).
+	MaxConcurrent int
+	// SerializeConversations controls whether runs for the same
+	// (ruleID, source, conversation.id) execute sequentially (default true).
+	SerializeConversations *bool
 	// Desktop marks the desktop shell; OpenURL opens a link in the browser and
 	// OpenLogs opens the log directory in the system file manager.
 	Desktop  bool
@@ -101,10 +113,23 @@ func New(opts Options) (*App, error) {
 		ln.Close()
 		return nil, err
 	}
-	eng := engine.New(st, opts.DataDir, slog.Default())
+	eng := engine.NewWithOptions(st, opts.DataDir, slog.Default(), engine.Options{
+		KeepEvents:             opts.KeepEvents,
+		MaxConcurrent:          opts.MaxConcurrent,
+		SerializeConversations: opts.SerializeConversations,
+	})
 	eng.Secrets = opts.Secrets
 	if eng.Secrets == nil {
-		eng.Secrets = &engine.FileSecrets{Path: filepath.Join(opts.DataDir, "secrets.json")}
+		fs := &engine.FileSecrets{
+			Path:      filepath.Join(opts.DataDir, "secrets.json"),
+			MasterKey: opts.MasterKey,
+		}
+		if err := fs.Verify(); err != nil {
+			ln.Close()
+			st.Close()
+			return nil, fmt.Errorf("secrets store: %w", err)
+		}
+		eng.Secrets = fs
 	}
 	for _, b := range builtin.All() {
 		eng.RegisterPlugin(b.Manifest, b.Factory)

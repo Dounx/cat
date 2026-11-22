@@ -1,0 +1,17 @@
+.git
+.github
+.serena
+.DS_Store
+bin/
+dist/
+data/
+node_modules/
+frontend/node_modules/
+sdk/node/node_modules/
+plugins/discord/node_modules/
+plugins/*/cat-plugin-*
+desktop/
+*.db
+*.db-*
+*.syso
+*.bun-build

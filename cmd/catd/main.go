@@ -10,16 +10,21 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 
 	"github.com/dounx/cat/app"
+	"github.com/dounx/cat/core/engine"
 	"github.com/dounx/cat/core/update"
 )
 
 func main() {
 	update.AwaitPredecessor()
-	opts := app.Options{}
+	opts := app.Options{
+		MasterKey: os.Getenv("CAT_MASTER_KEY"),
+	}
 	flag.StringVar(&opts.Addr, "addr", envOr("CAT_ADDR", "127.0.0.1:7788"), "listen address")
 	flag.StringVar(&opts.DataDir, "data", os.Getenv("CAT_DATA"), "data directory (default ~/.cat)")
 	flag.StringVar(&opts.Token, "token", os.Getenv("CAT_TOKEN"), "API token; required when listening on a non-loopback address")
@@ -27,8 +32,12 @@ func main() {
 	flag.StringVar(&opts.MarketURL, "market", os.Getenv("CAT_MARKET"), "plugin market index URL; \"off\" disables it (default: the latest release)")
 	flag.StringVar(&opts.UpdateURL, "update", os.Getenv("CAT_UPDATE"), "update manifest URL; \"off\" never updates (default: the latest release)")
 	flag.StringVar(&opts.UIDev, "ui-dev", os.Getenv("CAT_UI_DEV"), "frontend dev server URL to proxy the UI to (development)")
+	flag.IntVar(&opts.KeepEvents, "keep-events", envInt("CAT_KEEP_EVENTS", engine.DefaultKeepEvents), "maximum number of recent events to retain")
+	flag.IntVar(&opts.MaxConcurrent, "max-concurrent", envInt("CAT_MAX_CONCURRENT", engine.DefaultMaxConcurrent), "maximum number of concurrent rule executions")
+	serializeConv := flag.Bool("serialize-conversations", envBool("CAT_SERIALIZE_CONVERSATIONS", true), "serialize runs per (rule, source, conversation) in arrival order")
 	flag.Parse()
 	opts.PluginDirs = filepath.SplitList(*plugins)
+	opts.SerializeConversations = serializeConv
 
 	a, err := app.New(opts)
 	if err != nil {
@@ -62,6 +71,24 @@ func main() {
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func envInt(key string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
+func envBool(key string, def bool) bool {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
 	}
 	return def
 }

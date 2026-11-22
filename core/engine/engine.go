@@ -32,9 +32,29 @@ const (
 	maxRetryWait       = 5 * time.Minute
 	// startWait is how long a step waits for an instance that is starting.
 	startWait       = 30 * time.Second
-	keepEvents      = 20000
 	maxInstanceLogs = 200
+
+	DefaultKeepEvents    = 20000
+	DefaultMaxConcurrent = 16
 )
+
+// Options tunes engine retention, concurrency, and per-conversation ordering.
+type Options struct {
+	// KeepEvents is how many recent events (and runs) are kept when pruning.
+	// Non-positive values default to DefaultKeepEvents.
+	KeepEvents int
+	// MaxConcurrent caps how many rule runs execute at the same time.
+	// Non-positive values default to DefaultMaxConcurrent.
+	MaxConcurrent int
+	// SerializeConversations serializes runs for the same
+	// (ruleID, source, conversation.id) in arrival order. Defaults to true.
+	SerializeConversations *bool
+}
+
+type convLock struct {
+	tail chan struct{}
+	refs int
+}
 
 // Message is pushed to live subscribers (the UI's event stream).
 type Message struct {
@@ -106,6 +126,13 @@ type Engine struct {
 	logsMu sync.Mutex
 	logs   map[string][]LogEntry
 
+	keepEvents    int
+	maxConcurrent int
+	serializeConv bool
+
+	convMu    sync.Mutex
+	convLocks map[string]*convLock
+
 	sem     chan struct{}
 	wg      sync.WaitGroup
 	emitted int
@@ -119,21 +146,66 @@ type Engine struct {
 }
 
 func New(st *store.Store, dataDir string, log *slog.Logger) *Engine {
+	return NewWithOptions(st, dataDir, log, Options{})
+}
+
+func NewWithOptions(st *store.Store, dataDir string, log *slog.Logger, opts Options) *Engine {
 	if log == nil {
 		log = slog.Default()
 	}
+	keep := opts.KeepEvents
+	if keep <= 0 {
+		keep = DefaultKeepEvents
+	}
+	maxConc := opts.MaxConcurrent
+	if maxConc <= 0 {
+		maxConc = DefaultMaxConcurrent
+	}
+	serialize := true
+	if opts.SerializeConversations != nil {
+		serialize = *opts.SerializeConversations
+	}
 	return &Engine{
 		Store: st, dataDir: dataDir, log: log,
-		plugins:  map[string]registered{},
-		running:  map[string]*running{},
-		ruleErrs: map[string]string{},
-		trigErrs: map[string]map[string]string{},
-		subs:     map[chan Message]struct{}{},
-		runs:     map[string]context.CancelFunc{},
-		logs:     map[string][]LogEntry{},
-		sem:      make(chan struct{}, 16),
-		stopping: make(chan struct{}),
+		plugins:       map[string]registered{},
+		running:       map[string]*running{},
+		ruleErrs:      map[string]string{},
+		trigErrs:      map[string]map[string]string{},
+		subs:          map[chan Message]struct{}{},
+		runs:          map[string]context.CancelFunc{},
+		logs:          map[string][]LogEntry{},
+		keepEvents:    keep,
+		maxConcurrent: maxConc,
+		serializeConv: serialize,
+		convLocks:     map[string]*convLock{},
+		sem:           make(chan struct{}, maxConc),
+		stopping:      make(chan struct{}),
 	}
+}
+
+func (e *Engine) SetKeepEvents(n int) {
+	if n <= 0 {
+		n = DefaultKeepEvents
+	}
+	e.mu.Lock()
+	e.keepEvents = n
+	e.mu.Unlock()
+}
+
+func (e *Engine) SetMaxConcurrent(n int) {
+	if n <= 0 {
+		n = DefaultMaxConcurrent
+	}
+	e.mu.Lock()
+	e.maxConcurrent = n
+	e.sem = make(chan struct{}, n)
+	e.mu.Unlock()
+}
+
+func (e *Engine) SetSerializeConversations(enabled bool) {
+	e.mu.Lock()
+	e.serializeConv = enabled
+	e.mu.Unlock()
 }
 
 func (e *Engine) DataDir() string  { return e.dataDir }

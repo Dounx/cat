@@ -1,8 +1,17 @@
 package engine
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/dounx/cat/core/store"
@@ -103,42 +112,186 @@ func (e *Engine) masked(rec store.Instance) store.Instance {
 			rec.Config[f] = SecretMask
 		}
 	}
+	for k, v := range rec.Config {
+		if v == secretRef {
+			rec.Config[k] = SecretMask
+		}
+	}
 	return rec
 }
 
-// FileSecrets stores secrets in a JSON file readable only by the owner. It is
-// not encrypted: it relies on file permissions.
-type FileSecrets struct {
-	Path string
-	mu   sync.Mutex
+const (
+	secretsEnvelopeVersion = 1
+	secretsEnvelopeAlg     = "aes-256-gcm"
+)
+
+type encryptedSecretsEnvelope struct {
+	V          int    `json:"v"`
+	Alg        string `json:"alg"`
+	Nonce      string `json:"nonce"`
+	Ciphertext string `json:"ciphertext"`
 }
 
-func (f *FileSecrets) load() map[string]string {
-	m := map[string]string{}
-	if b, err := os.ReadFile(f.Path); err == nil {
-		_ = json.Unmarshal(b, &m)
+// FileSecrets stores secrets in a JSON file readable only by the owner.
+// When MasterKey is non-empty, the file payload is encrypted using AES-256-GCM.
+type FileSecrets struct {
+	Path      string
+	MasterKey string
+	mu        sync.Mutex
+}
+
+func deriveSecretsKey(masterKey string) [32]byte {
+	return sha256.Sum256([]byte(masterKey))
+}
+
+func parseEncryptedEnvelope(raw []byte) (encryptedSecretsEnvelope, bool) {
+	var env encryptedSecretsEnvelope
+	if err := json.Unmarshal(raw, &env); err == nil && env.V > 0 && env.Alg != "" && env.Ciphertext != "" {
+		return env, true
 	}
-	return m
+	return encryptedSecretsEnvelope{}, false
+}
+
+func encryptSecretsPayload(plain []byte, masterKey string) ([]byte, error) {
+	key := deriveSecretsKey(masterKey)
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, err
+	}
+	ct := gcm.Seal(nil, nonce, plain, nil)
+	env := encryptedSecretsEnvelope{
+		V:          secretsEnvelopeVersion,
+		Alg:        secretsEnvelopeAlg,
+		Nonce:      base64.StdEncoding.EncodeToString(nonce),
+		Ciphertext: base64.StdEncoding.EncodeToString(ct),
+	}
+	return json.Marshal(env)
+}
+
+func decryptSecretsEnvelope(env encryptedSecretsEnvelope, masterKey string) ([]byte, error) {
+	if env.V != secretsEnvelopeVersion || env.Alg != secretsEnvelopeAlg {
+		return nil, fmt.Errorf("unsupported encrypted secrets format (v=%d, alg=%q)", env.V, env.Alg)
+	}
+	if masterKey == "" {
+		return nil, errors.New("secrets file is encrypted; set CAT_MASTER_KEY to unlock it")
+	}
+	nonce, err := base64.StdEncoding.DecodeString(env.Nonce)
+	if err != nil {
+		return nil, fmt.Errorf("invalid secrets nonce: %w", err)
+	}
+	ct, err := base64.StdEncoding.DecodeString(env.Ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("invalid secrets ciphertext: %w", err)
+	}
+	key := deriveSecretsKey(masterKey)
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	if len(nonce) != gcm.NonceSize() {
+		return nil, errors.New("invalid secrets nonce length")
+	}
+	plain, err := gcm.Open(nil, nonce, ct, nil)
+	if err != nil {
+		return nil, errors.New("failed to decrypt secrets file: wrong CAT_MASTER_KEY or corrupted file")
+	}
+	return plain, nil
+}
+
+func (f *FileSecrets) loadLocked() (map[string]string, bool, error) {
+	m := map[string]string{}
+	b, err := os.ReadFile(f.Path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return m, false, nil
+		}
+		return nil, false, err
+	}
+	if strings.TrimSpace(string(b)) == "" {
+		return m, false, nil
+	}
+	if env, ok := parseEncryptedEnvelope(b); ok {
+		plain, err := decryptSecretsEnvelope(env, f.MasterKey)
+		if err != nil {
+			return nil, false, err
+		}
+		if err := json.Unmarshal(plain, &m); err != nil {
+			return nil, false, fmt.Errorf("invalid decrypted secrets payload: %w", err)
+		}
+		return m, false, nil
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, false, fmt.Errorf("invalid secrets file: %w", err)
+	}
+	return m, true, nil
+}
+
+func (f *FileSecrets) saveLocked(m map[string]string) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	if f.MasterKey != "" {
+		b, err = encryptSecretsPayload(b, f.MasterKey)
+		if err != nil {
+			return err
+		}
+	}
+	tmp := f.Path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, f.Path)
+}
+
+// Verify checks that the secrets file (if present) can be read with the
+// configured MasterKey. When MasterKey is set and an existing plaintext file
+// is found, it migrates the file to encrypted format immediately.
+func (f *FileSecrets) Verify() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m, wasPlaintext, err := f.loadLocked()
+	if err != nil {
+		return err
+	}
+	if wasPlaintext && f.MasterKey != "" {
+		return f.saveLocked(m)
+	}
+	return nil
 }
 
 func (f *FileSecrets) Get(key string) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	v, ok := f.load()[key]
+	m, _, err := f.loadLocked()
+	if err != nil {
+		return "", false
+	}
+	v, ok := m[key]
 	return v, ok
 }
 
 func (f *FileSecrets) update(fn func(map[string]string)) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	m := f.load()
-	fn(m)
-	b, _ := json.Marshal(m)
-	tmp := f.Path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	m, _, err := f.loadLocked()
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, f.Path)
+	fn(m)
+	return f.saveLocked(m)
 }
 
 func (f *FileSecrets) Set(key, value string) error {

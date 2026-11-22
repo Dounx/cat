@@ -160,13 +160,21 @@ func (e *Engine) Emit(ev *event.Event) (string, error) {
 
 	e.mu.Lock()
 	e.emitted++
-	prune := e.emitted%500 == 0
+	keep := e.keepEvents
+	interval := 500
+	if keep > 0 && keep < interval {
+		interval = keep / 2
+		if interval < 1 {
+			interval = 1
+		}
+	}
+	prune := keep > 0 && e.emitted%interval == 0
 	e.mu.Unlock()
 	if prune {
-		if err := e.Store.PruneEvents(keepEvents); err != nil {
+		if err := e.Store.PruneEvents(keep); err != nil {
 			e.log.Warn("prune events", "err", err)
-		} else if keep, err := e.Store.BlobPaths(); err == nil {
-			blob.Sweep(e.BlobsDir(), keep, time.Hour)
+		} else if keepBlobs, err := e.Store.BlobPaths(); err == nil {
+			blob.Sweep(e.BlobsDir(), keepBlobs, time.Hour)
 		}
 	}
 	return ev.ID, nil
@@ -182,9 +190,54 @@ func (e *Engine) Replay(eventID, ruleID string) (int, error) {
 	return e.dispatch(ev, ruleID, true), nil
 }
 
+func (e *Engine) conversationKey(ruleID string, ev *event.Event) string {
+	if ev == nil || ev.Conversation == nil || ev.Conversation.ID == "" {
+		return ""
+	}
+	return ruleID + "\x00" + ev.Source + "\x00" + ev.Conversation.ID
+}
+
+// enqueueConversation appends a waiter for key in strict arrival order and
+// returns the previous waiter's completion channel (if any) plus the channel
+// this waiter must pass to releaseConversation when finished.
+func (e *Engine) enqueueConversation(key string) (prev, done chan struct{}) {
+	if key == "" {
+		return nil, nil
+	}
+	done = make(chan struct{})
+	e.convMu.Lock()
+	entry := e.convLocks[key]
+	if entry == nil {
+		entry = &convLock{}
+		e.convLocks[key] = entry
+	}
+	prev = entry.tail
+	entry.tail = done
+	entry.refs++
+	e.convMu.Unlock()
+	return prev, done
+}
+
+func (e *Engine) releaseConversation(key string, done chan struct{}) {
+	if key == "" || done == nil {
+		return
+	}
+	e.convMu.Lock()
+	if entry := e.convLocks[key]; entry != nil {
+		entry.refs--
+		if entry.refs <= 0 {
+			delete(e.convLocks, key)
+		}
+	}
+	e.convMu.Unlock()
+	close(done)
+}
+
 func (e *Engine) dispatch(ev *event.Event, onlyRule string, replay bool) int {
 	e.mu.RLock()
 	list := e.rules
+	serialize := e.serializeConv
+	sem := e.sem
 	e.mu.RUnlock()
 	matched := 0
 	for _, r := range list {
@@ -206,13 +259,25 @@ func (e *Engine) dispatch(ev *event.Event, onlyRule string, replay bool) int {
 			continue
 		}
 		matched++
+		var convKey string
+		var prev, done chan struct{}
+		if serialize {
+			convKey = e.conversationKey(r.ID, ev)
+			prev, done = e.enqueueConversation(convKey)
+		}
 		e.wg.Add(1)
-		go func(r *rules.Compiled) {
+		go func(r *rules.Compiled, key string, prev, done chan struct{}) {
 			defer e.wg.Done()
-			e.sem <- struct{}{}
-			defer func() { <-e.sem }()
+			if prev != nil {
+				<-prev
+			}
+			if done != nil {
+				defer e.releaseConversation(key, done)
+			}
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			e.execute(r, ev, replay)
-		}(r)
+		}(r, convKey, prev, done)
 	}
 	return matched
 }
@@ -1003,11 +1068,27 @@ func (e *Engine) Resume(ruleID, stepID, eventID string, output map[string]any, i
 		ev = &event.Event{ID: eventID, Source: instanceID, Plugin: instanceID, Type: "resumed", Time: time.Now(), Payload: map[string]any{}}
 	}
 	from := &store.StepResult{ID: stepID, Instance: instanceID, Action: step.Action, Output: output}
+	e.mu.RLock()
+	serialize := e.serializeConv
+	sem := e.sem
+	e.mu.RUnlock()
+	var convKey string
+	var prev, done chan struct{}
+	if serialize {
+		convKey = e.conversationKey(r.ID, ev)
+		prev, done = e.enqueueConversation(convKey)
+	}
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
-		e.sem <- struct{}{}
-		defer func() { <-e.sem }()
+		if prev != nil {
+			<-prev
+		}
+		if done != nil {
+			defer e.releaseConversation(convKey, done)
+		}
+		sem <- struct{}{}
+		defer func() { <-sem }()
 		e.executeFrom(r, ev, false, from)
 	}()
 	return nil
