@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -685,20 +686,16 @@ func TestSetupAsksAgainUntilEverythingChecksOut(t *testing.T) {
 	}
 }
 
-// fakeGH makes the stand-in for gh from testdata the gh "installed on this
-// machine", and returns the directory it keeps its state in.
+// fakeGH compiles the cross-platform stand-in for gh from testdata as the gh
+// "installed on this machine", and returns the directory it keeps its state in.
 func fakeGH(t *testing.T) string {
-	if runtime.GOOS == "windows" {
-		t.Skip("the stand-in for gh is a shell script")
-	}
 	dir := t.TempDir()
-	script, err := os.ReadFile(filepath.Join("testdata", "fakebin", "gh"))
-	if err != nil {
-		t.Fatal(err)
-	}
 	bin := filepath.Join(dir, "gh")
-	if err := os.WriteFile(bin, script, 0o755); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	if out, err := exec.Command("go", "build", "-o", bin, "./testdata/fakegh").CombinedOutput(); err != nil {
+		t.Fatalf("build fakegh: %v\n%s", err, out)
 	}
 	t.Setenv("GH_CONFIG_DIR", "")
 	ghInstalled = func() (string, bool) { return bin, true }

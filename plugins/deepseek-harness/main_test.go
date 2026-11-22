@@ -38,26 +38,8 @@ func fakeDeepSeek(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// fakeDsh mimics `dsh headless --json`; the event shapes were captured from
-// the DeepSeek Harness CLI.
-const fakeDsh = `
-prompt=$(cat)
-echo "ARGS:$*" >> "$FAKE_LOG"
-echo "PROMPT:$(echo "$prompt" | tr '\n' '~')" >> "$FAKE_LOG"
-echo "KEY:$DEEPSEEK_API_KEY" >> "$FAKE_LOG"
-if [ -z "$DEEPSEEK_API_KEY" ]; then
-  echo '{"type":"session","sessionId":"session-x","cwd":"/tmp"}'
-  echo '{"type":"final","sessionId":"session-x","reason":{"kind":"error","error":{"message":"llm-deepseek: no API key","code":"MISSING_CREDENTIAL"}},"text":""}'
-  exit 0
-fi
-n=$(grep -c '^ARGS:' "$FAKE_LOG")
-echo "{\"type\":\"session\",\"sessionId\":\"session-$n\",\"cwd\":\"/tmp\"}"
-echo '{"type":"status","phase":"turn_start","turn":1}'
-echo "{\"type\":\"final\",\"sessionId\":\"session-$n\",\"reason\":{\"kind\":\"completed\"},\"text\":\"done $n\"}"
-`
-
 func TestHarnessMode(t *testing.T) {
-	bin := faketest.Script(t, "dsh", fakeDsh)
+	bin := faketest.Bin(t, "dsh")
 	calls := faketest.Log(t)
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{
 		"bin": bin, "api_key": "sk-good", "harness_permission": "workspace-write", "system_prompt": "Be brief.",
@@ -89,7 +71,7 @@ func TestHarnessMode(t *testing.T) {
 }
 
 func TestHarnessMissingCredential(t *testing.T) {
-	bin := faketest.Script(t, "dsh", fakeDsh)
+	bin := faketest.Bin(t, "dsh")
 	faketest.Log(t)
 	t.Setenv("DEEPSEEK_API_KEY", "")
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin}})
@@ -127,7 +109,7 @@ func TestAPIMode(t *testing.T) {
 }
 
 func TestClaudeCodeMode(t *testing.T) {
-	bin := faketest.Script(t, "claude", faketest.Claude)
+	bin := faketest.Bin(t, "claude")
 	calls := faketest.Log(t)
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{
 		"api_key": "sk-good", "mode": "claude-desktop", "bin": bin, "model": "deepseek-v4-pro",
@@ -218,7 +200,7 @@ func TestHarnessBorrowsProfileModel(t *testing.T) {
 		t.Fatalf("profiles: %+v", got)
 	}
 
-	bin := faketest.Script(t, "dsh", fakeDsh)
+	bin := faketest.Bin(t, "dsh")
 	calls := faketest.Log(t)
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin, "api_key": "sk-good", "harness_profile": "desktop"}})
 	if err := h.Start(); err != nil {
@@ -279,7 +261,7 @@ func TestSetupTriesTheHarness(t *testing.T) {
 	t.Setenv("DSH_HOME", home)
 	t.Setenv("DEEPSEEK_API_KEY", "")
 	writeProfile(t, home, "desktop", desktopPatch)
-	bin := faketest.Script(t, "dsh", fakeDsh)
+	bin := faketest.Bin(t, "dsh")
 	calls := faketest.Log(t)
 	h := cattest.New(t, New(), cattest.Options{})
 	h.Answers <- map[string]any{"mode": "harness"} // the Harness cannot answer: asked again

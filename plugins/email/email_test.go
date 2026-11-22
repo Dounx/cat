@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dounx/cat/plugins/internal/mailtest"
+	cat "github.com/dounx/cat/sdk/go"
 	"github.com/dounx/cat/sdk/go/cattest"
 )
 
@@ -204,5 +205,50 @@ func TestAttachmentRoundTrip(t *testing.T) {
 	}
 	if len(parsed.attachments) != 2 || parsed.attachments[0]["name"] != att["name"] || parsed.attachments[1]["name"] != "chart.png" {
 		t.Fatalf("sent attachments = %+v", parsed.attachments)
+	}
+}
+
+func TestSetup(t *testing.T) {
+	srv, err := mailtest.Start("127.0.0.1:0", "127.0.0.1:0", "cat@mail.test", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	h := cattest.New(t, New(), cattest.Options{})
+	// First answer fails validation immediately and reveals the server fields;
+	// second uses the test server with a bad password; third succeeds.
+	h.Answers <- map[string]any{"address": "not-an-email", "password": "x"}
+	h.Answers <- map[string]any{"address": "cat@mail.test", "password": "wrong", "imap": srv.IMAP, "smtp": srv.SMTP, "insecure": true}
+	h.Answers <- map[string]any{"address": "cat@mail.test", "password": "secret", "imap": srv.IMAP, "smtp": srv.SMTP, "insecure": true}
+	cfg, err := h.RunSetup(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg["address"] != "cat@mail.test" || cfg["password"] != "secret" || cfg["imap"] != srv.IMAP || cfg["smtp"] != srv.SMTP || cfg["insecure"] != true {
+		t.Fatalf("config: %+v", cfg)
+	}
+	var forms []cat.Step
+	var last cat.Step
+	for len(h.Steps) > 0 {
+		s := <-h.Steps
+		last = s
+		if s.Kind == cat.StepForm {
+			forms = append(forms, s)
+		}
+	}
+	if len(forms) != 3 {
+		t.Fatalf("forms = %d, want 3", len(forms))
+	}
+	props0 := forms[0].Schema["properties"].(map[string]any)
+	props1 := forms[1].Schema["properties"].(map[string]any)
+	if _, has := props0["imap"]; has {
+		t.Fatal("first form should hide server fields until needed")
+	}
+	if _, has := props1["imap"]; !has || !strings.Contains(forms[2].Description, "IMAP 登录失败") {
+		t.Fatalf("retry forms: %+v %+v", props1, forms[2].Description)
+	}
+	if last.Kind != cat.StepInfo || last.Title != "已连接 cat@mail.test" {
+		t.Fatalf("final step: %+v", last)
 	}
 }

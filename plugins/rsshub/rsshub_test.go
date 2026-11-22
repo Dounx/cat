@@ -58,30 +58,40 @@ type world struct {
 // adjust plugin.json before the host reads it.
 func newWorld(t *testing.T, tools []string, manifest func(m map[string]any)) *world {
 	t.Helper()
+	exe := ""
 	if runtime.GOOS == "windows" {
-		t.Skip("the stand-ins are shell scripts")
+		exe = ".exe"
 	}
 	tmp := t.TempDir()
 	w := &world{t: t, tmp: tmp, bin: filepath.Join(tmp, "bin")}
 	_ = os.MkdirAll(w.bin, 0o755)
-	build(t, filepath.Join(w.bin, "fakersshub"), "./testdata/fakersshub")
-	for _, name := range tools {
-		script, err := os.ReadFile(filepath.Join("testdata", "fakebin", name))
+	build(t, filepath.Join(w.bin, "fakersshub"+exe), "./testdata/fakersshub")
+	if len(tools) > 0 {
+		fakeTool := filepath.Join(tmp, "fakebin"+exe)
+		build(t, fakeTool, "./testdata/fakebin")
+		toolBytes, err := os.ReadFile(fakeTool)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_ = os.WriteFile(filepath.Join(w.bin, name), script, 0o755)
+		for _, name := range tools {
+			if err := os.WriteFile(filepath.Join(w.bin, name+exe), toolBytes, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	_ = os.WriteFile(filepath.Join(w.bin, "node-version"), []byte("v24.15.0\n"), 0o644)
 
 	root := filepath.Join(tmp, "plugins")
 	pdir := filepath.Join(root, "rsshub")
 	_ = os.MkdirAll(pdir, 0o755)
-	build(t, filepath.Join(pdir, "cat-plugin-rsshub"), ".")
+	build(t, filepath.Join(pdir, "cat-plugin-rsshub"+exe), ".")
 	raw, _ := os.ReadFile("plugin.json")
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatal(err)
+	}
+	if exe != "" {
+		m["command"] = []string{"./cat-plugin-rsshub" + exe}
 	}
 	if manifest != nil {
 		manifest(m)
@@ -89,21 +99,9 @@ func newWorld(t *testing.T, tools []string, manifest func(m map[string]any)) *wo
 	b, _ := json.Marshal(m)
 	_ = os.WriteFile(filepath.Join(pdir, "plugin.json"), b, 0o644)
 
-	// Plugins inherit PATH. Only the stand-ins and the basic tools their
-	// scripts use are on it, so a real docker or pnpm is never reached - not
-	// even one in /usr/bin, where CI runners keep docker.
-	sys := filepath.Join(tmp, "sys")
-	_ = os.MkdirAll(sys, 0o755)
-	for _, name := range []string{"dirname", "cat", "rm", "cut", "touch", "mkdir", "pgrep"} {
-		path, err := exec.LookPath(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(path, filepath.Join(sys, name)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Setenv("PATH", w.bin+string(os.PathListSeparator)+sys)
+	// Plugins inherit PATH. Only the stand-ins live on it, so a real docker or
+	// pnpm is never reached - not even one in /usr/bin, where CI runners keep docker.
+	t.Setenv("PATH", w.bin)
 
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -123,7 +121,7 @@ func newWorld(t *testing.T, tools []string, manifest func(m map[string]any)) *wo
 
 func (w *world) log(name string) string {
 	b, _ := os.ReadFile(filepath.Join(w.bin, name))
-	return string(b)
+	return strings.ReplaceAll(string(b), "\r\n", "\n")
 }
 
 // wizard is one run of the setup wizard.
@@ -267,13 +265,13 @@ func TestDockerEndToEnd(t *testing.T) {
 	}
 
 	// Stopping the instance removes the container.
+	port := int(inst.Config["port"].(float64))
 	if err := w.e.DeleteInstance(inst.ID); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "container to be removed", func() bool {
 		pids, _ := filepath.Glob(filepath.Join(w.bin, "*.pid"))
-		out, _ := exec.Command("pgrep", "-f", filepath.Join(w.bin, "fakersshub")).Output()
-		return len(pids) == 0 && len(bytes.TrimSpace(out)) == 0
+		return len(pids) == 0 && portFree(port) == nil
 	})
 }
 
@@ -352,12 +350,12 @@ func TestLocalEndToEnd(t *testing.T) {
 	w.checkFeed(inst.ID)
 
 	// Stopping the instance takes RSSHub down with it.
+	localPort := int(inst.Config["port"].(float64))
 	if err := w.e.DeleteInstance(inst.ID); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "RSSHub to exit", func() bool {
-		out, _ := exec.Command("pgrep", "-f", filepath.Join(w.bin, "fakersshub")).Output()
-		return len(bytes.TrimSpace(out)) == 0
+		return portFree(localPort) == nil
 	})
 }
 

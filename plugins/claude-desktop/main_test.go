@@ -14,7 +14,7 @@ func msg(actor, conv string) *cat.Event {
 }
 
 func TestChatSessions(t *testing.T) {
-	bin := faketest.Script(t, "claude", faketest.Claude)
+	bin := faketest.Bin(t, "claude")
 	calls := faketest.Log(t)
 	work := t.TempDir()
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{
@@ -79,7 +79,7 @@ func TestChatSessions(t *testing.T) {
 }
 
 func TestErrorsAndLostSession(t *testing.T) {
-	bin := faketest.Script(t, "claude", faketest.Claude)
+	bin := faketest.Bin(t, "claude")
 	calls := faketest.Log(t)
 	h := cattest.New(t, New(), cattest.Options{
 		Config: map[string]any{"bin": bin},
@@ -111,7 +111,7 @@ func TestMissingCLI(t *testing.T) {
 }
 
 func TestSetup(t *testing.T) {
-	bin := faketest.Script(t, "claude", faketest.Claude)
+	bin := faketest.Bin(t, "claude")
 	h := cattest.New(t, New(), cattest.Options{})
 	h.Answers <- map[string]any{"permission_mode": "dontAsk", "allowed_tools": "Read"}
 	cfg, err := h.RunSetup(map[string]any{"bin": bin})
@@ -121,10 +121,17 @@ func TestSetup(t *testing.T) {
 	if cfg["allowed_tools"] != "Read" || cfg["bin"] != bin {
 		t.Fatalf("config: %+v", cfg)
 	}
+
+	// Missing CLI asks to confirm retrying; declining cancels the wizard.
+	h2 := cattest.New(t, New(), cattest.Options{})
+	h2.Answers <- map[string]any{"confirmed": false}
+	if _, err := h2.RunSetup(map[string]any{"bin": "/nonexistent/claude"}); err == nil {
+		t.Fatal("declining missing CLI should cancel setup")
+	}
 }
 
 func TestAttachmentsAddDir(t *testing.T) {
-	bin := faketest.Script(t, "claude", faketest.Claude)
+	bin := faketest.Bin(t, "claude")
 	calls := faketest.Log(t)
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin}})
 	if err := h.Start(); err != nil {

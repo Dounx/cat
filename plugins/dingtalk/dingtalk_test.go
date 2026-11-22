@@ -176,3 +176,83 @@ func TestBadCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSetupRetriesUntilCredentialsValid(t *testing.T) {
+	f := newFake(t)
+	h := cattest.New(t, New(), cattest.Options{})
+	h.Answers <- map[string]any{"client_id": "ding1", "client_secret": "wrong"}
+	h.Answers <- map[string]any{"client_id": "ding1", "client_secret": "good"}
+	cfg, err := h.RunSetup(map[string]any{"api_base": f.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg["client_id"] != "ding1" || cfg["client_secret"] != "good" || cfg["api_base"] != f.URL {
+		t.Fatalf("config: %+v", cfg)
+	}
+	var forms []cat.Step
+	var last cat.Step
+	for len(h.Steps) > 0 {
+		s := <-h.Steps
+		last = s
+		if s.Kind == cat.StepForm {
+			forms = append(forms, s)
+		}
+	}
+	if len(forms) != 2 || !strings.Contains(forms[1].Description, "无效的clientId") {
+		t.Fatalf("forms: %+v", forms)
+	}
+	if last.Kind != cat.StepInfo || last.Title != "已连接钉钉" {
+		t.Fatalf("final step: %+v", last)
+	}
+}
+
+func TestWebhookAnswerFallbackAndSplit(t *testing.T) {
+	f := newFake(t)
+	var mu sync.Mutex
+	var hooked []map[string]any
+	failHook := false
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		fail := failHook
+		if !fail {
+			hooked = append(hooked, body)
+		}
+		mu.Unlock()
+		if fail {
+			json.NewEncoder(w).Encode(map[string]any{"errcode": 310000, "errmsg": "expired"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"errcode": 0, "errmsg": "ok"})
+	}))
+	t.Cleanup(hook.Close)
+
+	b, err := newBot(map[string]any{"client_id": "ding1", "client_secret": "good", "api_base": f.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Session webhook takes a long message split across chunks.
+	long := strings.Repeat("a", maxText-10) + "\n" + strings.Repeat("b", 500)
+	out, err := b.send(context.Background(), "cidGROUP", hook.URL, long, true)
+	if err != nil || out.(map[string]any)["sent"] != 2 {
+		t.Fatalf("webhook send: %v %v", out, err)
+	}
+	mu.Lock()
+	nHook := len(hooked)
+	firstHook := hooked[0]
+	failHook = true
+	mu.Unlock()
+	if nHook != 2 || firstHook["msgtype"] != "markdown" {
+		t.Fatalf("hooked %d: %+v", nHook, firstHook)
+	}
+	// When the session webhook rejects, send falls back to the open platform.
+	if _, err := b.send(context.Background(), "cidGROUP", hook.URL, "fallback", false); err != nil {
+		t.Fatalf("fallback send: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.sent) != 1 || f.sent[0]["path"] != "/v1.0/robot/groupMessages/send" {
+		t.Fatalf("fallback open platform sends: %+v", f.sent)
+	}
+}

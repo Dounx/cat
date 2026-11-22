@@ -10,36 +10,12 @@ import (
 	"github.com/dounx/cat/sdk/go/cattest"
 )
 
-// fakeCodex mimics `codex exec --json`: the JSONL shape was captured from
-// codex-cli 0.167, including the warning it emits as an "error" item.
-const fakeCodex = `
-if [ "$1" = "--version" ]; then echo "codex-cli 0.0.0"; exit 0; fi
-prompt=$(cat)
-echo "ARGS:$*" >> "$FAKE_LOG"
-echo "PROMPT:$(echo "$prompt" | tr '\n' '~')" >> "$FAKE_LOG"
-out=""
-prev=""
-for a in "$@"; do
-  if [ "$prev" = "-o" ]; then out="$a"; fi
-  prev="$a"
-done
-case "$*" in *"resume"*"gone"*) echo '{"type":"error","message":"session not found"}'; exit 1;; esac
-case "$prompt" in *explode*) echo '{"type":"thread.started","thread_id":"t-x"}'; echo '{"type":"turn.failed","error":{"message":"quota exceeded"}}'; exit 1;; esac
-n=$(grep -c '^ARGS:' "$FAKE_LOG")
-echo "{\"type\":\"thread.started\",\"thread_id\":\"thread-$n\"}"
-echo '{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 2 unrecognized configuration settings."}}'
-echo '{"type":"turn.started"}'
-echo "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_1\",\"type\":\"agent_message\",\"text\":\"answer $n\"}}"
-echo '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}'
-printf 'answer %s' "$n" > "$out"
-`
-
 func msg(actor, conv string) *cat.Event {
 	return &cat.Event{Source: "dc-1", Type: "message.created", Actor: &cat.Actor{ID: actor}, Conversation: &cat.Conversation{ID: conv}}
 }
 
 func TestCodexChat(t *testing.T) {
-	bin := faketest.Script(t, "codex", fakeCodex)
+	bin := faketest.Bin(t, "codex")
 	calls := faketest.Log(t)
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin, "system_prompt": "Answer in Chinese."}})
 	if err := h.Start(); err != nil {
@@ -69,7 +45,7 @@ func TestCodexChat(t *testing.T) {
 }
 
 func TestCodexFailures(t *testing.T) {
-	bin := faketest.Script(t, "codex", fakeCodex)
+	bin := faketest.Bin(t, "codex")
 	faketest.Log(t)
 	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": bin}, State: map[string]string{"session:k": "gone"}})
 	if err := h.Start(); err != nil {
@@ -83,6 +59,55 @@ func TestCodexFailures(t *testing.T) {
 	_, err = h.Invoke("chat", map[string]any{"prompt": "explode"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "quota exceeded") {
 		t.Fatalf("turn.failed: %v", err)
+	}
+	if _, err := h.Invoke("chat", map[string]any{"prompt": "   "}, nil); err == nil {
+		t.Fatal("empty prompt should fail")
+	}
+}
+
+func TestMissingCLI(t *testing.T) {
+	h := cattest.New(t, New(), cattest.Options{Config: map[string]any{"bin": "/nonexistent/codex"}})
+	if err := h.Start(); err == nil || !strings.Contains(err.Error(), "安装 ChatGPT Desktop") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSetup(t *testing.T) {
+	bin := faketest.Bin(t, "codex")
+	work := t.TempDir()
+	h := cattest.New(t, New(), cattest.Options{})
+	h.Answers <- map[string]any{"cwd": work, "sandbox": "workspace-write"}
+	cfg, err := h.RunSetup(map[string]any{"bin": bin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg["sandbox"] != "workspace-write" || cfg["cwd"] != work || cfg["bin"] != bin {
+		t.Fatalf("config: %+v", cfg)
+	}
+	foundInfo := false
+	for len(h.Steps) > 0 {
+		if s := <-h.Steps; s.Kind == cat.StepInfo && strings.Contains(s.Title, "codex-cli 0.0.0") {
+			foundInfo = true
+		}
+	}
+	if !foundInfo {
+		t.Fatal("expected info step reporting detected codex version")
+	}
+
+	// Missing CLI asks to confirm retrying; declining cancels the wizard.
+	h2 := cattest.New(t, New(), cattest.Options{})
+	h2.Answers <- map[string]any{"confirmed": false}
+	if _, err := h2.RunSetup(map[string]any{"bin": "/nonexistent/codex"}); err == nil {
+		t.Fatal("declining missing CLI should cancel setup")
+	}
+	sawConfirm := false
+	for len(h2.Steps) > 0 {
+		if s := <-h2.Steps; s.Kind == cat.StepConfirm && strings.Contains(s.Title, "没有找到 ChatGPT Desktop") {
+			sawConfirm = true
+		}
+	}
+	if !sawConfirm {
+		t.Fatal("expected confirm step when codex is missing")
 	}
 }
 

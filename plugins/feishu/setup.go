@@ -10,6 +10,8 @@ import (
 	cat "github.com/dounx/cat/sdk/go"
 )
 
+var registerDomain, registerLarkDomain string
+
 // scan has the open platform create the app: it gives a page to open, shown
 // as a QR code, on which the user confirms in Feishu; the app's credentials
 // come back once that is done. The app it makes is a bot that receives
@@ -18,8 +20,10 @@ func scan(ctx context.Context, s *cat.Setup) (appID, secret, domain string, err 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	res, err := registration.RegisterApp(ctx, &registration.Options{
-		Source:    "cat",
-		AppPreset: &registration.AppPreset{Name: "Cat", Desc: "Cat 事件中心的机器人：把这里的消息接到规则和 AI 上。"},
+		Source:     "cat",
+		Domain:     registerDomain,
+		LarkDomain: registerLarkDomain,
+		AppPreset:  &registration.AppPreset{Name: "Cat", Desc: "Cat 事件中心的机器人：把这里的消息接到规则和 AI 上。"},
 		OnQRCode: func(info *registration.QRCodeInfo) {
 			s.Show(cat.Step{
 				Kind: cat.StepQRCode, Title: "用飞书扫码",
