@@ -22,6 +22,16 @@ run({
     wait(_p, _c, _h, signal) {
       return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('aborted'))))
     },
+    stream(params, ctx) {
+      const parts = Array.isArray(params.parts) ? params.parts : []
+      let full = ''
+      for (const part of parts) {
+        const s = String(part)
+        full += s
+        ctx.stream?.(full, s)
+      }
+      return { text: full }
+    },
   },
   ingress(req) {
     return { status: 200, body: 'got:' + Buffer.from(req.body).toString() }

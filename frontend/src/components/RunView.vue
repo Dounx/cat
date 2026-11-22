@@ -89,7 +89,11 @@ const nodes = computed<CanvasNode[]>(() =>
     if (!last) sub = '没有走到'
     else if (n.kind === 'action')
       sub = last.step
-        ? last.step.error || (last.step.held ? held(last.step) : last.step.output ? gist(last.step.output) : '完成')
+        ? last.step.running
+          ? last.step.output?.text
+            ? brief(last.step.output.text)
+            : going.value
+          : last.step.error || (last.step.held ? held(last.step) : last.step.output ? gist(last.step.output) : '完成')
         : going.value
     return {
       ...base,
@@ -99,7 +103,7 @@ const nodes = computed<CanvasNode[]>(() =>
       state: last
         ? failed(last) || unfinished(n, last)
           ? 'bad'
-          : last.step || n.kind !== 'action'
+          : (last.step && !last.step.running) || n.kind !== 'action'
             ? 'ok'
             : undefined
         : undefined,
@@ -269,13 +273,27 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
               <template v-if="picked.length > 1">第 {{ i + 1 }} 次 · </template>
               <template v-if="node.kind === 'condition'">{{ editor.verdict(node, p.visit) }}</template>
               <template v-else>{{
-                p.step ? (p.step.error ? '失败' : p.step.held ? heldTitle(p.step) : '完成') : going
+                p.step
+                  ? p.step.running
+                    ? '流式输出中…'
+                    : p.step.error
+                      ? '失败'
+                      : p.step.held
+                        ? heldTitle(p.step)
+                        : '完成'
+                  : going
               }}</template>
             </span>
             <span class="flex shrink-0 items-center gap-1.5 font-mono text-xs text-mute">
               <span
                 class="dot"
-                :class="failed(p) || (cut && !p.step) ? 'bad' : p.step || node.kind === 'condition' ? 'ok' : 'warn'"
+                :class="
+                  failed(p) || (cut && !p.step)
+                    ? 'bad'
+                    : (p.step && !p.step.running) || node.kind === 'condition'
+                      ? 'ok'
+                      : 'warn'
+                "
               />
               <template v-if="p.step?.attempts">试了 {{ p.step.attempts }} 次 · </template>
               <template v-if="p.step">{{ p.step.duration_ms }} ms</template>
@@ -291,6 +309,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
             >
               {{ p.step.output.note }}
             </p>
+            <div
+              v-if="p.step && !p.step.error && typeof p.step.output?.text === 'string' && p.step.output.text"
+              class="mb-2 rounded-lg border border-line bg-sunken/60 px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words"
+            >
+              {{ p.step.output.text }}<span v-if="p.step.running" class="stream-caret" aria-hidden="true" />
+            </div>
             <template v-if="node.kind === 'condition' && !node.ask && !p.visit.error">
               <h4 class="label">表达式的结果</h4>
               <JsonView :value="p.visit.value ?? null" />
@@ -334,5 +358,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onEscape, true))
 }
 .hint.bad {
   color: var(--color-bad);
+}
+.stream-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--color-accent);
+  animation: stream-blink 0.9s steps(2, start) infinite;
+}
+@keyframes stream-blink {
+  to {
+    opacity: 0;
+  }
 }
 </style>

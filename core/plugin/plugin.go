@@ -128,6 +128,9 @@ type InvokeContext struct {
 	// StepID is the step, or the node of a graph, the action is carried out
 	// for.
 	StepID string `json:"step_id,omitempty"`
+	// Progress, when set, receives incremental updates while the action is
+	// still running (for example {"text": "...", "delta": "..."}).
+	Progress func(data map[string]any) `json:"-"`
 }
 
 // ErrHeld is what an action returns to keep the run from going on past its

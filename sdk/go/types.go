@@ -5,7 +5,11 @@
 // call Run from main. See docs/plugin-protocol.md for the wire protocol.
 package cat
 
-import "time"
+import (
+	"time"
+
+	"github.com/dounx/cat/sdk/go/jsonrpc"
+)
 
 // ProtocolVersion is the plugin protocol this SDK speaks.
 const ProtocolVersion = 1
@@ -57,6 +61,36 @@ type ActionContext struct {
 	Event  *Event `json:"event,omitempty"` // the event that matched the rule
 	RuleID string `json:"rule_id,omitempty"`
 	RunID  string `json:"run_id,omitempty"`
+	StepID string `json:"step_id,omitempty"`
+	CallID string `json:"call_id,omitempty"`
+
+	conn *jsonrpc.Conn
+}
+
+// CanProgress reports whether the host is listening for incremental progress
+// updates on this action invocation.
+func (c ActionContext) CanProgress() bool {
+	return c.conn != nil && c.CallID != ""
+}
+
+// Progress sends an incremental progress update back to Cat while the action
+// is still running. It is a no-op when the host did not supply a call_id.
+func (c ActionContext) Progress(data map[string]any) {
+	if c.conn == nil || c.CallID == "" {
+		return
+	}
+	payload := make(map[string]any, len(data)+1)
+	for k, v := range data {
+		payload[k] = v
+	}
+	payload["call_id"] = c.CallID
+	_ = c.conn.Notify("action.progress", payload)
+}
+
+// Stream sends an incremental text update with the accumulated text so far and
+// the newly appended delta chunk.
+func (c ActionContext) Stream(text, delta string) {
+	c.Progress(map[string]any{"text": text, "delta": delta})
 }
 
 // IngressRequest is an HTTP request received at /ingress/<instance id>.

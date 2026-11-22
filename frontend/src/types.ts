@@ -75,6 +75,8 @@ export interface Step {
   // before the first of them (the wait doubles after that)
   retries?: number
   retry_wait_seconds?: number
+  // stream incremental text output to the triggering chat channel in place
+  stream_reply?: boolean
 }
 // A rule drawn as a graph: trigger, condition and action nodes wired together.
 // A trigger node names the events that start there, and with `params` asks
@@ -126,6 +128,8 @@ export interface StepResult {
   held?: boolean
   // simulated without invoking the target instance
   dry_run?: boolean
+  // the step is still in flight and streaming partial output
+  running?: boolean
 }
 // One node a run came to: by which wire, and for a condition which way it
 // left (`branch`: none when it held, "else", or the choice picked) and what

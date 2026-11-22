@@ -24,6 +24,7 @@ export const useHub = defineStore('hub', {
     toast: null as null | { text: string; bad: boolean },
     signals: {} as Record<string, unknown>,
     lastLog: null as LogEntry | null,
+    lastRun: null as Run | null,
   }),
   getters: {
     pluginOf: (s) => (id: string) => s.plugins.find((p) => p.id === id),
@@ -131,6 +132,7 @@ export const useHub = defineStore('hub', {
         if (i >= 0) this.runs[i] = run
         else this.runs.unshift(run)
         if (this.runs.length > MAX_RUNS) this.runs.length = MAX_RUNS
+        this.lastRun = run
       })
       es.addEventListener('instance', (m) => {
         const inst: Instance = JSON.parse((m as MessageEvent).data)

@@ -45,6 +45,16 @@ func main() {
 				<-ctx.Done()
 				return nil, ctx.Err()
 			},
+			"stream": func(_ context.Context, _ *cat.Host, p map[string]any, actx cat.ActionContext) (any, error) {
+				parts, _ := p["parts"].([]any)
+				full := ""
+				for _, part := range parts {
+					s, _ := part.(string)
+					full += s
+					actx.Stream(full, s)
+				}
+				return map[string]any{"text": full}, nil
+			},
 		},
 		Ingress: func(_ context.Context, _ *cat.Host, req cat.IngressRequest) (cat.IngressResponse, error) {
 			return cat.IngressResponse{Status: 200, Body: append([]byte("got:"), req.Body...)}, nil

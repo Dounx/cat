@@ -36,6 +36,7 @@ export interface ENode {
   timeout_seconds?: number
   retries?: number
   retry_wait_seconds?: number
+  stream_reply?: boolean
 }
 export interface Doc {
   name: string
@@ -153,6 +154,7 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
           timeout_seconds: n.timeout_seconds,
           retries: n.retries,
           retry_wait_seconds: n.retry_wait_seconds,
+          stream_reply: n.stream_reply,
         })
       }
       doc.nodes.push(node)
@@ -184,6 +186,7 @@ export function fromRule(rule: Rule, declared: Set<string>): Doc {
         timeout_seconds: s.timeout_seconds,
         retries: s.retries,
         retry_wait_seconds: s.retry_wait_seconds,
+        stream_reply: s.stream_reply,
       })
       doc.nodes.push(node)
       doc.edges.push({ from: prev, to: node.id })
@@ -236,6 +239,7 @@ export function toRule(doc: Doc, base: Rule, asks: (t: ENode) => boolean = () =>
       timeout_seconds: n.timeout_seconds || undefined,
       retries: n.retries || undefined,
       retry_wait_seconds: (n.retries && n.retry_wait_seconds) || undefined,
+      stream_reply: n.stream_reply || undefined,
       meta: at,
     }
   })

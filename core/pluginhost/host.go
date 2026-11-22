@@ -236,6 +236,10 @@ type instance struct {
 	triggers []plugin.Trigger
 	trigVer  int
 	pushMu   sync.Mutex // one triggers.set at a time, so the last one sent is the latest
+
+	progMu   sync.Mutex
+	progress map[string]func(map[string]any)
+	callSeq  uint64
 }
 
 func (i *instance) handlers(conn *jsonrpc.Conn) {
@@ -277,6 +281,24 @@ func (i *instance) handlers(conn *jsonrpc.Conn) {
 		_ = json.Unmarshal(raw, &in)
 		path, err := i.ph.ensureDep(ctx, i.m, in.Name, nil)
 		return map[string]string{"path": path}, err
+	})
+	conn.Handle("action.progress", func(_ context.Context, raw json.RawMessage) (any, error) {
+		var in map[string]any
+		if err := json.Unmarshal(raw, &in); err != nil {
+			return nil, nil
+		}
+		callID, _ := in["call_id"].(string)
+		if callID == "" {
+			return nil, nil
+		}
+		i.progMu.Lock()
+		fn := i.progress[callID]
+		i.progMu.Unlock()
+		if fn != nil {
+			delete(in, "call_id")
+			fn(in)
+		}
+		return nil, nil
 	})
 }
 
@@ -451,10 +473,33 @@ func (i *instance) Invoke(ctx context.Context, action string, params map[string]
 	if err != nil {
 		return nil, err
 	}
+	actx := map[string]any{
+		"event":   ictx.Event,
+		"rule_id": ictx.RuleID,
+		"run_id":  ictx.RunID,
+	}
+	if ictx.StepID != "" {
+		actx["step_id"] = ictx.StepID
+	}
+	if ictx.Progress != nil {
+		i.progMu.Lock()
+		i.callSeq++
+		callID := fmt.Sprintf("c%d", i.callSeq)
+		if i.progress == nil {
+			i.progress = map[string]func(map[string]any){}
+		}
+		i.progress[callID] = ictx.Progress
+		i.progMu.Unlock()
+		actx["call_id"] = callID
+		defer func() {
+			i.progMu.Lock()
+			delete(i.progress, callID)
+			i.progMu.Unlock()
+		}()
+	}
 	var out map[string]any
 	err = conn.Call(ctx, "action.invoke", map[string]any{
-		"action": action, "params": params,
-		"context": map[string]any{"event": ictx.Event, "rule_id": ictx.RuleID, "run_id": ictx.RunID},
+		"action": action, "params": params, "context": actx,
 	}, &out)
 	var rpcErr *jsonrpc.Error
 	if errors.As(err, &rpcErr) && len(rpcErr.Data) > 0 {

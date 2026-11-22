@@ -74,6 +74,12 @@ export interface ActionContext {
   event?: CatEvent
   rule_id?: string
   run_id?: string
+  step_id?: string
+  call_id?: string
+  /** Sends an incremental progress update for this action back to Cat. */
+  progress?(data: Record<string, unknown>): void
+  /** Shorthand for progress({ text, delta }). */
+  stream?(text: string, delta: string): void
 }
 
 export interface IngressRequest {
@@ -422,7 +428,18 @@ export function run(
   conn.handle('action.invoke', async (p, signal) => {
     const fn = plugin.actions?.[p.action]
     if (!fn) throw new RpcError(CODE_METHOD_NOT_FOUND, 'unknown action: ' + p.action)
-    return (await fn(p.params ?? {}, p.context ?? {}, host, signal)) ?? {}
+    const rawCtx = (p.context ?? {}) as ActionContext
+    const callId = typeof rawCtx.call_id === 'string' ? rawCtx.call_id : ''
+    const progress = (data: Record<string, unknown>) => {
+      if (!callId) return
+      conn.notify('action.progress', { ...data, call_id: callId })
+    }
+    const ctx: ActionContext = {
+      ...rawCtx,
+      progress,
+      stream: (text: string, delta: string) => progress({ text, delta }),
+    }
+    return (await fn(p.params ?? {}, ctx, host, signal)) ?? {}
   })
   conn.handle('triggers.set', async (p) => {
     host.triggers = p.triggers ?? []

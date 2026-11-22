@@ -301,3 +301,27 @@ describe('layout', () => {
     expect(() => layout(doc)).not.toThrow()
   })
 })
+
+describe('stream_reply round-trip', () => {
+  it('preserves stream_reply across fromRule and toRule', () => {
+    const src = rule({
+      graph: {
+        nodes: [
+          { id: 't1', kind: 'trigger', instance: '', action: '', sources: ['tg'] },
+          { id: 'ai', kind: 'action', instance: 'llm-1', action: 'chat', params: { prompt: 'hi' }, stream_reply: true },
+          { id: 'rep', kind: 'action', instance: '$source', action: 'reply', params: { text: '{{ steps.ai.text }}' } },
+        ],
+        edges: [
+          { from: 't1', to: 'ai' },
+          { from: 'ai', to: 'rep' },
+        ],
+      },
+    })
+    const doc = fromRule(src, declared)
+    expect(doc.nodes.find((n) => n.id === 'ai')?.stream_reply).toBe(true)
+    expect(doc.nodes.find((n) => n.id === 'rep')?.stream_reply).toBeUndefined()
+    const out = toRule(doc, src)
+    expect(node(out.graph!.nodes, 'ai').stream_reply).toBe(true)
+    expect(node(out.graph!.nodes, 'rep').stream_reply).toBeUndefined()
+  })
+})

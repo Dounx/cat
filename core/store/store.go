@@ -44,6 +44,8 @@ type StepResult struct {
 	Held bool `json:"held,omitempty"`
 	// DryRun marks a step simulated without invoking the target instance.
 	DryRun bool `json:"dry_run,omitempty"`
+	// Running marks a step currently in flight (for live streaming updates).
+	Running bool `json:"running,omitempty"`
 }
 
 // Run records one execution of a rule against an event.

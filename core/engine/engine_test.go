@@ -1458,3 +1458,338 @@ func TestTryRuleDryRunAndMockEvent(t *testing.T) {
 		t.Fatal("expected error when neither EventID nor Event is provided")
 	}
 }
+
+type streamCall struct {
+	action string
+	params map[string]any
+}
+
+type fakeStreamChannel struct {
+	plugin.Base
+	host  plugin.Host
+	mu    sync.Mutex
+	calls []streamCall
+}
+
+func (c *fakeStreamChannel) Start(_ context.Context, h plugin.Host) error {
+	c.host = h
+	return nil
+}
+
+func (c *fakeStreamChannel) Invoke(_ context.Context, action string, params map[string]any, _ plugin.InvokeContext) (map[string]any, error) {
+	cp := make(map[string]any, len(params))
+	for k, v := range params {
+		cp[k] = v
+	}
+	c.mu.Lock()
+	c.calls = append(c.calls, streamCall{action: action, params: cp})
+	c.mu.Unlock()
+	switch action {
+	case "typing":
+		return map[string]any{}, nil
+	case "reply":
+		if editID, _ := params["edit_message_id"].(string); editID != "" {
+			return map[string]any{"message_id": editID}, nil
+		}
+		return map[string]any{"message_id": "msg-42"}, nil
+	case "edit":
+		return map[string]any{"message_id": params["message_id"]}, nil
+	}
+	return nil, plugin.ErrUnknownAction(action)
+}
+
+func (c *fakeStreamChannel) snapshot() []streamCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]streamCall(nil), c.calls...)
+}
+
+type fakeStreamerAI struct {
+	plugin.Base
+	chunks []string
+	delay  time.Duration
+}
+
+func (a *fakeStreamerAI) Invoke(ctx context.Context, action string, _ map[string]any, ictx plugin.InvokeContext) (map[string]any, error) {
+	if action != "chat" {
+		return nil, plugin.ErrUnknownAction(action)
+	}
+	full := ""
+	for _, ch := range a.chunks {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(a.delay):
+		}
+		full += ch
+		if ictx.Progress != nil {
+			ictx.Progress(map[string]any{"text": full, "delta": ch})
+		}
+	}
+	return map[string]any{
+		"text":       full,
+		"session_id": "sess-1",
+		"usage":      map[string]any{"prompt_tokens": 8, "completion_tokens": 12},
+	}, nil
+}
+
+func TestStreamingUIAndLiveChatEdit(t *testing.T) {
+	origEdit := engine.StreamEditInterval
+	origPub := engine.StreamPublishInterval
+	origTyping := engine.TypingInterval
+	engine.StreamEditInterval = 35 * time.Millisecond
+	engine.StreamPublishInterval = 10 * time.Millisecond
+	engine.TypingInterval = 20 * time.Millisecond
+	defer func() {
+		engine.StreamEditInterval = origEdit
+		engine.StreamPublishInterval = origPub
+		engine.TypingInterval = origTyping
+	}()
+
+	e := newEngine(t)
+	ch := &fakeStreamChannel{}
+	e.RegisterPlugin(plugin.Manifest{
+		ID:           "streamchan",
+		Name:         "StreamChan",
+		Capabilities: []string{plugin.CapSource, plugin.CapAction},
+		Actions: []plugin.ActionSpec{
+			{Name: "typing", Title: "Typing"},
+			{
+				Name:  "reply",
+				Title: "Reply",
+				Params: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"text":            map[string]any{"type": "string"},
+						"edit_message_id": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}, func(map[string]any) (plugin.Instance, error) { return ch, nil })
+
+	ai := &fakeStreamerAI{
+		chunks: []string{"第一段", "，第二段", "，第三段", "，第四段", "，结束。"},
+		delay:  22 * time.Millisecond,
+	}
+	e.RegisterPlugin(plugin.Manifest{
+		ID:           "streamai",
+		Name:         "StreamAI",
+		Category:     plugin.CategoryProcessor,
+		Capabilities: []string{plugin.CapAction},
+		Actions:      []plugin.ActionSpec{{Name: "chat", Title: "Chat"}},
+	}, func(map[string]any) (plugin.Instance, error) { return ai, nil })
+
+	chanInst, err := e.SaveInstance(store.Instance{Plugin: "streamchan", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	aiInst, err := e.SaveInstance(store.Instance{Plugin: "streamai", Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRunning(t, e, chanInst.ID)
+	waitRunning(t, e, aiInst.ID)
+
+	r, err := e.SaveRule(rules.Rule{
+		Name:    "stream-reply-rule",
+		Enabled: true,
+		Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1"}, Sources: []string{chanInst.ID}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "s0", Instance: rules.SourceInstance, Action: "typing"}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "ai", Instance: aiInst.ID, Action: "chat", StreamReply: true}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "rep", Instance: rules.SourceInstance, Action: "reply", Params: map[string]any{"text": "{{ steps.ai.text }}"}}},
+			},
+			Edges: []rules.Edge{
+				{From: "t1", To: "s0"},
+				{From: "s0", To: "ai"},
+				{From: "ai", To: "rep"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sub, unsub := e.Subscribe()
+	defer unsub()
+	var (
+		seenRunningPartial []string
+		subMu              sync.Mutex
+	)
+	doneSub := make(chan struct{})
+	go func() {
+		defer close(doneSub)
+		for msg := range sub {
+			if msg.Kind != "run" {
+				continue
+			}
+			run, ok := msg.Data.(store.Run)
+			if !ok || run.RuleID != r.ID {
+				continue
+			}
+			if run.Status == "running" {
+				for _, s := range run.Steps {
+					if s.ID == "ai" && s.Running {
+						if txt, _ := s.Output["text"].(string); txt != "" {
+							subMu.Lock()
+							seenRunningPartial = append(seenRunningPartial, txt)
+							subMu.Unlock()
+						}
+					}
+				}
+			}
+			if run.Status == "ok" {
+				return
+			}
+		}
+	}()
+
+	if _, err := ch.host.Emit(&event.Event{
+		Type:         "message.created",
+		Conversation: &event.Conversation{ID: "c-1", Kind: "private"},
+		Payload:      map[string]any{"text": "hi"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, "streamed run ok", func() bool {
+		runs, _ := e.Store.ListRuns(r.ID, "", 5)
+		return len(runs) == 1 && runs[0].Status == "ok"
+	})
+	select {
+	case <-doneSub:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SSE completion")
+	}
+
+	subMu.Lock()
+	partials := append([]string(nil), seenRunningPartial...)
+	subMu.Unlock()
+	if len(partials) < 2 {
+		t.Fatalf("expected >=2 in-flight streaming UI updates, got %v", partials)
+	}
+
+	calls := ch.snapshot()
+	var initialReplies []streamCall
+	var editCalls []streamCall
+	for _, c := range calls {
+		if c.action != "reply" {
+			continue
+		}
+		if id, _ := c.params["edit_message_id"].(string); id != "" {
+			editCalls = append(editCalls, c)
+		} else {
+			initialReplies = append(initialReplies, c)
+		}
+	}
+	if len(initialReplies) != 1 {
+		t.Fatalf("expected exactly 1 initial reply (no duplicate!), got %d: %+v", len(initialReplies), initialReplies)
+	}
+	if initialReplies[0].params["text"] != "第一段" {
+		t.Fatalf("expected initial reply on first chunk, got %+v", initialReplies[0].params)
+	}
+	if len(editCalls) < 2 {
+		t.Fatalf("expected >=2 edit calls (intermediate + final), got %d: %+v", len(editCalls), editCalls)
+	}
+	for _, ec := range editCalls {
+		if ec.params["edit_message_id"] != "msg-42" {
+			t.Fatalf("expected edit_message_id=msg-42, got %+v", ec.params)
+		}
+	}
+	lastEdit := editCalls[len(editCalls)-1]
+	wantFinal := "第一段，第二段，第三段，第四段，结束。"
+	if lastEdit.params["text"] != wantFinal {
+		t.Fatalf("final edit text = %q, want %q", lastEdit.params["text"], wantFinal)
+	}
+
+	runs, _ := e.Store.ListRuns(r.ID, "", 5)
+	if len(runs[0].Steps) != 3 {
+		t.Fatalf("expected 3 steps (typing, ai, rep), got %d", len(runs[0].Steps))
+	}
+	if runs[0].Steps[1].Running {
+		t.Fatal("completed ai step should not be marked running")
+	}
+	if runs[0].Steps[1].Output["streamed_message_id"] != "msg-42" {
+		t.Fatalf("expected streamed_message_id=msg-42, got %+v", runs[0].Steps[1].Output)
+	}
+	if runs[0].Steps[2].Output["streamed"] != true || runs[0].Steps[2].Output["message_id"] != "msg-42" {
+		t.Fatalf("downstream reply should reuse streamed message, got %+v", runs[0].Steps[2].Output)
+	}
+}
+
+func TestStreamingLiveChatEditStandaloneActionAndCustomFinalText(t *testing.T) {
+	origEdit := engine.StreamEditInterval
+	engine.StreamEditInterval = 30 * time.Millisecond
+	defer func() { engine.StreamEditInterval = origEdit }()
+
+	e := newEngine(t)
+	ch := &fakeStreamChannel{}
+	e.RegisterPlugin(plugin.Manifest{
+		ID:           "editchan",
+		Name:         "EditChan",
+		Capabilities: []string{plugin.CapSource, plugin.CapAction},
+		Actions: []plugin.ActionSpec{
+			{Name: "reply", Title: "Reply"},
+			{Name: "edit", Title: "Edit"},
+		},
+	}, func(map[string]any) (plugin.Instance, error) { return ch, nil })
+
+	ai := &fakeStreamerAI{chunks: []string{"A", "B", "C", "D"}, delay: 20 * time.Millisecond}
+	e.RegisterPlugin(plugin.Manifest{
+		ID:           "ai2",
+		Name:         "AI2",
+		Category:     plugin.CategoryProcessor,
+		Capabilities: []string{plugin.CapAction},
+		Actions:      []plugin.ActionSpec{{Name: "chat", Title: "Chat"}},
+	}, func(map[string]any) (plugin.Instance, error) { return ai, nil })
+
+	chanInst, _ := e.SaveInstance(store.Instance{Plugin: "editchan", Enabled: true})
+	aiInst, _ := e.SaveInstance(store.Instance{Plugin: "ai2", Enabled: true})
+	waitRunning(t, e, chanInst.ID)
+	waitRunning(t, e, aiInst.ID)
+
+	r, err := e.SaveRule(rules.Rule{
+		Name:    "stream-edit-action",
+		Enabled: true,
+		Graph: &rules.Graph{
+			Nodes: []rules.Node{
+				{Kind: rules.KindTrigger, Step: rules.Step{ID: "t1"}, Sources: []string{chanInst.ID}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "ai", Instance: aiInst.ID, Action: "chat", StreamReply: true}},
+				{Kind: rules.KindAction, Step: rules.Step{ID: "rep", Instance: rules.SourceInstance, Action: "reply", Params: map[string]any{"text": "答复：{{ steps.ai.text }}"}}},
+			},
+			Edges: []rules.Edge{{From: "t1", To: "ai"}, {From: "ai", To: "rep"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ch.host.Emit(&event.Event{Type: "message.created", Payload: map[string]any{"text": "go"}}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "edit-action run ok", func() bool {
+		runs, _ := e.Store.ListRuns(r.ID, "", 5)
+		return len(runs) == 1 && runs[0].Status == "ok"
+	})
+
+	calls := ch.snapshot()
+	replies := 0
+	var edits []streamCall
+	for _, c := range calls {
+		if c.action == "reply" {
+			replies++
+		} else if c.action == "edit" {
+			edits = append(edits, c)
+		}
+	}
+	if replies != 1 {
+		t.Fatalf("expected exactly 1 reply (no duplicate), got %d", replies)
+	}
+	if len(edits) < 2 {
+		t.Fatalf("expected >=2 edit calls, got %+v", edits)
+	}
+	if got := edits[len(edits)-1].params["text"]; got != "答复：ABCD" {
+		t.Fatalf("last edit text = %q, want 答复：ABCD", got)
+	}
+}

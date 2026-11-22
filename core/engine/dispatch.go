@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dounx/cat/core/blob"
@@ -222,6 +223,250 @@ func (e *Engine) execute(r *rules.Compiled, ev *event.Event, replay bool) *store
 // continues working before replying. Tests shorten it.
 var TypingInterval = 4 * time.Second
 
+// StreamEditInterval is how often a live-streamed chat reply is edited in place
+// while an action emits incremental text. Tests shorten it.
+var StreamEditInterval = 800 * time.Millisecond
+
+// StreamPublishInterval is how often incremental step progress is published to
+// live subscribers while an action is still running. Tests may shorten it.
+var StreamPublishInterval = 120 * time.Millisecond
+
+const (
+	editModeNone       = ""
+	editModeReplyParam = "reply_edit"
+	editModeEditAction = "edit_action"
+)
+
+type streamedReply struct {
+	messageID string
+	text      string
+	mode      string
+	consumed  bool
+}
+
+// channelEditMode reports how instanceID supports editing a reply in place:
+// via reply's edit_message_id parameter, via a standalone edit action, or "".
+func (e *Engine) channelEditMode(instanceID string) string {
+	if instanceID == "" {
+		return editModeNone
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	r, ok := e.running[instanceID]
+	if !ok {
+		return editModeNone
+	}
+	reg, ok := e.plugins[r.rec.Plugin]
+	if !ok {
+		return editModeNone
+	}
+	hasReply := false
+	hasEditAction := false
+	for _, a := range reg.manifest.Actions {
+		switch a.Name {
+		case "reply":
+			hasReply = true
+			if props, ok := a.Params["properties"].(map[string]any); ok {
+				if _, hasEditParam := props["edit_message_id"]; hasEditParam {
+					return editModeReplyParam
+				}
+			}
+		case "edit":
+			hasEditAction = true
+		}
+	}
+	if hasReply && hasEditAction {
+		return editModeEditAction
+	}
+	return editModeNone
+}
+
+type streamReplyBridge struct {
+	e          *Engine
+	runCtx     context.Context
+	target     string
+	mode       string
+	ictx       plugin.InvokeContext
+	stopTyping func(string)
+
+	mu        sync.Mutex
+	latest    string
+	sentText  string
+	messageID string
+	failed    bool
+
+	notify chan struct{}
+	stopCh chan struct{}
+	doneCh chan struct{}
+}
+
+func newStreamReplyBridge(e *Engine, runCtx context.Context, target, mode string, ictx plugin.InvokeContext, stopTyping func(string)) *streamReplyBridge {
+	b := &streamReplyBridge{
+		e: e, runCtx: runCtx, target: target, mode: mode, ictx: ictx, stopTyping: stopTyping,
+		notify: make(chan struct{}, 1),
+		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
+	}
+	go b.run()
+	return b
+}
+
+func (b *streamReplyBridge) Update(text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	b.mu.Lock()
+	b.latest = text
+	b.mu.Unlock()
+	select {
+	case b.notify <- struct{}{}:
+	default:
+	}
+}
+
+func (b *streamReplyBridge) sendEdit(ctx context.Context, msgID, text string) error {
+	if b.mode == editModeEditAction {
+		_, err := b.e.Invoke(ctx, b.target, "edit", map[string]any{"message_id": msgID, "text": text}, b.ictx)
+		return err
+	}
+	_, err := b.e.Invoke(ctx, b.target, "reply", map[string]any{"text": text, "edit_message_id": msgID}, b.ictx)
+	return err
+}
+
+func (b *streamReplyBridge) run() {
+	defer close(b.doneCh)
+	var (
+		lastSend time.Time
+		msgID    string
+		sentText string
+		failed   bool
+		timer    *time.Timer
+		timerC   <-chan time.Time
+	)
+	stopTimer := func() {
+		if timer != nil {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer = nil
+			timerC = nil
+		}
+	}
+	defer stopTimer()
+
+	flush := func() {
+		if failed {
+			return
+		}
+		b.mu.Lock()
+		text := b.latest
+		b.mu.Unlock()
+		if text == "" || text == sentText {
+			return
+		}
+		if msgID == "" {
+			b.stopTyping(b.target)
+			cctx, cancel := context.WithTimeout(b.runCtx, 15*time.Second)
+			out, err := b.e.Invoke(cctx, b.target, "reply", map[string]any{"text": text}, b.ictx)
+			cancel()
+			if err != nil || out == nil || out["message_id"] == nil || fmt.Sprint(out["message_id"]) == "" {
+				failed = true
+				b.mu.Lock()
+				b.failed = true
+				b.mu.Unlock()
+				return
+			}
+			msgID = fmt.Sprint(out["message_id"])
+			sentText = text
+			b.mu.Lock()
+			b.messageID = msgID
+			b.sentText = sentText
+			b.mu.Unlock()
+			lastSend = time.Now()
+			return
+		}
+		cctx, cancel := context.WithTimeout(b.runCtx, 15*time.Second)
+		err := b.sendEdit(cctx, msgID, text)
+		cancel()
+		if err == nil {
+			sentText = text
+			b.mu.Lock()
+			b.sentText = sentText
+			b.mu.Unlock()
+			lastSend = time.Now()
+		}
+	}
+
+	for {
+		select {
+		case <-b.stopCh:
+			return
+		case <-b.runCtx.Done():
+			return
+		case <-b.notify:
+			if msgID == "" {
+				flush()
+				continue
+			}
+			interval := StreamEditInterval
+			if interval <= 0 {
+				stopTimer()
+				flush()
+				continue
+			}
+			if wait := interval - time.Since(lastSend); wait <= 0 {
+				stopTimer()
+				flush()
+			} else if timer == nil {
+				timer = time.NewTimer(wait)
+				timerC = timer.C
+			}
+		case <-timerC:
+			timer = nil
+			timerC = nil
+			flush()
+		}
+	}
+}
+
+func (b *streamReplyBridge) Abort() {
+	close(b.stopCh)
+	<-b.doneCh
+}
+
+func (b *streamReplyBridge) Finish(finalText string) (string, string) {
+	close(b.stopCh)
+	<-b.doneCh
+	b.mu.Lock()
+	msgID, sent, failed := b.messageID, b.sentText, b.failed
+	b.mu.Unlock()
+	if b.runCtx.Err() != nil || failed || strings.TrimSpace(finalText) == "" {
+		return msgID, sent
+	}
+	if msgID == "" {
+		b.stopTyping(b.target)
+		cctx, cancel := context.WithTimeout(b.runCtx, 15*time.Second)
+		out, err := b.e.Invoke(cctx, b.target, "reply", map[string]any{"text": finalText}, b.ictx)
+		cancel()
+		if err == nil && out != nil && out["message_id"] != nil {
+			msgID = fmt.Sprint(out["message_id"])
+			sent = finalText
+		}
+		return msgID, sent
+	}
+	if finalText != sent {
+		cctx, cancel := context.WithTimeout(b.runCtx, 15*time.Second)
+		if err := b.sendEdit(cctx, msgID, finalText); err == nil {
+			sent = finalText
+		}
+		cancel()
+	}
+	return msgID, sent
+}
+
 // CancelRun stops a running rule execution if it is still in flight.
 func (e *Engine) CancelRun(runID string) bool {
 	e.runsMu.Lock()
@@ -254,9 +499,10 @@ func (e *Engine) executeWith(r *rules.Compiled, ev *event.Event, opts execOpts) 
 		ID: id.New(), RuleID: r.ID, RuleName: r.Name, EventID: ev.ID,
 		Status: "running", StartedAt: time.Now(), Steps: []store.StepResult{}, Replay: opts.replay, DryRun: opts.dryRun,
 	}
+	var runMu sync.Mutex
 	persist := func() {
 		if !opts.noPersist {
-			e.saveRun(run)
+			e.saveRunLocked(&runMu, run)
 		}
 	}
 	runCtx, cancelRun := context.WithCancel(context.Background())
@@ -273,19 +519,25 @@ func (e *Engine) executeWith(r *rules.Compiled, ev *event.Event, opts execOpts) 
 			e.runsMu.Unlock()
 		}
 	}()
+	var typingMu sync.Mutex
 	typingStops := map[string]context.CancelFunc{}
 	stopTyping := func(target string) {
+		typingMu.Lock()
 		if cancel, ok := typingStops[target]; ok {
 			cancel()
 			delete(typingStops, target)
 		}
+		typingMu.Unlock()
 	}
 	defer func() {
+		typingMu.Lock()
 		for k, cancel := range typingStops {
 			cancel()
 			delete(typingStops, k)
 		}
+		typingMu.Unlock()
 	}()
+	streamedReplies := map[string]*streamedReply{}
 	// A graph rule's run is recorded from its first action on: an event that
 	// takes a branch leading nowhere leaves no run behind.
 	recorded := r.Graph == nil
@@ -321,10 +573,143 @@ func (e *Engine) executeWith(r *rules.Compiled, ev *event.Event, opts execOpts) 
 		var res store.StepResult
 		if opts.dryRun {
 			res = e.dryRunStep(step, ev, env, opts.mockOutputs)
+			runMu.Lock()
+			run.Steps = append(run.Steps, res)
+			runMu.Unlock()
 		} else {
-			res = e.runStep(runCtx, step, ev, r.ID, r.Name, run.ID, env)
+			// If an upstream step already streamed its output as a live reply to
+			// this target, reuse/edit that message instead of sending a duplicate.
+			execStep := step
+			if step.Action == "reply" {
+				if sr := streamedReplies[target]; sr != nil && !sr.consumed {
+					if rendered, rerr := rules.Render(map[string]any(step.Params), env); rerr == nil {
+						params, _ := rendered.(map[string]any)
+						if params == nil {
+							params = map[string]any{}
+						}
+						if isEmptyParam(params["edit_message_id"]) && isEmptyParam(params["files"]) {
+							sr.consumed = true
+							renderedText := ""
+							if s, ok := params["text"].(string); ok {
+								renderedText = s
+							} else if params["text"] != nil {
+								renderedText = fmt.Sprint(params["text"])
+							}
+							wantMarkdown := params["markdown"] == true
+							if renderedText == sr.text && !wantMarkdown {
+								res = store.StepResult{
+									ID: step.ID, Instance: target, Action: step.Action,
+									Params: params,
+									Output: map[string]any{"message_id": sr.messageID, "streamed": true},
+								}
+								runMu.Lock()
+								run.Steps = append(run.Steps, res)
+								runMu.Unlock()
+								outputs[step.ID] = res.Output
+								persist()
+								return true
+							}
+							// Text changed (e.g. prefix/suffix) or markdown requested: edit in place.
+							if sr.mode == editModeEditAction {
+								execStep.Action = "edit"
+								execStep.Params = map[string]any{"message_id": sr.messageID, "text": renderedText}
+							} else {
+								cloned := make(map[string]any, len(params)+1)
+								for k, v := range params {
+									cloned[k] = v
+								}
+								cloned["edit_message_id"] = sr.messageID
+								execStep.Params = cloned
+							}
+						}
+					}
+				}
+			}
+
+			runMu.Lock()
+			stepIdx := len(run.Steps)
+			run.Steps = append(run.Steps, store.StepResult{
+				ID: step.ID, Instance: target, Action: execStep.Action, Running: true,
+			})
+			runMu.Unlock()
+
+			var bridge *streamReplyBridge
+			var bridgeMode string
+			if step.StreamReply && ev != nil && ev.Source != "" {
+				if mode := e.channelEditMode(ev.Source); mode != editModeNone {
+					bridgeMode = mode
+					bridge = newStreamReplyBridge(e, runCtx, ev.Source, mode, plugin.InvokeContext{
+						Event: ev, RuleID: r.ID, RuleName: r.Name, RunID: run.ID, StepID: step.ID,
+					}, stopTyping)
+				}
+			}
+
+			stepStart := time.Now()
+			var lastPub time.Time
+			onStart := func(params map[string]any) {
+				runMu.Lock()
+				run.Steps[stepIdx].Params = params
+				runMu.Unlock()
+				persist()
+			}
+			onProgress := func(data map[string]any) {
+				if data == nil {
+					return
+				}
+				now := time.Now()
+				shouldPub := false
+				runMu.Lock()
+				cur := run.Steps[stepIdx].Output
+				next := make(map[string]any, len(cur)+len(data))
+				for k, v := range cur {
+					next[k] = v
+				}
+				for k, v := range data {
+					if k == "delta" {
+						continue
+					}
+					next[k] = v
+				}
+				run.Steps[stepIdx].Output = next
+				run.Steps[stepIdx].DurationMS = time.Since(stepStart).Milliseconds()
+				if lastPub.IsZero() || StreamPublishInterval <= 0 || now.Sub(lastPub) >= StreamPublishInterval {
+					lastPub = now
+					shouldPub = true
+				}
+				runMu.Unlock()
+				if shouldPub {
+					persist()
+				}
+				if bridge != nil {
+					if txt, ok := data["text"].(string); ok && txt != "" {
+						bridge.Update(txt)
+					}
+				}
+			}
+
+			res = e.runStep(runCtx, execStep, ev, r.ID, r.Name, run.ID, env, onStart, onProgress)
+			if bridge != nil {
+				if res.Error == "" && !res.Held && runCtx.Err() == nil {
+					finalText, _ := res.Output["text"].(string)
+					msgID, sentText := bridge.Finish(finalText)
+					if msgID != "" {
+						if res.Output == nil {
+							res.Output = map[string]any{}
+						}
+						res.Output["streamed_message_id"] = msgID
+						streamedReplies[ev.Source] = &streamedReply{
+							messageID: msgID, text: sentText, mode: bridgeMode,
+						}
+					}
+				} else {
+					bridge.Abort()
+				}
+			}
+			res.Running = false
+			runMu.Lock()
+			run.Steps[stepIdx] = res
+			runMu.Unlock()
 		}
-		run.Steps = append(run.Steps, res)
 		if res.Output != nil {
 			outputs[step.ID] = res.Output
 		} else {
@@ -335,7 +720,9 @@ func (e *Engine) executeWith(r *rules.Compiled, ev *event.Event, opts execOpts) 
 			return false
 		}
 		if !opts.dryRun && res.Error == "" && !res.Held && step.Action == "typing" && TypingInterval > 0 {
-			if _, active := typingStops[target]; !active {
+			typingMu.Lock()
+			_, active := typingStops[target]
+			if !active {
 				tctx, tcancel := context.WithCancel(runCtx)
 				typingStops[target] = tcancel
 				params := res.Params
@@ -357,10 +744,12 @@ func (e *Engine) executeWith(r *rules.Compiled, ev *event.Event, opts execOpts) 
 					}
 				}(target, params)
 			}
+			typingMu.Unlock()
 		}
 		if res.Error != "" {
 			failed = true
 			if !step.ContinueOnError {
+				persist()
 				return false
 			}
 		}
@@ -385,7 +774,9 @@ func (e *Engine) executeWith(r *rules.Compiled, ev *event.Event, opts execOpts) 
 			if errors.Is(err, rules.ErrLoops) {
 				res.Action, res.Error = "loop", err.Error()
 			}
+			runMu.Lock()
 			run.Steps = append(run.Steps, res)
+			runMu.Unlock()
 			persist()
 		}, func(n *rules.Node, env map[string]any) (any, error) {
 			if runCtx.Err() != nil {
@@ -405,18 +796,26 @@ func (e *Engine) executeWith(r *rules.Compiled, ev *event.Event, opts execOpts) 
 				res, verdict = e.judge(runCtx, n, ev, r.ID, r.Name, run.ID, env)
 			}
 			if runCtx.Err() != nil {
+				runMu.Lock()
 				run.Steps = append(run.Steps, res)
+				runMu.Unlock()
 				persist()
 				return nil, runCtx.Err()
 			}
 			if res.Error != "" {
 				return nil, errors.New(res.Error)
 			}
+			runMu.Lock()
 			run.Steps = append(run.Steps, res)
+			runMu.Unlock()
 			outputs[n.ID] = res.Output
 			persist()
 			return verdict, nil
-		}, func(v rules.Visit) { run.Trace = append(run.Trace, v) })
+		}, func(v rules.Visit) {
+			runMu.Lock()
+			run.Trace = append(run.Trace, v)
+			runMu.Unlock()
+		})
 	} else {
 		steps := r.Steps
 		if opts.from != nil { // the steps after the one that held
@@ -437,6 +836,7 @@ func (e *Engine) executeWith(r *rules.Compiled, ev *event.Event, opts execOpts) 
 		return nil
 	}
 	now := time.Now()
+	runMu.Lock()
 	run.FinishedAt = &now
 	switch {
 	case runCtx.Err() != nil:
@@ -446,6 +846,7 @@ func (e *Engine) executeWith(r *rules.Compiled, ev *event.Event, opts execOpts) 
 	default:
 		run.Status = "ok"
 	}
+	runMu.Unlock()
 	persist()
 	if failed && runCtx.Err() == nil && !opts.replay && !opts.dryRun {
 		e.reportFailure(run, ev)
@@ -679,7 +1080,7 @@ func (e *Engine) TryRuleWithOptions(r rules.Rule, opts TryOptions) (*store.Run, 
 // or for a yes-or-no condition whether it was yes.
 func (e *Engine) judge(runCtx context.Context, n *rules.Node, ev *event.Event, ruleID, ruleName, runID string, env map[string]any) (store.StepResult, any) {
 	step := judgeStep(n)
-	res := e.runStep(runCtx, step, ev, ruleID, ruleName, runID, env)
+	res := e.runStep(runCtx, step, ev, ruleID, ruleName, runID, env, nil, nil)
 	if res.Error != "" {
 		return res, nil
 	}
@@ -798,24 +1199,56 @@ func (e *Engine) dryRunStep(step rules.Step, ev *event.Event, env map[string]any
 	return res
 }
 
-func (e *Engine) saveRun(run *store.Run) {
-	if err := e.Store.SaveRun(run); err != nil {
+func isEmptyParam(v any) bool {
+	if v == nil {
+		return true
+	}
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t) == ""
+	case []any:
+		return len(t) == 0
+	case []string:
+		return len(t) == 0
+	}
+	return false
+}
+
+func cloneStepResult(s store.StepResult) store.StepResult {
+	if s.Output != nil {
+		out := make(map[string]any, len(s.Output))
+		for k, v := range s.Output {
+			out[k] = v
+		}
+		s.Output = out
+	}
+	return s
+}
+
+func (e *Engine) saveRunLocked(mu *sync.Mutex, run *store.Run) {
+	mu.Lock()
+	snap := *run
+	snap.Steps = make([]store.StepResult, len(run.Steps))
+	for i, s := range run.Steps {
+		snap.Steps[i] = cloneStepResult(s)
+	}
+	snap.Trace = append([]rules.Visit(nil), run.Trace...)
+	mu.Unlock()
+	if err := e.Store.SaveRun(&snap); err != nil {
 		e.log.Error("save run", "err", err)
 	}
-	copied := *run
-	copied.Steps = append([]store.StepResult(nil), run.Steps...)
-	copied.Trace = append([]rules.Visit(nil), run.Trace...)
-	copied.Rule = nil
-	e.publish(Message{Kind: "run", Data: copied})
+	pub := snap
+	pub.Rule = nil
+	e.publish(Message{Kind: "run", Data: pub})
 }
 
 // runStep carries out one step, its parameters rendered with env.
-func (e *Engine) runStep(runCtx context.Context, step rules.Step, ev *event.Event, ruleID, ruleName, runID string, env map[string]any) store.StepResult {
+func (e *Engine) runStep(runCtx context.Context, step rules.Step, ev *event.Event, ruleID, ruleName, runID string, env map[string]any, onStart func(params map[string]any), onProgress func(data map[string]any)) (res store.StepResult) {
 	target := step.Instance
 	if target == rules.SourceInstance {
 		target = ev.Source
 	}
-	res := store.StepResult{ID: step.ID, Instance: target, Action: step.Action}
+	res = store.StepResult{ID: step.ID, Instance: target, Action: step.Action}
 	start := time.Now()
 	defer func() { res.DurationMS = time.Since(start).Milliseconds() }()
 
@@ -830,6 +1263,9 @@ func (e *Engine) runStep(runCtx context.Context, step rules.Step, ev *event.Even
 		params = map[string]any{}
 	}
 	res.Params = params
+	if onStart != nil {
+		onStart(params)
+	}
 
 	timeout := defaultStepTimeout
 	if step.TimeoutSeconds > 0 {
@@ -846,7 +1282,9 @@ func (e *Engine) runStep(runCtx context.Context, step rules.Step, ev *event.Even
 	}
 	for attempt := 1; ; attempt++ {
 		ctx, cancel := context.WithTimeout(runCtx, timeout)
-		out, err := e.Invoke(ctx, target, step.Action, params, plugin.InvokeContext{Event: ev, RuleID: ruleID, RuleName: ruleName, RunID: runID, StepID: step.ID})
+		out, err := e.Invoke(ctx, target, step.Action, params, plugin.InvokeContext{
+			Event: ev, RuleID: ruleID, RuleName: ruleName, RunID: runID, StepID: step.ID, Progress: onProgress,
+		})
 		cancel()
 		res.Output, res.Error = out, ""
 		if attempt > 1 {

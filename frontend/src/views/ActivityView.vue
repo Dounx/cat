@@ -241,7 +241,18 @@ function stepTitle(s: StepResult): string {
 
 watch(selected, async (ev) => {
   viewing.value = null
-  selectedRuns.value = ev ? await get<Run[]>(`/runs?event_id=${ev.id}`).catch(() => []) : []
+  if (!ev) {
+    selectedRuns.value = []
+    return
+  }
+  const fetched = await get<Run[]>(`/runs?event_id=${ev.id}`).catch(() => [])
+  if (selected.value?.id !== ev.id) return
+  const merged = new Map<string, Run>()
+  for (const r of fetched) merged.set(r.id, r)
+  for (const r of hub.runs) {
+    if (r.event_id === ev.id) merged.set(r.id, r)
+  }
+  selectedRuns.value = [...merged.values()].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
 })
 
 // A run can be looked at on its rule's graph, as the rule stood then: the
@@ -254,15 +265,26 @@ async function view(r: Run) {
 }
 // Keep the open drawer's runs current as they stream in.
 watch(
-  () => hub.runs[0],
+  () => hub.lastRun,
   (run) => {
     if (!run || !selected.value || run.event_id !== selected.value.id) return
     const i = selectedRuns.value.findIndex((r) => r.id === run.id)
     if (i >= 0) selectedRuns.value[i] = run
     else selectedRuns.value.unshift(run)
   },
-  { deep: true },
 )
+
+function stepText(s: StepResult): string {
+  return typeof s.output?.text === 'string' ? s.output.text : ''
+}
+function stepUsage(s: StepResult): { prompt: number; completion: number } | null {
+  const u = s.output?.usage as Record<string, unknown> | undefined
+  if (!u || typeof u !== 'object') return null
+  const prompt = Number(u.prompt_tokens || 0)
+  const completion = Number(u.completion_tokens || 0)
+  if (!prompt && !completion) return null
+  return { prompt, completion }
+}
 // Links from elsewhere open one event, named directly or by a run of it.
 watch(
   () => route.query,
@@ -530,13 +552,27 @@ async function replay() {
                 <span class="truncate">{{ stepTitle(s) }}</span>
               </span>
               <span class="flex shrink-0 items-center gap-1.5 font-mono text-xs text-mute">
-                <span class="dot" :class="heldDot(s)" /><template v-if="s.attempts"
-                  >试了 {{ s.attempts }} 次 · </template
-                >{{ s.duration_ms }} ms
+                <span class="dot" :class="s.running ? 'warn' : heldDot(s)" />
+                <template v-if="s.running">流式输出中 · {{ s.duration_ms }} ms</template>
+                <template v-else
+                  ><template v-if="s.attempts">试了 {{ s.attempts }} 次 · </template>{{ s.duration_ms }} ms</template
+                >
               </span>
             </div>
             <div v-if="s.error" class="mt-2 rounded-lg bg-bad/10 px-3 py-2 text-sm text-bad">
               {{ s.error }}
+            </div>
+            <div
+              v-else-if="stepText(s)"
+              class="mt-2 rounded-lg border border-line bg-sunken/60 px-3 py-2 text-sm leading-relaxed text-ink"
+            >
+              <div class="max-h-60 overflow-y-auto whitespace-pre-wrap break-words">
+                {{ stepText(s) }}<span v-if="s.running" class="stream-caret" aria-hidden="true" />
+              </div>
+              <div v-if="!s.running && stepUsage(s)" class="mt-1.5 flex items-center gap-2 text-[11px] text-mute">
+                <span class="chip">Token：输入 {{ stepUsage(s)!.prompt }} · 输出 {{ stepUsage(s)!.completion }}</span>
+                <span v-if="s.output?.streamed_message_id" class="chip">已流式更新回复</span>
+              </div>
             </div>
             <p v-if="s.held" class="mt-1.5 text-xs text-mute">
               {{
@@ -637,3 +673,20 @@ async function replay() {
     </Transition>
   </div>
 </template>
+
+<style scoped>
+.stream-caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--color-accent);
+  animation: stream-blink 0.9s steps(2, start) infinite;
+}
+@keyframes stream-blink {
+  to {
+    opacity: 0;
+  }
+}
+</style>

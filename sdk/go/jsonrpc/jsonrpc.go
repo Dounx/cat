@@ -139,7 +139,9 @@ func (c *Conn) dispatch(m message) {
 	h := c.handlers[m.Method]
 	if m.ID == nil { // a notification
 		if h != nil {
-			go func() { _, _ = h(context.Background(), m.Params) }()
+			// Run notifications inline so progress/log/status stay in wire
+			// order and complete before any subsequent response is delivered.
+			_, _ = safely(context.Background(), h, m.Params)
 		}
 		return
 	}

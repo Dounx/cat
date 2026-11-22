@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // The panel of an action node: what carries it out, which of the things that
 // can do, and with what.
+import { computed } from 'vue'
 import { useHub } from '../../hub'
 import { useEditor } from '../../editor/context'
 import type { ENode } from '../../graph'
@@ -27,6 +28,12 @@ const {
 
 // A count typed into a field: a whole number from 0 up to `max`, or nothing.
 const clamp = (typed: string, max: number) => Math.min(max, Math.max(0, Math.floor(Number(typed) || 0))) || undefined
+
+// Show the live streaming reply toggle on AI/processor actions and chat actions.
+const canStreamReply = computed(() => {
+  const plugin = hub.pluginOf(hub.instanceOf(props.node.instance)?.plugin || '')
+  return plugin?.category === 'processor' || props.node.action === 'chat'
+})
 
 // Change what the node uses, keeping its action if the new one can do it too.
 function retarget() {
@@ -68,6 +75,17 @@ function retarget() {
     templated
     @update:model-value="node.params = $event"
   />
+  <div v-if="canStreamReply" class="mt-3 rounded-lg border border-line bg-sunken/50 px-3 py-2.5">
+    <label class="flex cursor-pointer items-start gap-2 text-xs">
+      <input v-model="node.stream_reply" type="checkbox" class="mt-0.5 shrink-0" />
+      <span>
+        <span class="font-medium text-ink">边生成边更新回复消息</span>
+        <span class="mt-0.5 block text-mute">
+          当来源渠道支持消息编辑（Telegram、Discord、飞书等）时，收到首段即先发送并原地持续更新，无需等待整段生成完成。
+        </span>
+      </span>
+    </label>
+  </div>
   <details class="mt-3 text-xs text-mute">
     <summary class="cursor-pointer">高级</summary>
     <div class="mt-2 space-y-2">

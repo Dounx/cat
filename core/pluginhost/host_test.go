@@ -134,6 +134,30 @@ func TestPluginLifecycle(t *testing.T) {
 			t.Fatal("event emitted by action not stored")
 		}
 
+		// Incremental progress via action.progress notification.
+		var chunks []string
+		var deltas []string
+		out, err = e.Invoke(context.Background(), inst.ID, "stream", map[string]any{"parts": []any{"hel", "lo ", "cat"}}, plugin.InvokeContext{
+			StepID: "s1",
+			Progress: func(data map[string]any) {
+				if txt, ok := data["text"].(string); ok {
+					chunks = append(chunks, txt)
+				}
+				if d, ok := data["delta"].(string); ok {
+					deltas = append(deltas, d)
+				}
+			},
+		})
+		if err != nil || out["text"] != "hello cat" {
+			t.Fatalf("stream: %v %v", out, err)
+		}
+		if len(chunks) != 3 || chunks[0] != "hel" || chunks[1] != "hello " || chunks[2] != "hello cat" {
+			t.Fatalf("stream chunks = %v", chunks)
+		}
+		if len(deltas) != 3 || deltas[0] != "hel" || deltas[1] != "lo " || deltas[2] != "cat" {
+			t.Fatalf("stream deltas = %v", deltas)
+		}
+
 		// A failing action reports its error and partial output.
 		out, err = e.Invoke(context.Background(), inst.ID, "fail", nil, plugin.InvokeContext{})
 		if err == nil || err.Error() != "boom" || out["partial"] != true {

@@ -32,6 +32,10 @@ type Step struct {
 	// first of them (5 when unset); the wait doubles each time after that.
 	Retries          int `json:"retries,omitempty"`
 	RetryWaitSeconds int `json:"retry_wait_seconds,omitempty"`
+	// StreamReply, when true, streams incremental text output from this step
+	// directly to the triggering source channel by sending an initial reply on
+	// the first chunk and editing it in place as more text arrives.
+	StreamReply bool `json:"stream_reply,omitempty"`
 }
 
 // Rule matches events and runs a pipeline of steps for each match.

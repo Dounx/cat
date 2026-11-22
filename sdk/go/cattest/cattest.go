@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"sync"
@@ -31,6 +32,8 @@ type Harness struct {
 	mu       sync.Mutex
 	state    map[string]string
 	statuses []string
+	progress map[string]func(map[string]any)
+	callSeq  uint64
 }
 
 // Options configure the fake host.
@@ -49,7 +52,8 @@ func New(t testing.TB, p cat.Plugin, opts Options) *Harness {
 	h := &Harness{
 		t: t, conn: jsonrpc.New(hostR, hostW),
 		Events: make(chan cat.Event, 256), Steps: make(chan cat.Step, 256), Answers: make(chan map[string]any, 16),
-		state: map[string]string{},
+		state:    map[string]string{},
+		progress: map[string]func(map[string]any){},
 	}
 	for k, v := range opts.State {
 		h.state[k] = v
@@ -95,6 +99,24 @@ func New(t testing.TB, p cat.Plugin, opts Options) *Harness {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.state[in.Key] = in.Value
+		return nil, nil
+	})
+	h.conn.Handle("action.progress", func(_ context.Context, raw json.RawMessage) (any, error) {
+		var in map[string]any
+		if err := json.Unmarshal(raw, &in); err != nil {
+			return nil, nil
+		}
+		callID, _ := in["call_id"].(string)
+		if callID == "" {
+			return nil, nil
+		}
+		h.mu.Lock()
+		fn := h.progress[callID]
+		h.mu.Unlock()
+		if fn != nil {
+			delete(in, "call_id")
+			fn(in)
+		}
 		return nil, nil
 	})
 	h.conn.Handle("setup.show", func(_ context.Context, raw json.RawMessage) (any, error) {
@@ -156,8 +178,28 @@ func (h *Harness) Start() error { return h.call("start", nil, nil) }
 
 // Invoke calls an action as a rule step would.
 func (h *Harness) Invoke(action string, params map[string]any, trigger *cat.Event) (map[string]any, error) {
+	return h.InvokeWithProgress(action, params, trigger, nil)
+}
+
+// InvokeWithProgress calls an action and delivers incremental action.progress
+// notifications to onProgress.
+func (h *Harness) InvokeWithProgress(action string, params map[string]any, trigger *cat.Event, onProgress func(map[string]any)) (map[string]any, error) {
+	actx := cat.ActionContext{Event: trigger}
+	if onProgress != nil {
+		h.mu.Lock()
+		h.callSeq++
+		callID := fmt.Sprintf("t%d", h.callSeq)
+		h.progress[callID] = onProgress
+		h.mu.Unlock()
+		actx.CallID = callID
+		defer func() {
+			h.mu.Lock()
+			delete(h.progress, callID)
+			h.mu.Unlock()
+		}()
+	}
 	var out map[string]any
-	err := h.call("action.invoke", map[string]any{"action": action, "params": params, "context": cat.ActionContext{Event: trigger}}, &out)
+	err := h.call("action.invoke", map[string]any{"action": action, "params": params, "context": actx}, &out)
 	return out, err
 }
 

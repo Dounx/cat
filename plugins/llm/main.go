@@ -49,7 +49,11 @@ func New() cat.Plugin {
 				if extra := harness.Str(p, "system_prompt"); extra != "" {
 					sys += "\n\n" + extra
 				}
-				text, sid, usage, err := openaichat.ConverseWithFiles(ctx, client, history, key, sys, prompt, cat.Files(p), p["new_session"] == true)
+				var onProgress func(text, delta string)
+				if actx.CanProgress() {
+					onProgress = actx.Stream
+				}
+				text, sid, usage, err := openaichat.ConverseStream(ctx, client, history, key, sys, prompt, cat.Files(p), p["new_session"] == true, onProgress)
 				if err != nil {
 					return nil, err
 				}

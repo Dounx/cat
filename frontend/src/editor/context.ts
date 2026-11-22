@@ -169,7 +169,9 @@ export function createEditor(doc: Doc, sel: Ref<string | null>) {
       return (ra < 0 ? order.length : ra) - (rb < 0 ? order.length : rb)
     })
     const text = entries.find(([k, v]) => typeof v === 'string' && v.trim() && !props[k]?.enum)
-    return text ? named(String(text[1]), n).replace(/\s+/g, ' ') : ''
+    const body = text ? named(String(text[1]), n).replace(/\s+/g, ' ') : ''
+    if (n.stream_reply) return body ? `流式回复 · ${body}` : '流式回复'
+    return body
   }
   // Start an action's parameters from the defaults its schema declares.
   function resetParams(n: ENode) {

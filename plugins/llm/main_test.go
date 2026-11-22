@@ -217,3 +217,56 @@ func TestLLMVisionAndTextFiles(t *testing.T) {
 		t.Fatalf("unexpected multipart content: %s", s)
 	}
 }
+
+func TestLLMStreamingProgress(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		for _, chunk := range []string{
+			`{"choices":[{"delta":{"content":"流式"}}]}`,
+			`{"choices":[{"delta":{"content":"输出"}}]}`,
+			`{"choices":[{"delta":{"content":"成功"}}]}`,
+			`{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":6}}`,
+		} {
+			_, _ = w.Write([]byte("data: " + chunk + "\n\n"))
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		if fl != nil {
+			fl.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	h := cattest.New(t, New(), cattest.Options{
+		Config: map[string]any{"base_url": srv.URL, "api_key": "k-1", "model": "m1"},
+	})
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ev := &cat.Event{Source: "tg", Conversation: &cat.Conversation{ID: "stream-c1"}}
+	var texts []string
+	var deltas []string
+	out, err := h.InvokeWithProgress("chat", map[string]any{"prompt": "hello"}, ev, func(data map[string]any) {
+		if s, ok := data["text"].(string); ok {
+			texts = append(texts, s)
+		}
+		if d, ok := data["delta"].(string); ok {
+			deltas = append(deltas, d)
+		}
+	})
+	if err != nil {
+		t.Fatalf("InvokeWithProgress: %v", err)
+	}
+	if out["text"] != "流式输出成功" || out["session_id"] == "" {
+		t.Fatalf("unexpected output: %#v", out)
+	}
+	if len(texts) != 3 || texts[0] != "流式" || texts[1] != "流式输出" || texts[2] != "流式输出成功" {
+		t.Fatalf("texts = %v", texts)
+	}
+	if len(deltas) != 3 || deltas[0] != "流式" || deltas[1] != "输出" || deltas[2] != "成功" {
+		t.Fatalf("deltas = %v", deltas)
+	}
+}

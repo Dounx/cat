@@ -237,6 +237,7 @@ func Serve(p Plugin, r io.Reader, w io.Writer) error {
 		if in.Params == nil {
 			in.Params = map[string]any{}
 		}
+		in.Context.conn = conn
 		return fn(rctx, host, in.Params, in.Context)
 	})
 	conn.Handle("triggers.set", func(_ context.Context, raw json.RawMessage) (any, error) {

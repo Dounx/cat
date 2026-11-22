@@ -3,6 +3,7 @@
 package openaichat
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -46,12 +47,146 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, Usage, error
 	if c.Key == "" && !c.Keyless {
 		return "", Usage{}, errors.New("缺少 API Key")
 	}
-	body, _ := json.Marshal(map[string]any{"model": c.Model, "messages": msgs, "stream": false})
-	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.Base, "/")+"/chat/completions", bytes.NewReader(body))
+	resp, err := c.postChat(ctx, map[string]any{"model": c.Model, "messages": msgs, "stream": false}, false)
 	if err != nil {
 		return "", Usage{}, err
 	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode != 200 {
+		return "", Usage{}, formatAPIError(resp.StatusCode, raw)
+	}
+	return parseChatJSON(raw)
+}
+
+// ChatStream sends the messages with SSE streaming enabled, calling onProgress
+// with accumulated text and delta as chunks arrive. If the server responds with
+// a non-SSE JSON body instead, it falls back gracefully and reports the full
+// reply via onProgress.
+func (c *Client) ChatStream(ctx context.Context, msgs []Message, onProgress func(text, delta string)) (string, Usage, error) {
+	if onProgress == nil {
+		return c.Chat(ctx, msgs)
+	}
+	if c.Key == "" && !c.Keyless {
+		return "", Usage{}, errors.New("缺少 API Key")
+	}
+	payload := map[string]any{
+		"model":          c.Model,
+		"messages":       msgs,
+		"stream":         true,
+		"stream_options": map[string]any{"include_usage": true},
+	}
+	resp, err := c.postChat(ctx, payload, true)
+	if err != nil {
+		return "", Usage{}, err
+	}
+	if resp.StatusCode == 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if strings.Contains(strings.ToLower(string(raw)), "stream_options") {
+			delete(payload, "stream_options")
+			resp, err = c.postChat(ctx, payload, true)
+			if err != nil {
+				return "", Usage{}, err
+			}
+		} else {
+			return "", Usage{}, formatAPIError(400, raw)
+		}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		return "", Usage{}, formatAPIError(resp.StatusCode, raw)
+	}
+
+	br := bufio.NewReaderSize(resp.Body, 32<<10)
+	ct := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	if !strings.HasPrefix(ct, "text/event-stream") && looksLikeJSON(br) {
+		raw, _ := io.ReadAll(io.LimitReader(br, 8<<20))
+		text, usage, err := parseChatJSON(raw)
+		if err != nil {
+			return "", usage, err
+		}
+		if text != "" {
+			onProgress(text, text)
+		}
+		return text, usage, nil
+	}
+
+	var (
+		full      strings.Builder
+		usage     Usage
+		sawChoice bool
+	)
+	for {
+		line, rerr := br.ReadString('\n')
+		if len(line) > 0 {
+			trimmed := strings.TrimRight(line, "\r\n")
+			if strings.HasPrefix(trimmed, "data:") {
+				data := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+				if data == "[DONE]" {
+					break
+				}
+				if data != "" {
+					var chunk struct {
+						Choices []struct {
+							Delta struct {
+								Content string `json:"content"`
+							} `json:"delta"`
+							Message struct {
+								Content string `json:"content"`
+							} `json:"message"`
+						} `json:"choices"`
+						Usage *Usage `json:"usage"`
+						Error *struct {
+							Message string `json:"message"`
+						} `json:"error"`
+					}
+					if json.Unmarshal([]byte(data), &chunk) == nil {
+						if chunk.Error != nil && chunk.Error.Message != "" {
+							return full.String(), usage, fmt.Errorf("模型接口错误：%s", chunk.Error.Message)
+						}
+						if chunk.Usage != nil {
+							usage = *chunk.Usage
+						}
+						if len(chunk.Choices) > 0 {
+							sawChoice = true
+							delta := chunk.Choices[0].Delta.Content
+							if delta == "" && full.Len() == 0 && chunk.Choices[0].Message.Content != "" {
+								delta = chunk.Choices[0].Message.Content
+							}
+							if delta != "" {
+								full.WriteString(delta)
+								onProgress(full.String(), delta)
+							}
+						}
+					}
+				}
+			}
+		}
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				break
+			}
+			return full.String(), usage, rerr
+		}
+	}
+	if !sawChoice && full.Len() == 0 {
+		return "", usage, errors.New("模型接口没有返回内容")
+	}
+	return full.String(), usage, nil
+}
+
+func (c *Client) postChat(ctx context.Context, payload map[string]any, stream bool) (*http.Response, error) {
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.Base, "/")+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", "application/json")
+	if stream {
+		req.Header.Set("Accept", "text/event-stream, application/json")
+	}
 	if c.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Key)
 	}
@@ -59,12 +194,47 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, Usage, error
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Minute}
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", Usage{}, err
+	return client.Do(req)
+}
+
+func looksLikeJSON(br *bufio.Reader) bool {
+	for {
+		b, err := br.Peek(1)
+		if err != nil || len(b) == 0 {
+			return false
+		}
+		switch b[0] {
+		case ' ', '\t', '\r', '\n':
+			_, _ = br.ReadByte()
+		case '{':
+			return true
+		default:
+			return false
+		}
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+}
+
+func formatAPIError(status int, raw []byte) error {
+	var out struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(raw, &out)
+	msg := strings.TrimSpace(string(raw))
+	if out.Error != nil && out.Error.Message != "" {
+		msg = out.Error.Message
+	}
+	if status == 401 {
+		msg = "API Key 无效"
+	}
+	if len(msg) > 300 {
+		msg = msg[:300]
+	}
+	return fmt.Errorf("模型接口返回 %d：%s", status, msg)
+}
+
+func parseChatJSON(raw []byte) (string, Usage, error) {
 	var out struct {
 		Choices []struct {
 			Message struct {
@@ -73,24 +243,8 @@ func (c *Client) Chat(ctx context.Context, msgs []Message) (string, Usage, error
 			} `json:"message"`
 		} `json:"choices"`
 		Usage Usage `json:"usage"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
 	}
 	_ = json.Unmarshal(raw, &out)
-	if resp.StatusCode != 200 {
-		msg := strings.TrimSpace(string(raw))
-		if out.Error != nil && out.Error.Message != "" {
-			msg = out.Error.Message
-		}
-		if resp.StatusCode == 401 {
-			msg = "API Key 无效"
-		}
-		if len(msg) > 300 {
-			msg = msg[:300]
-		}
-		return "", Usage{}, fmt.Errorf("模型接口返回 %d：%s", resp.StatusCode, msg)
-	}
 	if len(out.Choices) == 0 {
 		return "", out.Usage, errors.New("模型接口没有返回内容")
 	}
@@ -149,6 +303,12 @@ func Converse(ctx context.Context, c *Client, h History, key, system, prompt str
 
 // ConverseWithFiles runs one turn with optional image or text file attachments.
 func ConverseWithFiles(ctx context.Context, c *Client, h History, key, system, prompt string, files []string, fresh bool) (text, sessionID string, usage Usage, err error) {
+	return ConverseStream(ctx, c, h, key, system, prompt, files, fresh, nil)
+}
+
+// ConverseStream runs one turn with optional attachments and streams incremental
+// replies to onProgress when non-nil.
+func ConverseStream(ctx context.Context, c *Client, h History, key, system, prompt string, files []string, fresh bool, onProgress func(text, delta string)) (text, sessionID string, usage Usage, err error) {
 	userContent, savedPrompt, err := buildUserContent(prompt, files)
 	if err != nil {
 		return "", "", Usage{}, err
@@ -166,7 +326,7 @@ func ConverseWithFiles(ctx context.Context, c *Client, h History, key, system, p
 	}
 	msgs = append(msgs, past...)
 	msgs = append(msgs, Message{Role: "user", Content: userContent})
-	text, usage, err = c.Chat(ctx, msgs)
+	text, usage, err = c.ChatStream(ctx, msgs, onProgress)
 	if err != nil {
 		return "", "", usage, err
 	}

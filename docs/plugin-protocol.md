@@ -123,7 +123,7 @@ Cat                                   插件
 | `initialize` | `{ protocol, mode: "run" \| "setup", instance: { id }, config, data_dir }` | `{ protocol }` |
 | `start` | — | — |
 | `stop` | — | — |
-| `action.invoke` | `{ action, params, context: { event?, rule_id?, run_id? } }` | 一个对象，成为该动作的输出 |
+| `action.invoke` | `{ action, params, context: { event?, rule_id?, run_id?, step_id?, call_id? } }` | 一个对象，成为该动作的输出 |
 | `triggers.set` | `{ triggers: [{ id, params }] }`：启用的规则要这个实例盯的全部东西，每次都是完整列表 | `{ errors?: { "<id>": "原因" } }`：看不懂的触发各自的原因。见「触发参数」 |
 | `options.list` | `{ action, field }`：`action` 是动作名，问的是配置字段时为空串，问的是触发参数的字段时为 `@trigger` | `{ options: [{ value, title?, note? }] }`。`title` 是给人看的名字，`note` 是旁边的一小段补充。只在实例启动后调用；没有实现这个方法等于没有可选项 |
 | `ingress.request` | `{ method, path, query, headers, body }`（`body` 为 base64） | `{ status, headers?, body? }`（`body` 为 base64） |
@@ -142,6 +142,7 @@ Cat                                   插件
 | `state.set` | 请求 | `{ key, value }`（字符串；重启后仍在，实例删除时清除） | |
 | `setup.show` | 请求 | 一个向导步骤 | 立即返回 |
 | `setup.ask` | 请求 | 一个 `form` 或 `confirm` 步骤 | 用户的回答；用户关闭向导时返回错误 `-32800` |
+| `action.progress` | 通知 | `{ call_id, text?, delta?, ... }`，动作执行期间增量上报进度（`call_id` 取自 `action.invoke` 的 `context.call_id`） | |
 | `host.dependency` | 请求 | `{ name }` | `{ path }` |
 
 ## 触发参数
