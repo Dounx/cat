@@ -168,22 +168,57 @@ func (a *App) mcpRoutes(mux *http.ServeMux) {
 		}
 		return out
 	}
+	payload := func() map[string]any {
+		return map[string]any{
+			"url":       a.MCPURL(),
+			"harnesses": list(),
+			"policy":    mcp.LoadPolicy(a.Engine.Store),
+		}
+	}
 	mux.HandleFunc("GET /api/mcp/harnesses", func(w http.ResponseWriter, r *http.Request) {
-		api.WriteJSON(w, 200, map[string]any{"url": a.MCPURL(), "harnesses": list()})
+		api.WriteJSON(w, 200, payload())
 	})
 	mux.HandleFunc("POST /api/mcp/harnesses/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := mcp.Install(r.Context(), r.PathValue("id"), a.MCPURL()); err != nil {
 			api.WriteErr(w, 400, err.Error())
 			return
 		}
-		api.WriteJSON(w, 200, map[string]any{"url": a.MCPURL(), "harnesses": list()})
+		api.WriteJSON(w, 200, payload())
 	})
 	mux.HandleFunc("DELETE /api/mcp/harnesses/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := mcp.Uninstall(r.Context(), r.PathValue("id")); err != nil {
 			api.WriteErr(w, 400, err.Error())
 			return
 		}
-		api.WriteJSON(w, 200, map[string]any{"url": a.MCPURL(), "harnesses": list()})
+		api.WriteJSON(w, 200, payload())
+	})
+	mux.HandleFunc("GET /api/mcp/policy", func(w http.ResponseWriter, r *http.Request) {
+		api.WriteJSON(w, 200, mcp.LoadPolicy(a.Engine.Store))
+	})
+	mux.HandleFunc("PUT /api/mcp/policy", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			AllowWriteRules    *bool `json:"allow_write_rules"`
+			AllowInvokeActions *bool `json:"allow_invoke_actions"`
+			AllowShell         *bool `json:"allow_shell"`
+		}
+		if !api.ReadJSON(w, r, &in) {
+			return
+		}
+		p := mcp.LoadPolicy(a.Engine.Store)
+		if in.AllowWriteRules != nil {
+			p.AllowWriteRules = *in.AllowWriteRules
+		}
+		if in.AllowInvokeActions != nil {
+			p.AllowInvokeActions = *in.AllowInvokeActions
+		}
+		if in.AllowShell != nil {
+			p.AllowShell = *in.AllowShell
+		}
+		if err := mcp.SavePolicy(a.Engine.Store, p); err != nil {
+			api.WriteErr(w, 500, err.Error())
+			return
+		}
+		api.WriteJSON(w, 200, p)
 	})
 }
 

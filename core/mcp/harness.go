@@ -46,7 +46,7 @@ type Status struct {
 
 // Harnesses lists the harnesses the server can be installed into.
 func Harnesses() []Harness {
-	return []Harness{claude(), codex(), dsh()}
+	return []Harness{claude(), claudeApp(), cursor(), windsurf(), codex(), dsh()}
 }
 
 // StatusOf reports how a harness stands, given the address of this hub's
@@ -154,6 +154,211 @@ func claude() Harness {
 			return run(ctx, bin, "mcp", "remove", "--scope", "user", ServerName)
 		},
 	}
+}
+
+// ---- Claude Desktop app config ----
+
+func claudeApp() Harness {
+	config := func() string {
+		if p := os.Getenv("CLAUDE_DESKTOP_CONFIG"); p != "" {
+			return p
+		}
+		switch runtime.GOOS {
+		case "darwin":
+			return filepath.Join(home(), "Library", "Application Support", "Claude", "claude_desktop_config.json")
+		case "windows":
+			return filepath.Join(os.Getenv("APPDATA"), "Claude", "claude_desktop_config.json")
+		default:
+			return filepath.Join(home(), ".config", "Claude", "claude_desktop_config.json")
+		}
+	}
+	return Harness{
+		ID:    "claude-app",
+		Name:  "Claude Desktop 应用配置",
+		About: "写进 claude_desktop_config.json，Claude Desktop 对话页可用，重开后生效",
+		find: func() (string, bool) {
+			p := config()
+			if os.Getenv("CLAUDE_DESKTOP_CONFIG") != "" {
+				if st, err := os.Stat(p); err == nil && !st.IsDir() {
+					return p, true
+				}
+				return p, dirExists(filepath.Dir(p))
+			}
+			if dirExists(filepath.Dir(p)) {
+				return p, true
+			}
+			if runtime.GOOS == "darwin" && dirExists("/Applications/Claude.app", filepath.Join(home(), "Applications", "Claude.app")) {
+				return p, true
+			}
+			return p, false
+		},
+		installed: func() (string, bool) { return jsonMCPRead(config(), "url") },
+		install: func(_ context.Context, path, url string) error {
+			return jsonMCPWrite(path, "url", url)
+		},
+		uninstall: func(_ context.Context, path string) error {
+			return jsonMCPWrite(path, "url", "")
+		},
+	}
+}
+
+// ---- Cursor ----
+
+func cursor() Harness {
+	config := func() string {
+		if dir := os.Getenv("CURSOR_CONFIG_DIR"); dir != "" {
+			return filepath.Join(dir, "mcp.json")
+		}
+		return filepath.Join(home(), ".cursor", "mcp.json")
+	}
+	return Harness{
+		ID:    "cursor",
+		Name:  "Cursor",
+		About: "写进 ~/.cursor/mcp.json，Cursor 刷新 MCP 或重启后生效",
+		find: func() (string, bool) {
+			p := config()
+			if dir := os.Getenv("CURSOR_CONFIG_DIR"); dir != "" {
+				return p, dirExists(dir)
+			}
+			if dirExists(filepath.Dir(p)) {
+				return p, true
+			}
+			if _, ok := findBin("cursor"); ok {
+				return p, true
+			}
+			if runtime.GOOS == "darwin" && dirExists("/Applications/Cursor.app", filepath.Join(home(), "Applications", "Cursor.app")) {
+				return p, true
+			}
+			return p, false
+		},
+		installed: func() (string, bool) { return jsonMCPRead(config(), "url") },
+		install: func(_ context.Context, path, url string) error {
+			return jsonMCPWrite(path, "url", url)
+		},
+		uninstall: func(_ context.Context, path string) error {
+			return jsonMCPWrite(path, "url", "")
+		},
+	}
+}
+
+// ---- Windsurf ----
+
+func windsurf() Harness {
+	config := func() string {
+		if dir := os.Getenv("WINDSURF_CONFIG_DIR"); dir != "" {
+			return filepath.Join(dir, "mcp_config.json")
+		}
+		return filepath.Join(home(), ".codeium", "windsurf", "mcp_config.json")
+	}
+	return Harness{
+		ID:    "windsurf",
+		Name:  "Windsurf",
+		About: "写进 ~/.codeium/windsurf/mcp_config.json，Windsurf 刷新 MCP 后生效",
+		find: func() (string, bool) {
+			p := config()
+			if dir := os.Getenv("WINDSURF_CONFIG_DIR"); dir != "" {
+				return p, dirExists(dir)
+			}
+			if dirExists(filepath.Dir(p)) {
+				return p, true
+			}
+			if _, ok := findBin("windsurf"); ok {
+				return p, true
+			}
+			if runtime.GOOS == "darwin" && dirExists("/Applications/Windsurf.app", filepath.Join(home(), "Applications", "Windsurf.app")) {
+				return p, true
+			}
+			return p, false
+		},
+		installed: func() (string, bool) { return jsonMCPRead(config(), "serverUrl", "url") },
+		install: func(_ context.Context, path, url string) error {
+			return jsonMCPWrite(path, "serverUrl", url)
+		},
+		uninstall: func(_ context.Context, path string) error {
+			return jsonMCPWrite(path, "serverUrl", "")
+		},
+	}
+}
+
+// jsonMCPRead reads the hub's entry URL from a JSON file whose servers live
+// under "mcpServers", checking urlKeys in order.
+func jsonMCPRead(path string, urlKeys ...string) (string, bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	var doc map[string]any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if dec.Decode(&doc) != nil {
+		return "", false
+	}
+	servers, _ := doc["mcpServers"].(map[string]any)
+	entry, ok := servers[ServerName].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	for _, k := range urlKeys {
+		if u, _ := entry[k].(string); u != "" {
+			return u, true
+		}
+	}
+	return "", true
+}
+
+// jsonMCPWrite inserts or removes ServerName under "mcpServers" in path while
+// preserving all other top-level keys and sibling MCP server entries. When url
+// is empty, ServerName is removed.
+func jsonMCPWrite(path, urlKey, url string) error {
+	doc := map[string]any{}
+	if raw, err := os.ReadFile(path); err == nil {
+		if strings.TrimSpace(string(raw)) != "" {
+			dec := json.NewDecoder(bytes.NewReader(raw))
+			dec.UseNumber()
+			if err := dec.Decode(&doc); err != nil {
+				return fmt.Errorf("配置文件 %s 不是合法的 JSON：%w", filepath.Base(path), err)
+			}
+			if doc == nil {
+				doc = map[string]any{}
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	servers, ok := doc["mcpServers"].(map[string]any)
+	if !ok || servers == nil {
+		servers = map[string]any{}
+	}
+	if url == "" {
+		delete(servers, ServerName)
+		if _, had := doc["mcpServers"]; had {
+			doc["mcpServers"] = servers
+		}
+	} else {
+		servers[ServerName] = map[string]any{urlKey: url}
+		doc["mcpServers"] = servers
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return writeKeeping(path, string(out))
+}
+
+func dirExists(paths ...string) bool {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if st, err := os.Stat(p); err == nil && st.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- ChatGPT (Codex) ----
