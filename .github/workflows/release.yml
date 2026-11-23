@@ -2,7 +2,7 @@ name: Release
 
 # Pushing a tag like v0.2.0 tests, builds and publishes a GitHub release with:
 #   - catd plus the official plugins, one archive per platform
-#   - the desktop app: Cat.dmg & .zip for macOS, .deb / .rpm / .AppImage /
+#   - the desktop app: .dmg & .zip for macOS, .deb / .rpm / .AppImage /
 #     .tar.gz for Linux, a setup .exe & portable .zip for Windows
 #   - update.json, which running copies read to update themselves
 #
@@ -97,7 +97,7 @@ jobs:
 
       - name: Archive the app
         run: |
-          name="Cat-${GITHUB_REF_NAME//\//-}-$(go env GOOS | sed s/darwin/macos/)-$(go env GOARCH)"
+          name="cat-${GITHUB_REF_NAME//\//-}-$(go env GOOS | sed s/darwin/macos/)-$(go env GOARCH)"
           cd bin
           case "$RUNNER_OS" in
             # ditto keeps the bundle's signature and symlinks intact.
@@ -119,13 +119,13 @@ jobs:
           name: desktop-${{ matrix.os }}
           if-no-files-found: error
           path: |
-            Cat-*.zip
-            Cat-*.dmg
-            Cat-*.exe
-            Cat-*.tar.gz
-            Cat-*.deb
-            Cat-*.rpm
-            Cat-*.AppImage
+            cat-*.zip
+            cat-*.dmg
+            cat-*.exe
+            cat-*.tar.gz
+            cat-*.deb
+            cat-*.rpm
+            cat-*.AppImage
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')

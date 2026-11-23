@@ -5,13 +5,13 @@ version of itself.
     python3 scripts/build-update.py v0.2.0 <base url> <directory>
 
 The directory (searched with its subdirectories) holds the release's
-archives: the desktop app's (Cat-<tag>-<os>-<arch>) and catd's
+archives: the desktop app's (cat-<tag>-<os>-<arch>) and catd's
 (catd-<tag>-<os>-<arch>). The base URL is where they will be downloaded from,
 by file name. update.json is written into the directory.
 """
 import hashlib, json, os, re, sys
 
-NAME = re.compile(r"^(Cat|catd)-.+-(macos|darwin|linux|windows)-(amd64|arm64)\.(zip|tar\.gz)$")
+NAME = re.compile(r"^(cat|catd)-.+-(macos|darwin|linux|windows)-(amd64|arm64)\.(zip|tar\.gz)$")
 
 
 def main():
@@ -24,7 +24,7 @@ def main():
             m = NAME.match(f)
             if not m:
                 continue
-            kind = "desktop" if m.group(1) == "Cat" else "catd"
+            kind = "desktop" if m.group(1) == "cat" else "catd"
             platform = m.group(2).replace("macos", "darwin") + "/" + m.group(3)
             digest = hashlib.sha256(open(os.path.join(dirpath, f), "rb").read()).hexdigest()
             packages[kind][platform] = {"url": f"{base}/{f}", "sha256": digest, "format": m.group(4)}
