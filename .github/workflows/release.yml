@@ -2,8 +2,8 @@ name: Release
 
 # Pushing a tag like v0.2.0 tests, builds and publishes a GitHub release with:
 #   - catd plus the official plugins, one archive per platform
-#   - the desktop app: Cat.app for macOS, a tarball and a .deb for Linux, a zip
-#     for Windows
+#   - the desktop app: Cat.dmg & .zip for macOS, .deb / .rpm / .AppImage /
+#     .tar.gz for Linux, a setup .exe & portable .zip for Windows
 #   - update.json, which running copies read to update themselves
 #
 # Running it by hand (workflow_dispatch) builds everything and keeps it as
@@ -73,9 +73,21 @@ jobs:
           node-version: lts/*
       - uses: oven-sh/setup-bun@v2
 
-      - name: Install the Linux webview libraries
+      - name: Install Linux webview libraries and packaging tools
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev rpm desktop-file-utils file
+          curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$(uname -m).AppImage" \
+            -o /tmp/appimagetool
+          sudo install -m 755 /tmp/appimagetool /usr/local/bin/appimagetool
+
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        run: |
+          if [ ! -x "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ] && ! command -v iscc >/dev/null 2>&1; then
+            choco install -y innosetup --no-progress
+          fi
 
       - name: Build the app
         run: |
@@ -89,11 +101,17 @@ jobs:
           cd bin
           case "$RUNNER_OS" in
             # ditto keeps the bundle's signature and symlinks intact.
-            macOS) ditto -c -k --keepParent Cat.app "../$name.zip" ;;
+            macOS)
+              ditto -c -k --keepParent Cat.app "../$name.zip"
+              mv Cat.dmg "../$name.dmg" ;;
             Linux)
               mv Cat-linux Cat && tar -czf "../$name.tar.gz" Cat
-              mv cat_*.deb "../$name.deb" ;;
-            Windows) mv Cat-windows Cat && 7z a -tzip "../$name.zip" Cat ;;
+              mv cat_*.deb "../$name.deb"
+              mv cat_*.rpm "../$name.rpm"
+              mv Cat.AppImage "../$name.AppImage" ;;
+            Windows)
+              mv Cat-windows Cat && 7z a -tzip "../$name.zip" Cat
+              mv Cat-setup.exe "../$name-setup.exe" ;;
           esac
 
       - uses: actions/upload-artifact@v7
@@ -102,8 +120,12 @@ jobs:
           if-no-files-found: error
           path: |
             Cat-*.zip
+            Cat-*.dmg
+            Cat-*.exe
             Cat-*.tar.gz
             Cat-*.deb
+            Cat-*.rpm
+            Cat-*.AppImage
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')

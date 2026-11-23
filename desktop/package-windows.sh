@@ -5,7 +5,8 @@
 set -e
 cd "$(dirname "$0")/.."
 OUT=bin/Cat-windows
-rm -rf "$OUT"
+VERSION=${CAT_VERSION:-0.1.0}
+rm -rf "$OUT" bin/Cat-setup.exe
 mkdir -p "$OUT/plugins"
 cp bin/cat-desktop.exe "$OUT/Cat.exe"
 
@@ -19,3 +20,17 @@ for dir in plugins/*/; do
   sed "s|\"\./cat-plugin-$name\"|\"./cat-plugin-$name.exe\"|" "$dir/plugin.json" > "$OUT/plugins/$name/plugin.json"
 done
 echo "built $OUT"
+
+ISCC=""
+for candidate in "$(command -v iscc 2>/dev/null || true)" \
+  "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+  "/c/Program Files/Inno Setup 6/ISCC.exe"; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    ISCC="$candidate"
+    break
+  fi
+done
+if [ -n "$ISCC" ]; then
+  MSYS_NO_PATHCONV=1 "$ISCC" /Q "/DVersion=$VERSION" desktop/windows/installer.iss
+  echo "built bin/Cat-setup.exe"
+fi

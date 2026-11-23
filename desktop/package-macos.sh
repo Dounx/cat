@@ -18,7 +18,10 @@ for dir in plugins/*/; do
   cp "$dir/plugin.json" "$dir/cat-plugin-$name" "$APP/Contents/MacOS/plugins/$name/"
 done
 
-ICONSET=$(mktemp -d)/Cat.iconset
+ICONSET_DIR=$(mktemp -d)
+DMG_STAGE=""
+trap 'rm -rf "$ICONSET_DIR" "$DMG_STAGE"' EXIT
+ICONSET="$ICONSET_DIR/Cat.iconset"
 mkdir -p "$ICONSET"
 for size in 16 32 128 256 512; do
   sips -z $size $size desktop/assets/appicon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
@@ -44,3 +47,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 codesign --force --deep --sign - "$APP" 2>/dev/null || true
 echo "built $APP"
+
+if command -v hdiutil >/dev/null; then
+  DMG_STAGE=$(mktemp -d)
+  ditto "$APP" "$DMG_STAGE/Cat.app"
+  ln -s /Applications "$DMG_STAGE/Applications"
+  rm -f bin/Cat.dmg
+  hdiutil create -volname "Cat" -srcfolder "$DMG_STAGE" -ov -format UDZO bin/Cat.dmg >/dev/null
+  echo "built bin/Cat.dmg"
+fi

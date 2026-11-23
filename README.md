@@ -343,9 +343,9 @@ git tag v0.2.0 && git push origin v0.2.0
 
 - `catd-<版本>-<系统>-<架构>.tar.gz`（Windows 是 `.zip`）：`catd` 和全部官方插件，解压即可运行；`SHA256SUMS` 是它们的校验和。
 - 桌面应用，都没有代码签名：
-  - `Cat-<版本>-macos-arm64.zip`：首次打开需要在「系统设置 → 隐私与安全性」里放行。
-  - `Cat-<版本>-linux-<架构>.tar.gz`（免安装目录）和 `.deb`（装到 `/opt/cat`，依赖 GTK 4 与 WebKitGTK 6.0），有 amd64 和 arm64。
-  - `Cat-<版本>-windows-amd64.zip`：免安装目录，首次运行时 SmartScreen 可能提示，选「仍要运行」。
+  - macOS：`Cat-<版本>-macos-arm64.dmg`（拖拽到「应用程序」安装）和 `.zip`（供自动更新）；首次打开需要在「系统设置 → 隐私与安全性」里放行。
+  - Linux：`Cat-<版本>-linux-<架构>.deb`（Debian/Ubuntu）、`.rpm`（Fedora/openSUSE，装到 `/opt/cat`）、`.AppImage`（免安装单文件）和 `.tar.gz`（免安装目录，支持自动更新），有 amd64 和 arm64；运行时依赖 GTK 4 与 WebKitGTK 6.0。
+  - Windows：`Cat-<版本>-windows-amd64-setup.exe`（单用户安装器，装到 `%LOCALAPPDATA%\Programs\Cat`，免管理员权限且支持自动更新）和 `.zip`（免安装目录）；首次运行时 SmartScreen 可能提示，选「仍要运行」。
 - `update.json`：这一版的版本号，和每种安装包在每个平台上的下载地址与 SHA-256。运行中的 Cat 靠它更新自己（见下面的「自动更新」）。
 
 在 Actions 页面手动运行 Release 只构建、不发布，产物留在这次运行的附件里，可以用来试跑。本地也能打同样的包：

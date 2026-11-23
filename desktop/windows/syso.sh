@@ -15,6 +15,8 @@ wails3() { env -u GOOS -u GOARCH go run "github.com/wailsapp/wails/v3/cmd/wails3
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 wails3 generate icons -input assets/appicon.png -windowsfilename "$TMP/cat.ico" -macfilename "$TMP/cat.icns"
+mkdir -p ../bin
+cp "$TMP/cat.ico" ../bin/cat.ico
 sed "s/@VERSION@/$VERSION/" windows/cat.exe.manifest > "$TMP/cat.exe.manifest"
 cat > "$TMP/info.json" <<JSON
 {

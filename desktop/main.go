@@ -36,7 +36,7 @@ func main() {
 	addr := flag.String("addr", envOr("CAT_ADDR", "127.0.0.1:7788"), "listen address")
 	data := flag.String("data", os.Getenv("CAT_DATA"), "data directory (default ~/.cat)")
 	plugins := flag.String("plugins", os.Getenv("CAT_PLUGINS"), "extra plugin directories")
-	marketURL := flag.String("market", os.Getenv("CAT_MARKET"), "plugin market index URL; \"off\" disables it (default: the latest release)")
+	marketURL := flag.String("market", os.Getenv("CAT_MARKET"), "optional third-party plugin market index URL; \"off\" disables it")
 	updateURL := flag.String("update", os.Getenv("CAT_UPDATE"), "update manifest URL; \"off\" never updates (default: the latest release)")
 	hidden := flag.Bool("hidden", false, "start in the tray without opening the window")
 	uiDev := flag.String("ui-dev", os.Getenv("CAT_UI_DEV"), "frontend dev server URL to proxy the UI to (development)")
