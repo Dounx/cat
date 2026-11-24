@@ -181,6 +181,24 @@ func (a *App) mcpRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/mcp/harnesses", func(w http.ResponseWriter, r *http.Request) {
 		api.WriteJSON(w, 200, map[string]any{"url": a.MCPURL(), "harnesses": list()})
 	})
+	mux.HandleFunc("POST /api/mcp/harnesses/install-all", func(w http.ResponseWriter, r *http.Request) {
+		res := mcp.InstallAll(r.Context(), a.MCPURL())
+		api.WriteJSON(w, 200, map[string]any{
+			"url":       a.MCPURL(),
+			"harnesses": list(),
+			"changed":   res.Changed,
+			"failed":    res.Failed,
+		})
+	})
+	mux.HandleFunc("POST /api/mcp/harnesses/uninstall-all", func(w http.ResponseWriter, r *http.Request) {
+		res := mcp.UninstallAll(r.Context())
+		api.WriteJSON(w, 200, map[string]any{
+			"url":       a.MCPURL(),
+			"harnesses": list(),
+			"changed":   res.Changed,
+			"failed":    res.Failed,
+		})
+	})
 	mux.HandleFunc("POST /api/mcp/harnesses/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if err := mcp.Install(r.Context(), r.PathValue("id"), a.MCPURL()); err != nil {
 			api.WriteErr(w, 400, err.Error())

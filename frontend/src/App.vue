@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Activity, ArrowUpCircle, Plug, Workflow } from 'lucide-vue-next'
+import { Activity, ArrowUpCircle, Plug, Settings, Workflow } from 'lucide-vue-next'
 import { useHub } from './hub'
 import { get, post } from './api'
 import type { Update } from './types'
@@ -40,6 +40,7 @@ const nav = [
   { to: '/rules', label: '规则', icon: Workflow },
   { to: '/connections', label: '接入', icon: Plug },
   { to: '/activity', label: '记录', icon: Activity },
+  { to: '/settings', label: '设置', icon: Settings },
 ]
 
 // The hub looks for a newer version of itself by its own clock, and downloads

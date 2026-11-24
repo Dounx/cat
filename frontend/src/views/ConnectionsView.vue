@@ -2,7 +2,6 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  Archive,
   Check,
   ChevronRight,
   Copy,
@@ -22,8 +21,6 @@ import PageHeader from '../components/PageHeader.vue'
 import Drawer from '../components/Drawer.vue'
 import SchemaForm from '../components/SchemaForm.vue'
 import SetupWizard from '../components/SetupWizard.vue'
-import McpPanel from '../components/McpPanel.vue'
-import BackupDrawer from '../components/BackupDrawer.vue'
 import { picksFor } from '../picks'
 
 const hub = useHub()
@@ -128,22 +125,6 @@ const takesCalls = computed(() => configured.value.some((i) => hub.pluginOf(i.pl
 const localOnly = computed(
   () => !hub.publicURL && /^(localhost|127\.\d+\.\d+\.\d+|\[::1\]|.*\.localhost)$/.test(location.hostname),
 )
-const origin = location.origin
-const publicURL = ref<string | null>(null)
-async function savePublicURL() {
-  const saved = await hub.run(() => put<{ public_url: string }>('/settings', { public_url: publicURL.value }), '已保存')
-  if (!saved) return
-  hub.publicURL = saved.public_url
-  publicURL.value = null
-}
-const marketURL = ref<string | null>(null)
-async function saveMarketURL() {
-  const saved = await hub.run(() => put<{ market_url: string }>('/settings', { market_url: marketURL.value }), '已保存')
-  if (!saved) return
-  hub.marketURL = saved.market_url
-  marketURL.value = null
-  await loadMarket()
-}
 // The copy icon turns into a tick for a moment where it was pressed.
 const copied = ref('')
 async function copy(text: string) {
@@ -183,14 +164,8 @@ const progress = computed(() => {
 async function loadMarket() {
   market.value = await get('/market').catch(() => market.value)
 }
-const isDesktop = ref(false)
-async function openLogs() {
-  await hub.run(() => post('/open-logs'))
-}
-onMounted(async () => {
+onMounted(() => {
   loadMarket()
-  const st = await get<{ desktop?: boolean }>('/status').catch(() => ({ desktop: false }))
-  isDesktop.value = !!st.desktop
 })
 watch(
   () => hub.signals.plugins,
@@ -288,7 +263,6 @@ async function remove(i: Instance) {
 }
 
 const logInst = ref<Instance | null>(null)
-const backupOpen = ref(false)
 const logLines = ref<LogEntry[]>([])
 const loadingLogs = ref(false)
 async function openInstanceLogs(i: Instance) {
@@ -325,7 +299,6 @@ const levelClass = (lvl: string) => {
 <template>
   <div class="flex h-full flex-col">
     <PageHeader title="接入" hint="把聊天软件、要盯的东西和 AI 接进来，规则才有东西可用">
-      <button class="btn" @click="backupOpen = true"><Archive :size="15" />备份与迁移</button>
       <button class="btn btn-primary" @click="picking = 'add'"><Plus :size="15" />添加</button>
     </PageHeader>
 
@@ -395,8 +368,8 @@ const levelClass = (lvl: string) => {
           <input type="checkbox" :checked="i.enabled" :title="i.enabled ? '停用' : '启用'" @change="toggle(i)" />
         </div>
       </TransitionGroup>
-      <div v-if="takesCalls || isDesktop" class="flex flex-wrap items-center justify-between gap-2 text-xs text-mute">
-        <p v-if="takesCalls">
+      <div v-if="takesCalls" class="flex flex-wrap items-center justify-between gap-2 text-xs text-mute">
+        <p>
           <template v-if="hub.publicURL">接收地址以对外地址 {{ hub.publicURL }} 开头。</template>
           <template v-else-if="localOnly">
             接收地址以 {{ hub.ingressBase }} 开头，只有这台电脑上的程序访问得到。要让外面的服务调用，
@@ -404,15 +377,11 @@ const levelClass = (lvl: string) => {
           <template v-else
             >接收地址以打开这个页面的地址 {{ hub.ingressBase }} 开头。外面访问 Cat 用的是别的地址时，</template
           >
-          <button class="cursor-pointer text-accent hover:underline" @click="publicURL = hub.publicURL">
-            {{ hub.publicURL ? '更改' : '设置对外地址' }}
-          </button>
+          <RouterLink to="/settings" class="text-accent hover:underline">
+            {{ hub.publicURL ? '去设置更改' : '去设置对外地址' }}
+          </RouterLink>
         </p>
-        <button v-if="isDesktop" class="ml-auto cursor-pointer text-mute hover:text-accent" @click="openLogs">
-          打开日志目录
-        </button>
       </div>
-      <McpPanel class="mt-8" />
     </div>
 
     <Transition name="drawer">
@@ -532,9 +501,9 @@ const levelClass = (lvl: string) => {
         </template>
         <template v-if="picking === 'plugins' || !market.locked" #footer>
           <button v-if="picking === 'plugins'" class="btn mr-auto" @click="picking = 'add'">返回添加</button>
-          <button v-else class="btn btn-ghost mr-auto text-xs text-mute" @click="marketURL = hub.marketURL">
-            市场地址{{ hub.marketURL && hub.marketURL !== 'off' ? '（已配置）' : '' }}
-          </button>
+          <RouterLink v-else to="/settings" class="btn btn-ghost mr-auto text-xs text-mute" @click="picking = false">
+            市场地址设置{{ hub.marketURL && hub.marketURL !== 'off' ? '（已配置）' : '' }}
+          </RouterLink>
         </template>
       </Drawer>
     </Transition>
@@ -557,52 +526,6 @@ const levelClass = (lvl: string) => {
           </button>
           <button class="btn" @click="editing = null">取消</button>
           <button class="btn btn-primary" @click="save">保存</button>
-        </template>
-      </Drawer>
-    </Transition>
-
-    <Transition name="drawer">
-      <Drawer v-if="publicURL !== null" title="对外地址" @close="publicURL = null">
-        <p class="mb-4 text-sm text-mute">
-          外面的服务访问 Cat 用的地址：反向代理的域名，或内网穿透给的地址。Webhook
-          这类接入显示和复制的接收地址会以它开头。
-        </p>
-        <label class="label">对外地址</label>
-        <input
-          v-model="publicURL"
-          class="input font-mono"
-          placeholder="https://cat.example.com"
-          @keydown.enter="savePublicURL"
-        />
-        <p class="mt-2 text-xs text-mute">
-          这里只改显示的地址，Cat 监听在哪、谁能访问到它不会变。留空就用打开这个页面的地址（{{ origin }}）。
-        </p>
-        <template #footer>
-          <button class="btn" @click="publicURL = null">取消</button>
-          <button class="btn btn-primary" @click="savePublicURL">保存</button>
-        </template>
-      </Drawer>
-    </Transition>
-
-    <Transition name="drawer">
-      <Drawer v-if="marketURL !== null" title="插件市场地址" @close="marketURL = null">
-        <p class="mb-4 text-sm text-mute">
-          「添加接入」里显示和安装未捆绑插件时读取的索引地址（<code class="chip">index.json</code>）。
-        </p>
-        <label class="label">索引地址</label>
-        <input
-          v-model="marketURL"
-          class="input font-mono"
-          :placeholder="market.default_url || 'https://example.com/cat-market/index.json'"
-          @keydown.enter="saveMarketURL"
-        />
-        <p class="mt-2 text-xs text-mute">
-          官方插件已随安装包内置；留空或填
-          <code class="chip">off</code> 不使用插件市场，填入第三方或自建市场的地址即可在线安装扩展插件。
-        </p>
-        <template #footer>
-          <button class="btn" @click="marketURL = null">取消</button>
-          <button class="btn btn-primary" @click="saveMarketURL">保存</button>
         </template>
       </Drawer>
     </Transition>
@@ -633,10 +556,6 @@ const levelClass = (lvl: string) => {
           </div>
         </div>
       </Drawer>
-    </Transition>
-
-    <Transition name="drawer">
-      <BackupDrawer v-if="backupOpen" @close="backupOpen = false" />
     </Transition>
 
     <Transition name="modal">

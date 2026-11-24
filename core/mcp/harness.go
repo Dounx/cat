@@ -62,12 +62,33 @@ func StatusOf(h Harness, url string) Status {
 	return st
 }
 
+// ActionFailure records one harness that failed during a batch install or uninstall.
+type ActionFailure struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Error string `json:"error"`
+}
+
+// BatchResult summarizes a batch install or uninstall across all harnesses.
+type BatchResult struct {
+	Changed []string        `json:"changed"`
+	Failed  []ActionFailure `json:"failed"`
+}
+
 // Install puts the hub's MCP server, reached at url, into the harness,
 // replacing an entry left there before.
 func Install(ctx context.Context, id, url string) error {
-	h, at, err := lookup(id)
+	h, err := findByID(id)
 	if err != nil {
 		return err
+	}
+	return installHarness(ctx, h, url)
+}
+
+func installHarness(ctx context.Context, h Harness, url string) error {
+	at, ok := h.find()
+	if !ok {
+		return errors.New("这台机器上没有找到 " + h.Name)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
@@ -87,13 +108,18 @@ func Install(ctx context.Context, id, url string) error {
 
 // Uninstall takes the hub's MCP server out of the harness.
 func Uninstall(ctx context.Context, id string) error {
-	h, at, err := lookup(id)
+	h, err := findByID(id)
 	if err != nil {
 		return err
 	}
+	return uninstallHarness(ctx, h)
+}
+
+func uninstallHarness(ctx context.Context, h Harness) error {
 	if _, ok := h.installed(); !ok {
 		return nil
 	}
+	at, _ := h.find()
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	if err := h.uninstall(ctx, at); err != nil {
@@ -105,18 +131,56 @@ func Uninstall(ctx context.Context, id string) error {
 	return nil
 }
 
-func lookup(id string) (Harness, string, error) {
-	for _, h := range Harnesses() {
-		if h.ID != id {
+// InstallAll installs or updates the hub's MCP server into every detected
+// harness that is not already pointing to url.
+func InstallAll(ctx context.Context, url string) BatchResult {
+	return installAll(ctx, Harnesses(), url)
+}
+
+func installAll(ctx context.Context, harnesses []Harness, url string) BatchResult {
+	res := BatchResult{Changed: []string{}, Failed: []ActionFailure{}}
+	for _, h := range harnesses {
+		st := StatusOf(h, url)
+		if !st.Found || (st.Installed && !st.Stale) {
 			continue
 		}
-		at, ok := h.find()
-		if !ok {
-			return h, "", errors.New("这台机器上没有找到 " + h.Name)
+		if err := installHarness(ctx, h, url); err != nil {
+			res.Failed = append(res.Failed, ActionFailure{ID: h.ID, Name: h.Name, Error: err.Error()})
+			continue
 		}
-		return h, at, nil
+		res.Changed = append(res.Changed, h.Name)
 	}
-	return Harness{}, "", errors.New("unknown harness: " + id)
+	return res
+}
+
+// UninstallAll removes the hub's MCP server from every harness that currently
+// has it installed.
+func UninstallAll(ctx context.Context) BatchResult {
+	return uninstallAll(ctx, Harnesses())
+}
+
+func uninstallAll(ctx context.Context, harnesses []Harness) BatchResult {
+	res := BatchResult{Changed: []string{}, Failed: []ActionFailure{}}
+	for _, h := range harnesses {
+		if _, ok := h.installed(); !ok {
+			continue
+		}
+		if err := uninstallHarness(ctx, h); err != nil {
+			res.Failed = append(res.Failed, ActionFailure{ID: h.ID, Name: h.Name, Error: err.Error()})
+			continue
+		}
+		res.Changed = append(res.Changed, h.Name)
+	}
+	return res
+}
+
+func findByID(id string) (Harness, error) {
+	for _, h := range Harnesses() {
+		if h.ID == id {
+			return h, nil
+		}
+	}
+	return Harness{}, errors.New("unknown harness: " + id)
 }
 
 // ---- Claude ----
@@ -151,6 +215,9 @@ func claude() Harness {
 			return run(ctx, bin, "mcp", "add", "--transport", "http", "--scope", "user", ServerName, url)
 		},
 		uninstall: func(ctx context.Context, bin string) error {
+			if bin == "" {
+				return jsonMCPWrite(config(), "url", "")
+			}
 			return run(ctx, bin, "mcp", "remove", "--scope", "user", ServerName)
 		},
 	}
@@ -507,7 +574,7 @@ func dsh() Harness {
 			return url, found
 		},
 		install: func(_ context.Context, _, url string) error {
-			block := "- insert: # cat: added by Cat; uninstall it there, under 接入\n" +
+			block := "- insert: # cat: added by Cat; uninstall it there, under 设置\n" +
 				"    - id: " + dshEntry + "\n" +
 				"      name: \"@deepseek-ai/dsh-mcp-client\"\n" +
 				"      config:\n" +

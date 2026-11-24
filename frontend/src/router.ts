@@ -7,6 +7,7 @@ export const router = createRouter({
     { path: '/rules', component: () => import('./views/RulesView.vue') },
     { path: '/connections', component: () => import('./views/ConnectionsView.vue') },
     { path: '/activity', component: () => import('./views/ActivityView.vue') },
+    { path: '/settings', component: () => import('./views/SettingsView.vue') },
     // events and runs were pages of their own before they became one
     { path: '/events', redirect: '/activity' },
     { path: '/runs', redirect: (to) => ({ path: '/activity', query: to.query.id ? { run: to.query.id } : {} }) },

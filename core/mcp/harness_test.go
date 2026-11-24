@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -200,5 +201,95 @@ func TestWindsurfReadsLegacyURLKey(t *testing.T) {
 	st := StatusOf(windsurf(), "http://127.0.0.1:7788/api/mcp")
 	if !st.Found || !st.Installed || st.Stale {
 		t.Fatalf("expected installed from legacy url key, got %+v", st)
+	}
+}
+
+func TestBatchInstallAndUninstall(t *testing.T) {
+	base := t.TempDir()
+	cursorDir := filepath.Join(base, "cursor")
+	windsurfDir := filepath.Join(base, "windsurf")
+	missingDir := filepath.Join(base, "claude-missing")
+	if err := os.MkdirAll(cursorDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(windsurfDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CURSOR_CONFIG_DIR", cursorDir)
+	t.Setenv("WINDSURF_CONFIG_DIR", windsurfDir)
+	t.Setenv("CLAUDE_DESKTOP_CONFIG", filepath.Join(missingDir, "claude_desktop_config.json"))
+
+	// Seed windsurf with a stale address so InstallAll should update it alongside fresh Cursor install.
+	if err := os.WriteFile(
+		filepath.Join(windsurfDir, "mcp_config.json"),
+		[]byte(`{"mcpServers":{"cat":{"serverUrl":"http://127.0.0.1:9999/api/mcp"}}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	broken := Harness{
+		ID:        "broken",
+		Name:      "Broken App",
+		find:      func() (string, bool) { return "/tmp/broken", true },
+		installed: func() (string, bool) { return "", false },
+		install:   func(context.Context, string, string) error { return errors.New("boom") },
+		uninstall: func(context.Context, string) error { return nil },
+	}
+
+	const url = "http://127.0.0.1:7788/api/mcp"
+	harnesses := []Harness{cursor(), windsurf(), claudeApp(), broken}
+
+	res := installAll(context.Background(), harnesses, url)
+	if len(res.Changed) != 2 {
+		t.Fatalf("expected 2 installed/updated harnesses, got %+v", res)
+	}
+	if len(res.Failed) != 1 || res.Failed[0].ID != "broken" {
+		t.Fatalf("expected 1 failure for broken, got %+v", res.Failed)
+	}
+	if st := StatusOf(cursor(), url); !st.Installed || st.Stale {
+		t.Fatalf("cursor not installed cleanly: %+v", st)
+	}
+	if st := StatusOf(windsurf(), url); !st.Installed || st.Stale || st.URL != url {
+		t.Fatalf("windsurf not updated cleanly: %+v", st)
+	}
+	if st := StatusOf(claudeApp(), url); st.Installed {
+		t.Fatalf("missing claude-app should have been skipped: %+v", st)
+	}
+
+	// Running InstallAll again skips already up-to-date harnesses.
+	res2 := installAll(context.Background(), []Harness{cursor(), windsurf(), claudeApp()}, url)
+	if len(res2.Changed) != 0 || len(res2.Failed) != 0 {
+		t.Fatalf("expected no-op second installAll, got %+v", res2)
+	}
+
+	// UninstallAll removes all installed harnesses, even if a harness reports not found.
+	orphanedClaudeDir := filepath.Join(base, "claude-orphan")
+	if err := os.MkdirAll(orphanedClaudeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", orphanedClaudeDir)
+	if err := os.WriteFile(
+		filepath.Join(orphanedClaudeDir, ".claude.json"),
+		[]byte(`{"mcpServers":{"cat":{"url":"http://127.0.0.1:7788/api/mcp"},"other":{"url":"http://example.com"}}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	orphanClaude := claude()
+	orphanClaude.find = func() (string, bool) { return "", false }
+
+	uRes := uninstallAll(context.Background(), []Harness{cursor(), windsurf(), claudeApp(), orphanClaude})
+	if len(uRes.Changed) != 3 || len(uRes.Failed) != 0 {
+		t.Fatalf("expected 3 uninstalled with 0 failures, got %+v", uRes)
+	}
+	if st := StatusOf(cursor(), url); st.Installed {
+		t.Fatalf("cursor still installed: %+v", st)
+	}
+	if st := StatusOf(windsurf(), url); st.Installed {
+		t.Fatalf("windsurf still installed: %+v", st)
+	}
+	if st := StatusOf(orphanClaude, url); st.Installed {
+		t.Fatalf("orphaned claude entry still installed: %+v", st)
 	}
 }
