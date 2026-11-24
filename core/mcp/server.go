@@ -150,10 +150,6 @@ func (s *Server) handle(ctx context.Context, req request) *response {
 		if p.Arguments == nil {
 			p.Arguments = map[string]any{}
 		}
-		if err := s.checkPolicy(tools[i].perm); err != nil {
-			resp.Result = map[string]any{"content": []any{map[string]any{"type": "text", "text": err.Error()}}, "isError": true}
-			break
-		}
 		out, err := tools[i].run(ctx, s, p.Arguments)
 		if err != nil {
 			// what the tool was given is wrong, or what it did failed: said
@@ -169,45 +165,8 @@ func (s *Server) handle(ctx context.Context, req request) *response {
 	return resp
 }
 
-type toolPerm uint8
-
-const (
-	permReadOnly toolPerm = iota
-	permWriteRules
-	permInvokeActions
-)
-
-const (
-	errWriteRulesDenied    = "MCP 安全策略已禁止创建和修改规则，可在「接入 → 让 AI 用 Cat」中开启"
-	errInvokeActionsDenied = "MCP 安全策略已禁止执行动作和试运行，可在「接入 → 让 AI 用 Cat」中开启"
-	errShellDenied         = "MCP 安全策略已禁止调用「运行脚本（shell）」，可在「接入 → 让 AI 用 Cat」中开启"
-)
-
-func (s *Server) policy() Policy {
-	if s == nil || s.Engine == nil {
-		return DefaultPolicy()
-	}
-	return LoadPolicy(s.Engine.Store)
-}
-
-func (s *Server) checkPolicy(perm toolPerm) error {
-	p := s.policy()
-	switch perm {
-	case permWriteRules:
-		if !p.AllowWriteRules {
-			return errors.New(errWriteRulesDenied)
-		}
-	case permInvokeActions:
-		if !p.AllowInvokeActions {
-			return errors.New(errInvokeActionsDenied)
-		}
-	}
-	return nil
-}
-
 type tool struct {
 	name, about string
-	perm        toolPerm
 	schema      map[string]any
 	run         func(ctx context.Context, s *Server, args map[string]any) (any, error)
 }
@@ -286,24 +245,19 @@ var tools = []tool{
 	{
 		name:  "invoke_action",
 		about: "让一个接入做一个动作，比如往某个会话发消息。动作会真的执行。instance 和 action 取自 list_connections，params 按那个动作的参数填。返回动作的输出。",
-		perm:  permInvokeActions,
 		schema: object([]string{"instance", "action"}, map[string]any{
 			"instance": prop("string", "接入的 id"),
 			"action":   prop("string", "动作名"),
 			"params":   map[string]any{"type": "object", "description": "动作的参数"},
 		}),
 		run: func(ctx context.Context, s *Server, args map[string]any) (any, error) {
-			inst := str(args, "instance")
-			if isShellInstance(s.Engine, inst) && !s.policy().AllowShell {
-				return nil, errors.New(errShellDenied)
-			}
 			params, _ := args["params"].(map[string]any)
 			if params == nil {
 				params = map[string]any{}
 			}
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 			defer cancel()
-			out, err := s.Engine.Invoke(ctx, inst, str(args, "action"), params, plugin.InvokeContext{})
+			out, err := s.Engine.Invoke(ctx, str(args, "instance"), str(args, "action"), params, plugin.InvokeContext{})
 			if err != nil {
 				return nil, fmt.Errorf("动作失败：%w", err)
 			}
@@ -399,7 +353,6 @@ var tools = []tool{
 	{
 		name:  "save_rule",
 		about: "新建或修改一条规则。rule.id 为空是新建，否则整条替换那条规则（先用 list_rules 取到它，改完整条传回）。保存后立即生效。\n" + ruleFormat,
-		perm:  permWriteRules,
 		schema: object([]string{"rule"}, map[string]any{
 			"rule": map[string]any{"type": "object", "description": "整条规则：name、enabled、graph{nodes, edges}，修改时带上 id"},
 		}),
@@ -411,9 +364,6 @@ var tools = []tool{
 			}
 			if r.Graph == nil {
 				return nil, errors.New("规则要有 graph（nodes 和 edges）")
-			}
-			if ruleUsesShell(s.Engine, r) && !s.policy().AllowShell {
-				return nil, errors.New(errShellDenied)
 			}
 			if r.ID != "" {
 				list, _ := s.Engine.Store.ListRules()
@@ -434,7 +384,6 @@ var tools = []tool{
 	{
 		name:  "set_rule_enabled",
 		about: "启用或停用一条规则。",
-		perm:  permWriteRules,
 		schema: object([]string{"id", "enabled"}, map[string]any{
 			"id": prop("string", "规则 id"), "enabled": prop("boolean", "true 启用，false 停用"),
 		}),
@@ -456,7 +405,6 @@ var tools = []tool{
 	{
 		name:   "delete_rule",
 		about:  "删除一条规则。删了不能恢复。",
-		perm:   permWriteRules,
 		schema: object([]string{"id"}, map[string]any{"id": prop("string", "规则 id")}),
 		run: func(_ context.Context, s *Server, args map[string]any) (any, error) {
 			list, _ := s.Engine.Store.ListRules()
@@ -516,7 +464,6 @@ var tools = []tool{
 	{
 		name:   "cancel_run",
 		about:  "取消一条正在执行中的规则运行。",
-		perm:   permInvokeActions,
 		schema: object([]string{"id"}, map[string]any{"id": prop("string", "正在运行的记录 id")}),
 		run: func(_ context.Context, s *Server, args map[string]any) (any, error) {
 			id := str(args, "id")
@@ -532,7 +479,6 @@ var tools = []tool{
 	{
 		name:  "try_rule",
 		about: "拿一个历史事件或模拟事件试运行一条规则（传入未保存的 rule 对象，或已保存的 rule_id），等待结果返回。不会保存规则；设置 dry_run: true 可进入演练模式（只检查触发、条件与参数模板，不真实执行动作，也不写入运行记录）。",
-		perm:  permInvokeActions,
 		schema: object(nil, map[string]any{
 			"event_id":     prop("string", "用来试运行的历史事件 id（与 event 二选一）"),
 			"event":        map[string]any{"type": "object", "description": "自定义模拟事件对象（与 event_id 二选一），可包含 source、type、payload、actor、conversation 等字段，不会写入事件库"},
@@ -574,9 +520,6 @@ var tools = []tool{
 			} else {
 				return nil, errors.New("请提供 rule 或 rule_id")
 			}
-			if ruleUsesShell(s.Engine, r) && !s.policy().AllowShell {
-				return nil, errors.New(errShellDenied)
-			}
 			dryRun, _ := args["dry_run"].(bool)
 			var mockOutputs map[string]map[string]any
 			if args["mock_outputs"] != nil {
@@ -605,7 +548,6 @@ var tools = []tool{
 	{
 		name:  "replay_event",
 		about: "把一个历史事件重新交给规则跑一遍。不填 rule_id 时交给所有匹配且已启用的规则，填了则只跑那一条（即使停用也能跑）。",
-		perm:  permInvokeActions,
 		schema: object([]string{"event_id"}, map[string]any{
 			"event_id": prop("string", "要重放的历史事件 id"),
 			"rule_id":  prop("string", "只对这条规则重放（可选）"),

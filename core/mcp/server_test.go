@@ -146,10 +146,6 @@ func TestServer(t *testing.T) {
 		t.Errorf("still there: %+v", stored)
 	}
 
-	// Enable shell explicitly to verify try_rule & replay_event with shell output
-	if err := mcp.SavePolicy(h.st, mcp.Policy{AllowWriteRules: true, AllowInvokeActions: true, AllowShell: true}); err != nil {
-		t.Fatal(err)
-	}
 	evID, err := h.e.Emit(&event.Event{Source: "webhook", Plugin: "webhook", Type: "webhook.received", Payload: map[string]any{"text": "hello mcp"}})
 	if err != nil {
 		t.Fatal(err)
@@ -381,114 +377,5 @@ func TestDiagnosticTools(t *testing.T) {
 	// Cancelling a non-existent/already-finished run returns error
 	if _, failed := h.call(t, "cancel_run", `{"id":"run-ok-1"}`); !failed {
 		t.Error("cancel_run on finished run should fail")
-	}
-}
-
-func TestPolicyGuardrails(t *testing.T) {
-	h := newTestServer(t)
-
-	// Default policy: write_rules=true, invoke_actions=true, shell=false
-	if p := mcp.LoadPolicy(h.st); !p.AllowWriteRules || !p.AllowInvokeActions || p.AllowShell {
-		t.Fatalf("unexpected default policy: %+v", p)
-	}
-
-	evID, err := h.e.Emit(&event.Event{Source: "webhook", Plugin: "webhook", Type: "webhook.received", Payload: map[string]any{"text": "hi"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	const shellGraph = `"graph":{"nodes":[{"id":"t1","kind":"trigger"},{"id":"s1","kind":"action","instance":"shell","action":"run","params":{"command":"echo hi"}}],"edges":[{"from":"t1","to":"s1"}]}`
-	const httpGraph = `"graph":{"nodes":[{"id":"t1","kind":"trigger"},{"id":"s1","kind":"action","instance":"http","action":"request","params":{"url":"http://127.0.0.1:1/"}}],"edges":[{"from":"t1","to":"s1"}]}`
-
-	// 1. Default AllowShell=false blocks shell invoke_action, save_rule, and try_rule
-	msg, failed := h.call(t, "invoke_action", `{"instance":"shell","action":"run","params":{"command":"echo blocked"}}`)
-	if !failed || !strings.Contains(msg.(string), "shell") {
-		t.Fatalf("expected shell invoke_action blocked, got %v failed=%v", msg, failed)
-	}
-	msg, failed = h.call(t, "save_rule", `{"rule":{"name":"shell rule","enabled":false,`+shellGraph+`}}`)
-	if !failed || !strings.Contains(msg.(string), "shell") {
-		t.Fatalf("expected shell save_rule blocked, got %v failed=%v", msg, failed)
-	}
-	msg, failed = h.call(t, "try_rule", `{"event_id":"`+evID+`","rule":{"name":"shell draft",`+shellGraph+`}}`)
-	if !failed || !strings.Contains(msg.(string), "shell") {
-		t.Fatalf("expected shell draft try_rule blocked, got %v failed=%v", msg, failed)
-	}
-	// Also test try_rule referencing an existing saved shell rule by rule_id
-	savedShell, err := h.e.SaveRule(rules.Rule{
-		Name: "pre-existing shell", Enabled: false,
-		Graph: &rules.Graph{
-			Nodes: []rules.Node{
-				{Step: rules.Step{ID: "t1"}, Kind: rules.KindTrigger},
-				{Step: rules.Step{ID: "s1", Instance: "shell", Action: "run", Params: map[string]any{"command": "echo hi"}}, Kind: rules.KindAction},
-			},
-			Edges: []rules.Edge{{From: "t1", To: "s1"}},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	msg, failed = h.call(t, "try_rule", `{"event_id":"`+evID+`","rule_id":"`+savedShell.ID+`"}`)
-	if !failed || !strings.Contains(msg.(string), "shell") {
-		t.Fatalf("expected shell rule_id try_rule blocked, got %v failed=%v", msg, failed)
-	}
-
-	// Non-shell rule creation still works under default policy
-	created, failed := h.call(t, "save_rule", `{"rule":{"name":"http rule","enabled":false,`+httpGraph+`}}`)
-	if failed {
-		t.Fatalf("non-shell save_rule should succeed: %v", created)
-	}
-	httpRuleID := created.(map[string]any)["id"].(string)
-
-	// 2. Enabling AllowShell allows shell invoke_action
-	if err := mcp.SavePolicy(h.st, mcp.Policy{AllowWriteRules: true, AllowInvokeActions: true, AllowShell: true}); err != nil {
-		t.Fatal(err)
-	}
-	out, failed := h.call(t, "invoke_action", `{"instance":"shell","action":"run","params":{"command":"echo allowed-now"}}`)
-	if failed || !strings.Contains(out.(map[string]any)["stdout"].(string), "allowed-now") {
-		t.Fatalf("shell invoke_action after enabling AllowShell: %v failed=%v", out, failed)
-	}
-
-	// 3. Disabling AllowWriteRules blocks save_rule, set_rule_enabled, delete_rule while keeping read-only tools working
-	if err := mcp.SavePolicy(h.st, mcp.Policy{AllowWriteRules: false, AllowInvokeActions: true, AllowShell: true}); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct{ name, args string }{
-		{"save_rule", `{"rule":{"name":"blocked","enabled":false,` + httpGraph + `}}`},
-		{"set_rule_enabled", `{"id":"` + httpRuleID + `","enabled":true}`},
-		{"delete_rule", `{"id":"` + httpRuleID + `"}`},
-	} {
-		msg, failed := h.call(t, tc.name, tc.args)
-		if !failed || !strings.Contains(msg.(string), "创建和修改规则") {
-			t.Errorf("%s should be blocked by AllowWriteRules=false, got %v failed=%v", tc.name, msg, failed)
-		}
-	}
-	if _, failed := h.call(t, "list_rules", `{}`); failed {
-		t.Error("list_rules should still succeed when AllowWriteRules=false")
-	}
-
-	// 4. Disabling AllowInvokeActions blocks invoke_action, try_rule, replay_event, cancel_run
-	if err := mcp.SavePolicy(h.st, mcp.Policy{AllowWriteRules: true, AllowInvokeActions: false, AllowShell: true}); err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct{ name, args string }{
-		{"invoke_action", `{"instance":"shell","action":"run","params":{"command":"echo no"}}`},
-		{"try_rule", `{"event_id":"` + evID + `","rule_id":"` + httpRuleID + `"}`},
-		{"replay_event", `{"event_id":"` + evID + `","rule_id":"` + httpRuleID + `"}`},
-		{"cancel_run", `{"id":"any-run"}`},
-	} {
-		msg, failed := h.call(t, tc.name, tc.args)
-		if !failed || !strings.Contains(msg.(string), "执行动作和试运行") {
-			t.Errorf("%s should be blocked by AllowInvokeActions=false, got %v failed=%v", tc.name, msg, failed)
-		}
-	}
-	if _, failed := h.call(t, "list_events", `{}`); failed {
-		t.Error("list_events should still succeed when AllowInvokeActions=false")
-	}
-
-	// 5. Malformed KV JSON falls back safely to DefaultPolicy
-	if err := h.st.KVSet(mcp.PolicyScope, mcp.PolicyKey, "{not-valid-json"); err != nil {
-		t.Fatal(err)
-	}
-	if p := mcp.LoadPolicy(h.st); p != mcp.DefaultPolicy() {
-		t.Fatalf("malformed KV should fall back to default, got %+v", p)
 	}
 }

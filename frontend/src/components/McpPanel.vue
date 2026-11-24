@@ -6,7 +6,7 @@
 import { onMounted, ref } from 'vue'
 import { Check, Copy, LoaderCircle } from 'lucide-vue-next'
 import { useHub } from '../hub'
-import { del, get, post, put } from '../api'
+import { del, get, post } from '../api'
 
 interface Harness {
   id: string
@@ -18,21 +18,14 @@ interface Harness {
   url?: string
   stale?: boolean
 }
-interface Policy {
-  allow_write_rules: boolean
-  allow_invoke_actions: boolean
-  allow_shell: boolean
-}
 interface State {
   url: string
   harnesses: Harness[]
-  policy: Policy
 }
 
 const hub = useHub()
 const state = ref<State | null>(null)
 const busy = ref('')
-const savingPolicy = ref(false)
 const copied = ref(false)
 
 onMounted(async () => (state.value = await get<State>('/mcp/harnesses').catch(() => null)))
@@ -45,21 +38,6 @@ async function set(h: Harness, on: boolean) {
   )
   if (next) state.value = next
   busy.value = ''
-}
-
-async function setPolicy(key: keyof Policy, ev: Event) {
-  if (!state.value) return
-  const input = ev.target as HTMLInputElement
-  const prev = state.value.policy[key]
-  const nextPolicy: Policy = { ...state.value.policy, [key]: input.checked }
-  savingPolicy.value = true
-  const saved = await hub.run(() => put<Policy>('/mcp/policy', nextPolicy), '已保存 MCP 权限设置')
-  if (saved) {
-    state.value.policy = saved
-  } else {
-    input.checked = prev
-  }
-  savingPolicy.value = false
 }
 
 async function copy() {
@@ -107,61 +85,8 @@ async function copy() {
         <component :is="copied ? Check : Copy" :size="13" />
       </button>
     </p>
-
-    <div v-if="state.policy" class="mt-4">
-      <h3 class="mb-2 text-xs font-semibold text-mute">权限控制</h3>
-      <div class="list">
-        <label class="row flex cursor-pointer items-center justify-between gap-4 px-4 py-2.5">
-          <div class="min-w-0">
-            <div class="text-sm font-medium">允许创建和修改规则</div>
-            <div class="text-xs text-mute">允许 AI 保存、启用/停用或删除规则；关闭后仅可查看现有规则</div>
-          </div>
-          <input
-            type="checkbox"
-            aria-label="允许创建和修改规则"
-            :checked="state.policy.allow_write_rules"
-            :disabled="savingPolicy"
-            @change="setPolicy('allow_write_rules', $event)"
-          />
-        </label>
-        <label class="row flex cursor-pointer items-center justify-between gap-4 px-4 py-2.5">
-          <div class="min-w-0">
-            <div class="text-sm font-medium">允许执行动作和试运行</div>
-            <div class="text-xs text-mute">允许 AI 调用接入动作、试运行规则、重放事件和取消运行</div>
-          </div>
-          <input
-            type="checkbox"
-            aria-label="允许执行动作和试运行"
-            :checked="state.policy.allow_invoke_actions"
-            :disabled="savingPolicy"
-            @change="setPolicy('allow_invoke_actions', $event)"
-          />
-        </label>
-        <label class="row flex cursor-pointer items-center justify-between gap-4 px-4 py-2.5">
-          <div class="min-w-0">
-            <div class="flex items-center gap-2 text-sm font-medium">
-              允许调用「运行脚本（shell）」
-              <span class="chip !font-sans" :class="state.policy.allow_shell ? 'text-warn' : ''">
-                {{ state.policy.allow_shell ? '高风险 · 已开启' : '默认关闭' }}
-              </span>
-            </div>
-            <div class="text-xs text-mute">
-              关闭时禁止直接执行 shell 命令，也禁止创建或试运行含 shell 节点的规则；仅在完全信任当前 AI 时开启
-            </div>
-          </div>
-          <input
-            type="checkbox"
-            aria-label="允许调用「运行脚本（shell）」"
-            :checked="state.policy.allow_shell"
-            :disabled="savingPolicy"
-            @change="setPolicy('allow_shell', $event)"
-          />
-        </label>
-      </div>
-    </div>
-
-    <p class="mt-2 text-xs text-mute">
-      查看接入、事件、运行记录和实例日志始终可用；「运行脚本（shell）」默认禁止，需在上方显式开启。由聊天消息触发的 AI
+    <p class="mt-1 text-xs text-mute">
+      装上后那里的 AI 能做你在 Cat 里能做的事，包括用「运行脚本」执行命令。由聊天消息触发的 AI
       默认用不了这些工具，除非你在它的「允许的工具」里放行。
     </p>
   </section>
