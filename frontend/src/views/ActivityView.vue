@@ -401,7 +401,7 @@ async function replay() {
         <table class="w-full table-fixed text-left">
           <TransitionGroup tag="tbody" name="arrive">
             <tr v-for="e in filtered" :key="e.id" class="cursor-pointer" @click="selected = e">
-              <td class="w-28 py-2.5 pl-4 font-mono text-xs whitespace-nowrap text-mute tabular-nums">
+              <td class="w-36 py-2.5 pr-3 pl-4 font-mono text-xs whitespace-nowrap text-mute tabular-nums">
                 {{ clock(e.time) }}
               </td>
               <td class="w-32 truncate py-2.5 pr-3 text-sm font-medium">{{ hub.instanceName(e.source) }}</td>
